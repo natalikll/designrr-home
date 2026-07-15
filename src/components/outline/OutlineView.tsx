@@ -305,7 +305,7 @@ export function OutlineView({ onGenerateBook }: OutlineViewProps) {
             </div>
           )}
 
-          {/* Outline title section */}
+          {/* Outline title chapter */}
           <div ref={titleRef} className="max-w-3xl mx-auto px-8 pt-8 pb-2 relative">
             {/* Glow ring behind title */}
             {showParticles && <div className="outline-glow-ring" />}

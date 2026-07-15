@@ -52,9 +52,9 @@ function ImportCard({ card, onClick }: { card: typeof cards[number]; onClick?: (
       onClick={onClick}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      className="flex shrink-0 cursor-pointer items-center gap-2 overflow-hidden rounded-[8px] border border-[#E0E5EB] bg-white pr-6"
+      className="flex shrink-0 cursor-pointer items-center gap-2 overflow-hidden rounded-[8px] border border-[#E0E5EB] bg-white pr-4"
       style={{
-        width: 222,
+        width: 250,
         height: 72,
         boxShadow: isHovered
           ? '0px 7px 22px 0px rgba(62, 57, 205, 0.15)'
@@ -96,9 +96,9 @@ export default function ImportCards() {
       subtitle: '',
       chapters: [
         {
-          id: 'chapter-1',
+          id: 'section-1',
           number: 1,
-          title: 'Chapter 1',
+          title: 'Section 1',
           content: '',
         },
       ],
@@ -118,9 +118,9 @@ export default function ImportCards() {
         : 'Imported Manuscript';
 
       const chapters = files.map((file, i) => ({
-        id: `chapter-${i + 1}`,
+        id: `section-${i + 1}`,
         number: i + 1,
-        title: files.length === 1 ? 'Chapter 1' : file.name.replace(/\.(doc|docx|rtf)$/i, ''),
+        title: files.length === 1 ? 'Section 1' : file.name.replace(/\.(doc|docx|rtf)$/i, ''),
         content: getMockImportedContent(file.name),
       }));
 
@@ -139,9 +139,9 @@ export default function ImportCards() {
       const bookTitle = urls.length === 1 ? 'Google Doc Import' : 'Imported Manuscript';
 
       const chapters = urls.map((url, i) => ({
-        id: `chapter-${i + 1}`,
+        id: `section-${i + 1}`,
         number: i + 1,
-        title: `Chapter ${i + 1}`,
+        title: `Section ${i + 1}`,
         content: getMockImportedContent(url),
       }));
 
@@ -161,7 +161,7 @@ export default function ImportCards() {
       initial="hidden"
       animate="show"
       variants={container}
-      className="mx-auto w-full max-w-[690px]"
+      className="mx-auto w-full max-w-[780px]"
     >
       {/* Divider with centered text */}
       <div className="mb-8 flex items-center" style={{ gap: 16 }}>
@@ -218,7 +218,7 @@ export default function ImportCards() {
 /** Generates placeholder content simulating an imported document */
 function getMockImportedContent(source: string): string {
   const paragraphs = [
-    'The journey of self-discovery is one that many embark upon but few truly complete. In this chapter, we explore the foundational principles that guide us toward understanding our deepest motivations and aspirations. Through careful reflection and intentional practice, we can begin to uncover the patterns that shape our daily lives.',
+    'The journey of self-discovery is one that many embark upon but few truly complete. In this section, we explore the foundational principles that guide us toward understanding our deepest motivations and aspirations. Through careful reflection and intentional practice, we can begin to uncover the patterns that shape our daily lives.',
     'Research has shown that individuals who engage in regular self-reflection are more likely to achieve their long-term goals. This finding, published in the Journal of Personality and Social Psychology, suggests that the simple act of writing down our thoughts can have a profound impact on our trajectory.',
     'Consider the story of Maria, a teacher from Portland who transformed her approach to education after spending three months journaling about her experiences in the classroom. "I realized that I had been teaching the way I was taught, not the way my students needed to learn," she recalls. This insight led her to develop a new curriculum that increased student engagement by 40%.',
     'The science behind habit formation tells us that it takes approximately 66 days to establish a new behavior as automatic. This means that the first two months of any new practice are critical — they represent the period during which our brains are actively creating new neural pathways.',

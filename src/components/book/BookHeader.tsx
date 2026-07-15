@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { motion } from 'framer-motion';
+import { useRouter } from 'next/navigation';
 import { useFlowStore } from '@/stores/flowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
@@ -11,11 +12,19 @@ import type { BookType } from '@/lib/types';
 export function BookHeader() {
   const sidebarOpen = useFlowStore((s) => s.sidebarOpen);
   const setSidebarOpen = useFlowStore((s) => s.setSidebarOpen);
+  const setStep = useFlowStore((s) => s.setStep);
+  const setBookType = useFlowStore((s) => s.setBookType);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
+  const router = useRouter();
 
   const handleBookTypeSelect = (type: BookType) => {
     setShowCreateMenu(false);
-    console.log(`Creating ${type} from manuscript...`);
+    setBookType(type);
+    if (type === 'ebook') {
+      router.push('/book/create?from=wordgenie');
+    } else {
+      setStep(9);
+    }
   };
 
   return (

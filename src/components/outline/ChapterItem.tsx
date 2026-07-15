@@ -5,18 +5,18 @@ import { motion } from 'framer-motion';
 import ContentEditable from 'react-contenteditable';
 import { chapterVariants } from '@/lib/animations';
 import { useFlowStore } from '@/stores/flowStore';
-import type { ChapterOutline, SubSection } from '@/lib/types';
+import type { ChapterOutline, SubChapter } from '@/lib/types';
 
-interface SubSectionItemProps {
-  sub: SubSection;
+interface SubChapterItemProps {
+  sub: SubChapter;
   chapterId: string;
 }
 
-function SubSectionItem({ sub, chapterId }: SubSectionItemProps) {
+function SubChapterItem({ sub, chapterId }: SubChapterItemProps) {
   const [subTitle, setSubTitle] = useState(sub.title);
   const [subDesc, setSubDesc] = useState(sub.description);
-  const updateSubTitle = useFlowStore((s) => s.updateSubSectionTitle);
-  const updateSubDesc = useFlowStore((s) => s.updateSubSectionDescription);
+  const updateSubTitle = useFlowStore((s) => s.updateSubChapterTitle);
+  const updateSubDesc = useFlowStore((s) => s.updateSubChapterDescription);
 
   const handleSubTitleChange = useCallback(
     (evt: { target: { value: string } }) => {
@@ -110,16 +110,16 @@ export function ChapterItem({ chapter }: ChapterItemProps) {
         className="text-sm text-text-tertiary mb-4 px-1 -mx-1"
       />
 
-      {/* Sub-sections with single continuous left border */}
-      {chapter.subSections.length > 0 && (
+      {/* Sub-chapters with single continuous left border */}
+      {chapter.subChapters.length > 0 && (
         <div
           className="pl-4"
           style={{
             borderLeft: '2px solid #E0E5EB',
           }}
         >
-          {chapter.subSections.map((sub) => (
-            <SubSectionItem key={sub.id} sub={sub} chapterId={chapter.id} />
+          {chapter.subChapters.map((sub) => (
+            <SubChapterItem key={sub.id} sub={sub} chapterId={chapter.id} />
           ))}
         </div>
       )}

@@ -1,6 +1,7 @@
 'use client';
 
 import { motion, AnimatePresence } from 'framer-motion';
+import { useRouter, usePathname } from 'next/navigation';
 import { useFlowStore } from '@/stores/flowStore';
 import { createPortal } from 'react-dom';
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -331,12 +332,21 @@ interface AppSidebarProps {
 
 export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
   const resetFlow = useFlowStore((s) => s.resetFlow);
+  const bumpHomeKey = useFlowStore((s) => s.bumpHomeKey);
   const setShowAccount = useFlowStore((s) => s.setShowAccount);
   const showAccount = useFlowStore((s) => s.showAccount);
   const profilePhoto = useFlowStore((s) => s.profilePhoto);
+  const router = useRouter();
+  const pathname = usePathname();
 
-  // 'home' when on main app, 'account' when My Account is open
-  const activeNav = showAccount ? 'account' : 'home';
+  // 'home' when on main app, 'account' when My Account is open, 'manuscripts' on /docs, 'presentations' on /presentation*
+  const activeNav = showAccount
+    ? 'account'
+    : pathname === '/docs'
+    ? 'manuscripts'
+    : pathname?.startsWith('/presentation')
+    ? 'presentations'
+    : 'home';
 
   const [activePopup, setActivePopup] = useState<PopupType>(null);
   const [popupAnchor, setPopupAnchor] = useState({ top: 0, right: 0 });
@@ -345,6 +355,13 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
   const mediaRef = useRef<HTMLButtonElement>(null);
   const learningRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  const hydrateSidebarPref = useFlowStore((s) => s.hydrateSidebarPref);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+    hydrateSidebarPref();
+  }, [hydrateSidebarPref]);
 
   const openPopup = useCallback((type: PopupType, ref: React.RefObject<HTMLButtonElement | null>) => {
     if (activePopup === type) { setActivePopup(null); return; }
@@ -450,7 +467,7 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                   {/* Home */}
                   <button
                     style={navItemStyle(activeNav === 'home')}
-                    onClick={() => { resetFlow(); setShowAccount(false); onClose(); setActivePopup(null); }}
+                    onClick={() => { resetFlow(); bumpHomeKey(); setShowAccount(false); onClose(); setActivePopup(null); router.push('/'); }}
                     onMouseEnter={(e) => { if (activeNav === 'home') return; e.currentTarget.style.background = '#F6F7F9'; }}
                     onMouseLeave={(e) => { if (activeNav === 'home') return; e.currentTarget.style.background = 'transparent'; }}
                   >
@@ -461,16 +478,13 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                   {/* Projects */}
                   <button
                     ref={projectsRef}
-                    style={{ ...navItemStyle(false), justifyContent: 'space-between' }}
-                    onClick={() => openPopup('projects', projectsRef)}
+                    style={navItemStyle(pathname === '/projects')}
+                    onClick={() => { router.push('/projects'); onClose(); setActivePopup(null); }}
                     onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = activePopup === 'projects' ? '#F6F7F9' : 'transparent')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = pathname === '/projects' ? '#F6F7F9' : 'transparent')}
                   >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <ProjectsIcon active={false} />
-                      Projects
-                    </span>
-                    <ChevronRight />
+                    <ProjectsIcon active={pathname === '/projects'} />
+                    Projects
                   </button>
 
                   {/* Landing pages */}
@@ -485,12 +499,13 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
 
                   {/* Manuscripts */}
                   <button
-                    style={navItemStyle(false)}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    style={navItemStyle(activeNav === 'manuscripts')}
+                    onClick={() => { setShowAccount(false); router.push('/docs'); onClose(); setActivePopup(null); }}
+                    onMouseEnter={(e) => { if (activeNav === 'manuscripts') return; e.currentTarget.style.background = '#F6F7F9'; }}
+                    onMouseLeave={(e) => { if (activeNav === 'manuscripts') return; e.currentTarget.style.background = 'transparent'; }}
                   >
-                    <DocsIcon active={false} />
-                    Manuscripts
+                    <DocsIcon active={activeNav === 'manuscripts'} />
+                    Docs
                   </button>
 
                   {/* Media */}
@@ -580,7 +595,7 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
       </AnimatePresence>
 
       {/* Popups via portal */}
-      {typeof window !== 'undefined' && createPortal(
+      {mounted && createPortal(
         <div id="sidebar-popup-portal">
           <AnimatePresence>
             {activePopup === 'projects' && (
@@ -658,6 +673,18 @@ function DocsIcon({ active }: { active: boolean }) {
   return (
     <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ flexShrink: 0 }}>
       <path d="M13.625 14.25V7.25H10.5625C9.83789 7.25 9.25 6.66211 9.25 5.9375V2.875H5.75C5.26602 2.875 4.875 3.26602 4.875 3.75V14.25C4.875 14.734 5.26602 15.125 5.75 15.125H12.75C13.234 15.125 13.625 14.734 13.625 14.25ZM13.6113 6.375C13.5922 6.29844 13.5539 6.22734 13.4965 6.17266L10.3273 3.00352C10.2699 2.94609 10.2016 2.90781 10.125 2.88867V5.9375C10.125 6.17813 10.3219 6.375 10.5625 6.375H13.6113ZM4 3.75C4 2.78477 4.78477 2 5.75 2H10.0184C10.3656 2 10.6992 2.13945 10.9453 2.38555L14.1145 5.55195C14.3605 5.79805 14.5 6.13164 14.5 6.47891V14.25C14.5 15.2152 13.7152 16 12.75 16H5.75C4.78477 16 4 15.2152 4 14.25V3.75Z" fill={c}/>
+    </svg>
+  );
+}
+
+function PresentationsIcon({ active }: { active: boolean }) {
+  const c = active ? '#006EFE' : '#667C98';
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ flexShrink: 0 }}>
+      <rect x="1.5" y="3" width="15" height="9.5" rx="1.3" stroke={c} strokeWidth="1.2" />
+      <path d="M5.5 9.5L7.6 7.2L9.4 8.6L12.5 5.7" stroke={c} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M7 15.5H11" stroke={c} strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M9 12.5V15.5" stroke={c} strokeWidth="1.2" strokeLinecap="round" />
     </svg>
   );
 }

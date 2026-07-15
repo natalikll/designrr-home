@@ -111,7 +111,7 @@ export function ChatContainer() {
                 </div>
               );
             } else {
-              elements.push(<ChatMessage key={msg.id} message={msg} />);
+              elements.push(<ChatMessage key={msg.id} message={msg} onSuggestion={handleUserMessage} />);
             }
 
             return elements;

@@ -1,15 +1,66 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import type { ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useFlowEngine } from '@/hooks/useFlowEngine';
 import { Tooltip } from '@/components/ui/Tooltip';
+import { SettingsPillRow } from '@/components/presentation/SettingsPillRow';
 
 interface WordgenieInputProps {
   onSubmit?: (value: string) => void;
+  hideHeader?: boolean;
+  showSettings?: boolean;
+  excludeSettings?: string[];
+  placeholder?: string;
+  selectedMode?: { label: string; icon: ReactNode; onRemove: () => void };
+  topRow?: ReactNode;
+  borderless?: boolean;
 }
 
-export default function WordgenieInput({ onSubmit }: WordgenieInputProps) {
+function SelectedModeChip({ label, icon, onRemove }: { label: string; icon: ReactNode; onRemove: () => void }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <motion.button
+      type="button"
+      onClick={onRemove}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      initial={{ opacity: 0, scale: 0.85 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.85 }}
+      transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5,
+        padding: '4px 10px 4px 7px', borderRadius: 999,
+        background: '#EBF3FF', border: '1.5px solid #006EFE',
+        color: '#006EFE', fontFamily: "'Nunito Sans', sans-serif",
+        fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0,
+      }}
+    >
+      {/* Fixed-size container keeps pill width stable during icon↔X swap */}
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, flexShrink: 0 }}>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.span
+            key={hovered ? 'x' : 'icon'}
+            initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.5 }} transition={{ duration: 0.1 }}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            {hovered ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            ) : icon}
+          </motion.span>
+        </AnimatePresence>
+      </span>
+      {label}
+    </motion.button>
+  );
+}
+
+export default function WordgenieInput({ onSubmit, hideHeader, showSettings, excludeSettings, placeholder, selectedMode, topRow, borderless }: WordgenieInputProps) {
   const [value, setValue] = useState('');
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -136,67 +187,77 @@ export default function WordgenieInput({ onSubmit }: WordgenieInputProps) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={borderless ? false : { y: 16 }}
+      animate={borderless ? false : { y: 0 }}
       transition={{ duration: 0.5, delay: 0.3, ease: [0.22, 1, 0.36, 1] }}
-      className="mx-auto w-full max-w-[690px]"
+      className={borderless ? 'w-full' : 'mx-auto w-full max-w-[780px]'}
+      style={borderless ? { position: 'relative', zIndex: showFileMenu ? 50 : 1 } : { background: 'white', borderRadius: 16, position: 'relative', zIndex: showFileMenu ? 50 : 1 }}
     >
       <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} multiple />
 
-      {/* Main input container — blue border, rounded-16 */}
+      {/* Main input container */}
       <div
         className="flex flex-col bg-white"
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
         onFocusCapture={() => setIsFocused(true)}
         onBlurCapture={() => setIsFocused(false)}
-        style={{
+        style={borderless ? {
+          paddingTop: 12, paddingBottom: 4,
+        } : {
           border: '1px solid #006EFE',
           borderRadius: 16,
           paddingTop: 12,
-          paddingBottom: 16,
-          gap: 12,
+          paddingBottom: 4,
           boxShadow: isHovered || isFocused
             ? '0px 7px 22px 0px rgba(62, 57, 205, 0.15)'
             : '0px 0px 0px 0px rgba(62, 57, 205, 0)',
           transition: 'box-shadow 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
         }}
       >
+        {/* ── Optional top row (e.g. tabs for Version C) ── */}
+        {topRow && (
+          <>
+            <div style={{ overflow: 'hidden', borderRadius: '15px 15px 0 0' }}>{topRow}</div>
+            <div style={{ height: 1, backgroundColor: '#E0E5EB' }} />
+          </>
+        )}
+
         {/* ── Header row ── */}
         <div className="flex flex-col" style={{ gap: 12 }}>
-          <div className="flex items-start justify-between" style={{ paddingLeft: 16, paddingRight: 16 }}>
-            {/* Left: icon + "by New Wordgenie" */}
-            <div className="flex items-center" style={{ gap: 6 }}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/assets/wordgenie-icon.svg"
-                alt=""
-                className="shrink-0 overflow-hidden"
-                style={{ width: 14, height: 14 }}
-              />
+          {!hideHeader && (
+            <div className="flex items-start justify-between" style={{ paddingLeft: 16, paddingRight: 16 }}>
+              {/* Left: icon + "by New Wordgenie" */}
+              <div className="flex items-center" style={{ gap: 6 }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src="/assets/wordgenie-icon.svg"
+                  alt=""
+                  className="shrink-0 overflow-hidden"
+                  style={{ width: 14, height: 14 }}
+                />
+                <span
+                  className="gradient-text shrink-0 whitespace-nowrap font-semibold"
+                  style={{ fontSize: 14, lineHeight: '18px' }}
+                >
+                  by New Wordgenie
+                </span>
+              </div>
+              {/* Right: "Generate up to 10 books with AI" */}
               <span
-                className="gradient-text shrink-0 whitespace-nowrap font-semibold"
-                style={{ fontSize: 14, lineHeight: '18px' }}
+                className="shrink-0 whitespace-nowrap font-normal"
+                style={{ fontSize: 14, lineHeight: '18px', color: '#667C98' }}
               >
-                by New Wordgenie
+                Generate up to 10 books with AI
               </span>
             </div>
-            {/* Right: "Generate up to 10 books with AI" */}
-            <span
-              className="shrink-0 whitespace-nowrap font-normal"
-              style={{ fontSize: 14, lineHeight: '18px', color: '#667C98' }}
-            >
-              Generate up to 10 books with AI
-            </span>
-          </div>
+          )}
 
-          {/* Separator line */}
-          <div style={{ height: 1, backgroundColor: '#E0E5EB' }} />
+          {!hideHeader && <div style={{ height: 1, backgroundColor: '#E0E5EB' }} />}
         </div>
 
-        {/* ── Content area ── */}
-        <div className="flex flex-col" style={{ gap: 32 }}>
-          {/* Attached files preview */}
+        {/* ── Textarea ── */}
+        <div style={{ padding: '10px 20px 4px' }}>
           <AnimatePresence>
             {attachedFiles.length > 0 && (
               <motion.div
@@ -204,7 +265,7 @@ export default function WordgenieInput({ onSubmit }: WordgenieInputProps) {
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 className="flex flex-wrap gap-2"
-                style={{ paddingLeft: 16, paddingRight: 16, paddingTop: 12 }}
+                style={{ marginBottom: 8 }}
               >
                 {attachedFiles.map((file, i) => (
                   <motion.div
@@ -225,46 +286,41 @@ export default function WordgenieInput({ onSubmit }: WordgenieInputProps) {
               </motion.div>
             )}
           </AnimatePresence>
+          {isRecording ? (
+            <div className="flex flex-1 items-center gap-3" style={{ minHeight: 24 }}>
+              <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.2, repeat: Infinity }} className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-500" />
+              <span className="text-sm font-medium text-text-primary">Recording...</span>
+              <span className="font-mono text-sm text-text-tertiary">{formatTime(recordingTime)}</span>
+            </div>
+          ) : (
+            <textarea
+              ref={textareaRef}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={placeholder ?? 'What would you like to create today?'}
+              rows={1}
+              className="max-h-[120px] w-full resize-none bg-transparent font-normal text-text-placeholder focus:outline-none overflow-hidden"
+              style={{ fontSize: 16, lineHeight: '24px', minHeight: 72, color: value ? '#15191F' : undefined, fontFamily: "'Nunito Sans', sans-serif" }}
+            />
+          )}
+        </div>
 
-          {/* Textarea */}
-          <div style={{ paddingLeft: 16, paddingRight: 24 }}>
-            {isRecording ? (
-              <div className="flex flex-1 items-center gap-3">
-                <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.2, repeat: Infinity }} className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-500" />
-                <span className="text-sm font-medium text-text-primary">Recording...</span>
-                <span className="font-mono text-sm text-text-tertiary">{formatTime(recordingTime)}</span>
-              </div>
-            ) : (
-              <textarea
-                ref={textareaRef}
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Tell me about yourself and what you'd like to write about?"
-                rows={1}
-                className="max-h-[120px] w-full resize-none bg-transparent font-normal text-text-placeholder focus:outline-none"
-                style={{ fontSize: 16, lineHeight: '20px', color: value ? '#15191F' : undefined, fontFamily: "'Nunito Sans', sans-serif" }}
-              />
-            )}
-          </div>
-
-          {/* ── Bottom row: + button (left), mic + send (right) ── */}
-          <div className="flex items-center justify-between" style={{ paddingLeft: 16, paddingRight: 16 }}>
-            {/* + Attach button */}
+        {/* ── Bottom row: + button (left), [settings], mic + send (right) ── */}
+        <div className="flex items-center justify-between" style={{ padding: '2px 12px 4px' }}>
+            {/* Left: + Attach + optional settings pills */}
+            <div className="flex items-center" style={{ gap: 8 }}>
             <div className="relative" ref={fileMenuRef}>
               <Tooltip label="Add your files">
                 <button
                   onClick={() => setShowFileMenu(!showFileMenu)}
-                  className="flex shrink-0 cursor-pointer items-center transition-colors hover:bg-surface"
-                  style={{ height: 40, borderRadius: 8, border: '1.053px solid #E0E5EB', padding: '10.526px', gap: '10.526px' }}
+                  className="flex shrink-0 cursor-pointer items-center justify-center transition-colors hover:bg-surface"
+                  style={{ width: 40, height: 40, borderRadius: 8, border: 'none' }}
                   aria-label="Attach file"
                 >
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none" className="shrink-0">
                     <path d="M9 3.667V14.333M3.667 9H14.333" stroke="#3D4A5C" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
-                  <span style={{ fontSize: 14, fontWeight: 600, lineHeight: '18px', color: '#3D4A5C', fontFamily: "'Nunito Sans', sans-serif", whiteSpace: 'nowrap' }}>
-                    Attach file
-                  </span>
                 </button>
               </Tooltip>
 
@@ -295,6 +351,11 @@ export default function WordgenieInput({ onSubmit }: WordgenieInputProps) {
                   </motion.div>
                 )}
               </AnimatePresence>
+            </div>
+            <AnimatePresence>
+              {selectedMode && <SelectedModeChip key="chip" {...selectedMode} />}
+            </AnimatePresence>
+            {showSettings && <SettingsPillRow compact exclude={excludeSettings} />}
             </div>
 
             {/* Right side: mic + send */}
@@ -345,10 +406,11 @@ export default function WordgenieInput({ onSubmit }: WordgenieInputProps) {
             </div>
           </div>
         </div>
-      </div>
     </motion.div>
   );
 }
+
+
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;

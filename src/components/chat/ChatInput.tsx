@@ -226,7 +226,7 @@ export function ChatInput({ placeholder, onSubmit, disabled = false }: ChatInput
               disabled={disabled}
               rows={1}
               style={{ height: 40, lineHeight: isExpanded ? '20px' : '40px', padding: isExpanded ? '10px 0' : '0', verticalAlign: 'middle' }}
-              className="flex-1 bg-transparent text-text-primary placeholder-text-placeholder resize-none focus:outline-none text-base max-h-[120px] transition-[height] duration-200 ease-out"
+              className="flex-1 bg-transparent text-text-primary placeholder-text-placeholder resize-none focus:outline-none text-base max-h-[120px] transition-[height] duration-200 ease-out overflow-hidden"
             />
           )}
 

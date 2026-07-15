@@ -1,4 +1,4 @@
-export type FlowStep = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type FlowStep = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 export type BookType = 'ebook' | 'print' | 'kindle' | 'audiobook';
 
@@ -42,7 +42,7 @@ export interface BookDirection {
   whyThisWorks: string;
 }
 
-export interface SubSection {
+export interface SubChapter {
   id: string;
   title: string;
   description: string;
@@ -53,7 +53,7 @@ export interface ChapterOutline {
   number: number;
   title: string;
   description: string;
-  subSections: SubSection[];
+  subChapters: SubChapter[];
   pageRange?: string;
 }
 

@@ -153,7 +153,7 @@ export function getMockOutline(direction: BookDirection): BookOutline {
         title: 'Introduction',
         description: 'Purpose: Create tension + promise resolution',
         pageRange: '4-6 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-1-1', title: 'The relatable problem:', description: 'Your reader already knows email marketing matters — but every time they sit down to write, the voice that built their Instagram following disappears.' },
           { id: 'ss-1-2', title: 'Why common solutions fail:', description: "Most advice tells people to 'just write how you talk' — but that ignores the psychological shift that happens when stakes are involved." },
           { id: 'ss-1-3', title: 'Your core framework:', description: 'Introduce the Voice Transfer Method as a systematic bridge between casual content and high-converting emails.' },
@@ -163,10 +163,10 @@ export function getMockOutline(direction: BookDirection): BookOutline {
       },
       {
         id: 'ch-2', number: 2,
-        title: 'Chapter 1: The Voice Gap',
+        title: 'Section 1: The Voice Gap',
         description: 'Goal: Reframe the problem correctly',
         pageRange: '8-9 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-2-1', title: 'Micro-story opener:', description: 'A creator with 50K followers who sounds like a robot in their emails — and the moment they realized it was costing them sales.' },
           { id: 'ss-2-2', title: "What you'll learn:", description: 'Why your voice changes when money is on the line, the psychology of authenticity under pressure, and how to identify your own Voice Gap.' },
           { id: 'ss-2-3', title: 'Key concept:', description: "The Voice Gap — the measurable difference between how you sound when you're being yourself vs. when you're trying to sell." },
@@ -174,10 +174,10 @@ export function getMockOutline(direction: BookDirection): BookOutline {
       },
       {
         id: 'ch-3', number: 3,
-        title: 'Chapter 2: Why Your Emails Sound Wrong',
+        title: 'Section 2: Why Your Emails Sound Wrong',
         description: 'Goal: Diagnose the root cause',
         pageRange: '6-7 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-3-1', title: 'The swipe file trap:', description: "How copying other people's email templates strips away what makes your voice unique." },
           { id: 'ss-3-2', title: 'The formality reflex:', description: 'Why we unconsciously shift into "professional mode" when writing emails — and what it costs us.' },
           { id: 'ss-3-3', title: 'The proof:', description: "Side-by-side comparison of the same person's Instagram caption vs. their launch email — spotting exactly where voice breaks down." },
@@ -185,10 +185,10 @@ export function getMockOutline(direction: BookDirection): BookOutline {
       },
       {
         id: 'ch-4', number: 4,
-        title: 'Chapter 3: The Voice Transfer Method',
+        title: 'Section 3: The Voice Transfer Method',
         description: 'Goal: Introduce the complete framework',
         pageRange: '8-10 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-4-1', title: 'The three-step system:', description: 'Capture, Translate, Amplify — the core framework that moves your authentic voice from social content to sales emails.' },
           { id: 'ss-4-2', title: 'Step 1 — Capture:', description: 'How to extract the voice patterns that make your best content resonate (with specific exercises).' },
           { id: 'ss-4-3', title: 'Step 2 — Translate:', description: 'Converting casual voice into persuasive copy without losing what makes it yours.' },
@@ -197,10 +197,10 @@ export function getMockOutline(direction: BookDirection): BookOutline {
       },
       {
         id: 'ch-5', number: 5,
-        title: 'Chapter 4: Capture Your Voice',
+        title: 'Section 4: Capture Your Voice',
         description: 'Goal: Master the first step of the method',
         pageRange: '5-6 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-5-1', title: 'The voice audit:', description: 'A structured exercise to identify the specific words, rhythms, and patterns that define your authentic voice.' },
           { id: 'ss-5-2', title: 'Mining your best content:', description: 'How to pull voice DNA from your top-performing posts and stories.' },
           { id: 'ss-5-3', title: 'Your voice profile:', description: 'Building a reference document that captures your unique communication style for consistent reuse.' },
@@ -208,10 +208,10 @@ export function getMockOutline(direction: BookDirection): BookOutline {
       },
       {
         id: 'ch-6', number: 6,
-        title: 'Chapter 5: Translate Without Losing Yourself',
+        title: 'Section 5: Translate Without Losing Yourself',
         description: 'Goal: Bridge casual voice to conversion copy',
         pageRange: '5-6 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-6-1', title: 'The translation framework:', description: 'Sentence-level techniques for keeping your voice while adding persuasive structure.' },
           { id: 'ss-6-2', title: 'Before & after examples:', description: 'Real transformations showing voice-preserved emails vs. generic templates.' },
           { id: 'ss-6-3', title: 'The authenticity check:', description: 'A quick self-test to ensure every email still sounds like you before hitting send.' },
@@ -219,10 +219,10 @@ export function getMockOutline(direction: BookDirection): BookOutline {
       },
       {
         id: 'ch-7', number: 7,
-        title: 'Chapter 6: Amplify for Conversion',
+        title: 'Section 6: Amplify for Conversion',
         description: 'Goal: Add conversion power without sacrificing voice',
         pageRange: '5-6 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-7-1', title: 'Voice-first CTAs:', description: 'How to write calls-to-action that sound like natural extensions of your content, not sales tricks.' },
           { id: 'ss-7-2', title: 'Story-driven urgency:', description: 'Creating genuine urgency through narrative instead of countdown timers and fake scarcity.' },
           { id: 'ss-7-3', title: 'The conversion layer:', description: 'Adding strategic elements (social proof, objection handling) in your own voice.' },
@@ -230,10 +230,10 @@ export function getMockOutline(direction: BookDirection): BookOutline {
       },
       {
         id: 'ch-8', number: 8,
-        title: 'Chapter 7: Launch Email Sequences',
+        title: 'Section 7: Launch Email Sequences',
         description: 'Goal: Apply the method to a complete launch',
         pageRange: '4-5 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-8-1', title: 'The 5-email launch sequence:', description: 'A complete voice-first email framework for product launches that converts.' },
           { id: 'ss-8-2', title: 'Email-by-email breakdown:', description: 'Detailed templates showing how each email in the sequence uses the Voice Transfer Method.' },
           { id: 'ss-8-3', title: 'Timing and rhythm:', description: 'When to send each email and how to maintain voice consistency across the sequence.' },
@@ -241,10 +241,10 @@ export function getMockOutline(direction: BookDirection): BookOutline {
       },
       {
         id: 'ch-9', number: 9,
-        title: 'Chapter 8: Beyond Launches',
+        title: 'Section 8: Beyond Launches',
         description: 'Goal: Extend the method to all email marketing',
         pageRange: '3-4 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-9-1', title: 'Weekly newsletters:', description: 'Applying voice transfer to regular content that builds trust and primes for future offers.' },
           { id: 'ss-9-2', title: 'Automated sequences:', description: 'Setting up welcome and nurture sequences that sound like you, not a robot.' },
         ],
@@ -254,7 +254,7 @@ export function getMockOutline(direction: BookDirection): BookOutline {
         title: 'Conclusion',
         description: 'Purpose: Reinforce the transformation and inspire action',
         pageRange: '2-3 pages',
-        subSections: [
+        subChapters: [
           { id: 'ss-10-1', title: 'The voice-first future:', description: 'Why authenticity is the ultimate competitive advantage in a world of AI-generated content.' },
           { id: 'ss-10-2', title: 'Your next step:', description: 'A clear action plan for implementing the Voice Transfer Method starting with your very next email.' },
         ],
@@ -272,17 +272,17 @@ export function getMockBook(outline: BookOutline): GeneratedBook {
       id: `book-${ch.id}`,
       number: ch.number,
       title: ch.title,
-      content: generateChapterContent(ch.number, ch.title, ch.description),
+      content: generateSectionContent(ch.number, ch.title, ch.description),
     })),
   };
 }
 
-function generateChapterContent(num: number, title: string, description: string): string {
+function generateSectionContent(num: number, title: string, description: string): string {
   const paragraphs = [
     description,
     "When I first began exploring this area, I didn't realize how deep it would go. What started as a personal observation quickly became a central theme in my practice and, eventually, the foundation for everything I teach today.",
-    "In this chapter, we'll explore the key ideas, frameworks, and practical tools that will help you navigate this terrain with confidence. Whether you're just starting to notice the signs or you've been wrestling with these challenges for years, there's something here for you.",
-    "The research is clear on one thing: awareness is the first step. Most practitioners I work with don't recognize the patterns until someone points them out. That's what this chapter is designed to do \u2014 hold up a mirror so you can see what's really happening beneath the surface.",
+    "In this section, we'll explore the key ideas, frameworks, and practical tools that will help you navigate this terrain with confidence. Whether you're just starting to notice the signs or you've been wrestling with these challenges for years, there's something here for you.",
+    "The research is clear on one thing: awareness is the first step. Most practitioners I work with don't recognize the patterns until someone points them out. That's what this section is designed to do \u2014 hold up a mirror so you can see what's really happening beneath the surface.",
     "Let me share a story that illustrates this perfectly. Early in my career, I had a client who was going through an incredibly difficult divorce. Session after session, I found myself carrying the weight of their pain home with me. I'd lie awake at night running through their words, feeling their grief as if it were my own. At the time, I thought that was just what being a good therapist meant.",
     "I was wrong. And that realization \u2014 painful as it was \u2014 became the seed of everything you're about to read.",
     "The framework I'm going to walk you through isn't theoretical. It's been tested in my practice, refined through hundreds of sessions, and validated by colleagues who were brave enough to try something different. It works because it starts where you actually are, not where someone thinks you should be.",

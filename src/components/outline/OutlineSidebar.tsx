@@ -27,7 +27,7 @@ export function OutlineSidebar() {
           <span className="text-sm font-semibold text-indigo-200">Wordgenie Pro</span>
         </div>
 
-        {/* Section label */}
+        {/* Chapter label */}
         <h2 className="text-xs font-semibold uppercase tracking-wider text-indigo-400/60 mb-3 px-2">
           Chapters ({outline.chapters.length})
         </h2>

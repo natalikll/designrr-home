@@ -27,7 +27,7 @@ export function BookSidebar() {
           <span className="text-sm font-semibold text-indigo-200">Wordgenie</span>
         </div>
 
-        {/* Section label */}
+        {/* Chapter label */}
         <h2 className="text-xs font-semibold uppercase tracking-wider text-indigo-400/60 mb-3 px-2">
           Table of Contents
         </h2>

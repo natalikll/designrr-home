@@ -130,7 +130,7 @@ export function GenerationTransition() {
               {isBook ? 'This may take a moment' : 'AI is analyzing your direction'}
             </motion.p>
 
-            {isBook && <TypewriterChapterProgress />}
+            {isBook && <TypewriterSectionProgress />}
 
             {/* Premium progress bar */}
             <motion.div
@@ -379,13 +379,13 @@ function PremiumBookIcon() {
   );
 }
 
-/* ── Typewriter Chapter Progress ──────────────── */
-function TypewriterChapterProgress() {
-  const chapters = [
+/* ── Typewriter Section Progress ──────────────── */
+function TypewriterSectionProgress() {
+  const sections = [
     'Analyzing structure...',
-    'Writing Chapter 1...',
-    'Writing Chapter 2...',
-    'Writing Chapter 3...',
+    'Writing Section 1...',
+    'Writing Section 2...',
+    'Writing Section 3...',
     'Adding finishing touches...',
   ];
 
@@ -394,9 +394,9 @@ function TypewriterChapterProgress() {
   const [showCursor, setShowCursor] = useState(true);
 
   useEffect(() => {
-    if (currentIndex >= chapters.length) return;
+    if (currentIndex >= sections.length) return;
 
-    const target = chapters[currentIndex];
+    const target = sections[currentIndex];
     let charIndex = 0;
 
     const typeInterval = setInterval(() => {

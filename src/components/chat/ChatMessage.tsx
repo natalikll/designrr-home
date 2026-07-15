@@ -7,13 +7,14 @@ import type { ChatMessage as ChatMessageType } from '@/lib/types';
 
 interface ChatMessageProps {
   message: ChatMessageType;
+  onSuggestion?: (text: string) => void;
 }
 
-export function ChatMessage({ message }: ChatMessageProps) {
+export function ChatMessage({ message, onSuggestion }: ChatMessageProps) {
   const isAi = message.role === 'ai';
 
   if (isAi && message.type === 'structured' && message.structured) {
-    return <AiStructuredMessage message={message} />;
+    return <AiStructuredMessage message={message} onSuggestion={onSuggestion} />;
   }
 
   if (isAi) {
@@ -24,7 +25,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
 }
 
 /* ── AI structured message: sparkle + heading + body + example + fallback card ── */
-function AiStructuredMessage({ message }: { message: ChatMessageType }) {
+function AiStructuredMessage({ message, onSuggestion }: { message: ChatMessageType; onSuggestion?: (text: string) => void }) {
   const s = message.structured!;
   const [showExample, setShowExample] = useState(false);
 
@@ -102,7 +103,10 @@ function AiStructuredMessage({ message }: { message: ChatMessageType }) {
               </div>
               {s.fallbackAction && (
                 <div className="flex justify-end mt-3">
-                  <button className="text-[12px] font-medium text-text-primary bg-white border border-border-light rounded-full px-4 py-1.5 hover:bg-surface transition-colors cursor-pointer">
+                  <button
+                    onClick={() => onSuggestion?.(s.fallbackAction!)}
+                    className="text-[12px] font-medium text-text-primary bg-white border border-border-light rounded-full px-4 py-1.5 hover:bg-surface transition-colors cursor-pointer"
+                  >
                     {s.fallbackAction}
                   </button>
                 </div>
@@ -134,7 +138,7 @@ function UserMessage({ message }: { message: ChatMessageType }) {
   return (
     <motion.div variants={messageVariants} initial="hidden" animate="visible" className="mb-5 flex justify-end">
       <div className="flex items-start gap-2.5 max-w-[80%]">
-        <div className="bg-white rounded-lg p-6" style={{ boxShadow: '0px 2px 32px rgba(143, 132, 171, 0.15)' }}>
+        <div className="bg-white rounded-2xl inline-block" style={{ padding: '12px 18px', boxShadow: '0px 2px 32px rgba(143, 132, 171, 0.15)' }}>
           <p className="text-[14px] text-text-primary leading-relaxed whitespace-pre-wrap">
             {message.content}
           </p>

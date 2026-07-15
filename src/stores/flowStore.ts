@@ -22,8 +22,8 @@ interface FlowActions {
   updateOutlineSubtitle: (subtitle: string) => void;
   updateChapterTitle: (chapterId: string, title: string) => void;
   updateChapterDescription: (chapterId: string, description: string) => void;
-  updateSubSectionTitle: (chapterId: string, subSectionId: string, title: string) => void;
-  updateSubSectionDescription: (chapterId: string, subSectionId: string, description: string) => void;
+  updateSubChapterTitle: (chapterId: string, subChapterId: string, title: string) => void;
+  updateSubChapterDescription: (chapterId: string, subChapterId: string, description: string) => void;
   setBook: (book: GeneratedBook) => void;
   updateBookTitle: (title: string) => void;
   updateBookSubtitle: (subtitle: string) => void;
@@ -37,13 +37,28 @@ interface FlowActions {
   setShowBookTypeSelector: (show: boolean) => void;
   setOutlineWelcomeSent: (sent: boolean) => void;
   setSidebarOpen: (open: boolean) => void;
+  hydrateSidebarPref: () => void;
   setImporting: (importing: boolean) => void;
   setShowAccount: (show: boolean) => void;
   setProfilePhoto: (photo: string | null) => void;
   resetFlow: () => void;
+  homeKey: number;
+  bumpHomeKey: () => void;
 }
 
 type FlowStore = FlowState & FlowActions;
+
+const SIDEBAR_KEY = 'dsgn_sidebar_open';
+
+function readSidebarPref(): boolean {
+  if (typeof window === 'undefined') return true;
+  const v = localStorage.getItem(SIDEBAR_KEY);
+  return v === null ? true : v === 'true';
+}
+
+function writeSidebarPref(open: boolean) {
+  if (typeof window !== 'undefined') localStorage.setItem(SIDEBAR_KEY, String(open));
+}
 
 const initialState: FlowState = {
   currentStep: 0,
@@ -59,7 +74,7 @@ const initialState: FlowState = {
   selectedBookType: null,
   showBookTypeSelector: false,
   outlineWelcomeSent: false,
-  sidebarOpen: false,
+  sidebarOpen: true,
   isImporting: false,
   showAccount: false,
   profilePhoto: null,
@@ -67,6 +82,7 @@ const initialState: FlowState = {
 
 export const useFlowStore = create<FlowStore>((set) => ({
   ...initialState,
+  homeKey: 0,
 
   addMessage: (message) =>
     set((state) => ({
@@ -129,7 +145,7 @@ export const useFlowStore = create<FlowStore>((set) => ({
         : null,
     })),
 
-  updateSubSectionTitle: (chapterId, subSectionId, title) =>
+  updateSubChapterTitle: (chapterId, subChapterId, title) =>
     set((state) => ({
       generatedOutline: state.generatedOutline
         ? {
@@ -138,8 +154,8 @@ export const useFlowStore = create<FlowStore>((set) => ({
             ch.id === chapterId
               ? {
                 ...ch,
-                subSections: ch.subSections.map((sub) =>
-                  sub.id === subSectionId ? { ...sub, title } : sub
+                subChapters: ch.subChapters.map((sub) =>
+                  sub.id === subChapterId ? { ...sub, title } : sub
                 ),
               }
               : ch
@@ -148,7 +164,7 @@ export const useFlowStore = create<FlowStore>((set) => ({
         : null,
     })),
 
-  updateSubSectionDescription: (chapterId, subSectionId, description) =>
+  updateSubChapterDescription: (chapterId, subChapterId, description) =>
     set((state) => ({
       generatedOutline: state.generatedOutline
         ? {
@@ -157,8 +173,8 @@ export const useFlowStore = create<FlowStore>((set) => ({
             ch.id === chapterId
               ? {
                 ...ch,
-                subSections: ch.subSections.map((sub) =>
-                  sub.id === subSectionId ? { ...sub, description } : sub
+                subChapters: ch.subChapters.map((sub) =>
+                  sub.id === subChapterId ? { ...sub, description } : sub
                 ),
               }
               : ch
@@ -225,7 +241,9 @@ export const useFlowStore = create<FlowStore>((set) => ({
 
   setOutlineWelcomeSent: (sent) => set({ outlineWelcomeSent: sent }),
 
-  setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  setSidebarOpen: (open) => { writeSidebarPref(open); set({ sidebarOpen: open }); },
+
+  hydrateSidebarPref: () => set({ sidebarOpen: readSidebarPref() }),
 
   setImporting: (importing) => set({ isImporting: importing }),
 
@@ -233,5 +251,7 @@ export const useFlowStore = create<FlowStore>((set) => ({
 
   setProfilePhoto: (photo) => set({ profilePhoto: photo }),
 
-  resetFlow: () => set(initialState),
+  resetFlow: () => set((s) => ({ ...initialState, sidebarOpen: s.sidebarOpen })),
+
+  bumpHomeKey: () => set((s) => ({ homeKey: s.homeKey + 1 })),
 }));

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useState, useRef, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 
 interface TooltipProps {
@@ -11,6 +11,20 @@ interface TooltipProps {
 
 export function Tooltip({ label, children, position = 'top' }: TooltipProps) {
   const [visible, setVisible] = useState(false);
+  const [flipped, setFlipped] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  const handleMouseEnter = () => {
+    if (position === 'top' && wrapperRef.current) {
+      const rect = wrapperRef.current.getBoundingClientRect();
+      setFlipped(rect.top < 64);
+    } else {
+      setFlipped(false);
+    }
+    setVisible(true);
+  };
+
+  const effectivePosition = position === 'top' && flipped ? 'bottom' : position;
 
   // Opacity-only for all positions — prevents Framer Motion's x/y transforms
   // from overriding the CSS translate used for centering/alignment.
@@ -18,9 +32,9 @@ export function Tooltip({ label, children, position = 'top' }: TooltipProps) {
 
   // Outer wrapper: handles positioning & CSS centering transform
   const posStyle: React.CSSProperties =
-    position === 'top'    ? { bottom: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)' } :
-    position === 'bottom' ? { top: 'calc(100% + 8px)',    left: '50%', transform: 'translateX(-50%)' } :
-                            { left: 'calc(100% + 10px)',  top: '50%',  transform: 'translateY(-50%)' };
+    effectivePosition === 'top'    ? { bottom: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)' } :
+    effectivePosition === 'bottom' ? { top: 'calc(100% + 8px)',    left: '50%', transform: 'translateX(-50%)' } :
+                                     { left: 'calc(100% + 10px)',  top: '50%',  transform: 'translateY(-50%)' };
 
   const tooltipBox = (
     <div
@@ -41,9 +55,9 @@ export function Tooltip({ label, children, position = 'top' }: TooltipProps) {
   );
 
   const caret =
-    position === 'top' ? (
+    effectivePosition === 'top' ? (
       <div className="absolute left-1/2 -translate-x-1/2" style={{ top: '100%', width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: '5px solid #29323D' }} />
-    ) : position === 'bottom' ? (
+    ) : effectivePosition === 'bottom' ? (
       <div className="absolute left-1/2 -translate-x-1/2" style={{ bottom: '100%', width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '5px solid #29323D' }} />
     ) : (
       /* left-pointing caret for right position */
@@ -52,8 +66,9 @@ export function Tooltip({ label, children, position = 'top' }: TooltipProps) {
 
   return (
     <div
+      ref={wrapperRef}
       className="relative inline-flex"
-      onMouseEnter={() => setVisible(true)}
+      onMouseEnter={handleMouseEnter}
       onMouseLeave={() => setVisible(false)}
     >
       {children}

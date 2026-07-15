@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>UI Hacking: Presentation + Voiceover Patterns — Designrr</title>
+<style>
+  @page { margin: 20mm 16mm 20mm 16mm; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: #1a1a1a;
+    line-height: 1.55;
+    font-size: 11.5px;
+    max-width: 100%;
+  }
+  h1 {
+    font-size: 24px;
+    border-bottom: 3px solid #2b2d6e;
+    padding-bottom: 8px;
+    margin-top: 0;
+    color: #2b2d6e;
+  }
+  h2 {
+    font-size: 17px;
+    color: #2b2d6e;
+    margin-top: 28px;
+    border-bottom: 1px solid #d0d3e6;
+    padding-bottom: 4px;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 13.5px;
+    margin-top: 18px;
+    margin-bottom: 4px;
+    color: #16182f;
+    page-break-after: avoid;
+  }
+  .subtitle {
+    color: #555;
+    font-size: 12.5px;
+    margin-top: -6px;
+    margin-bottom: 18px;
+  }
+  .product {
+    margin-bottom: 14px;
+    padding: 10px 14px;
+    border: 1px solid #e2e4f1;
+    border-left: 4px solid #6366d6;
+    border-radius: 4px;
+    background: #fafbff;
+    page-break-inside: avoid;
+  }
+  .product p { margin: 4px 0; }
+  .label { font-weight: 600; color: #2b2d6e; }
+  .refs { font-size: 10px; color: #666; margin-top: 6px; }
+  .refs a { color: #4747a3; text-decoration: none; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 14px 0;
+    font-size: 10.3px;
+  }
+  th, td {
+    border: 1px solid #ccc;
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: #2b2d6e;
+    color: white;
+    font-weight: 600;
+  }
+  tr:nth-child(even) { background: #f4f5fb; }
+  ul, ol { margin: 6px 0; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  .section-break { page-break-before: always; }
+  .pill {
+    display: inline-block;
+    background: #e2e4f1;
+    color: #2b2d6e;
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  a { color: #4747a3; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 18px 0; }
+  .cover-meta { color: #777; font-size: 11px; margin-bottom: 24px; }
+</style>
+</head>
+<body>
+
+<h1>UI Hacking: Presentation Creation &amp; Voiceover Patterns</h1>
+<div class="subtitle">Competitive UX research for Designrr — book/manuscript → presentation → voiceover flow</div>
+<div class="cover-meta">Prepared 2026-06-19 &middot; 20 products analyzed across 4 clusters &middot; Sources: official docs, help centers, G2/Capterra/Trustpilot reviews, and verified Mobbin screen captures</div>
+
+<p>This report reverse-engineers how 20 leading products solve pieces of the same problem Designrr faces: turning long-form or prompt-based content into a structured visual deck, optionally narrated with AI voice. The goal is not to copy any single product, but to extract reusable principles — entry points, generation checkpoints, editing granularity, voice/avatar selection, and progress communication — that can be adapted to Designrr's book-to-presentation-to-voiceover flow.</p>
+
+<p><strong>Mobbin-verified products</strong> (real indexed screenshots/flows): Gamma, Pitch, Canva, Synthesia, ElevenLabs, Descript, NotebookLM. All others are sourced from official product documentation, help centers, and review aggregators — no dedicated Mobbin coverage was found for them.</p>
+
+<div class="section-break"></div>
+<h2>Cluster A — AI-First Presentation Generators</h2>
+
+<div class="product">
+<h3>1. Gamma <span class="pill">Mobbin-verified</span></h3>
+<p><span class="label">Flow:</span> Pick Presentation/Webpage/Document/Social → prompt, paste text, or import (PDF/DOCX/URL) → AI drafts an <strong>editable outline</strong> (titles + bullet previews) → user sets card count, text density, style, language → ~30–60s full generation → card-canvas editor with AI chat sidebar.</p>
+<p><span class="label">Notable decisions:</span> outline-before-build gate; explicit numeric slide-count control; "shuffle" on example prompts; live character counter; Remix labeled BETA with inline feedback ask.</p>
+<p><span class="label">Why it works:</span> the outline is a cheap checkpoint that catches structural mistakes before the expensive visual generation step.</p>
+<p><span class="label">Drawbacks:</span> non-linear card layout unfamiliar to PowerPoint users; no native audio export.</p>
+<p><span class="label">Patterns:</span> outline checkpoint · parallel entry ramps (prompt/paste/import) · explicit pre-generation controls.</p>
+<p class="refs">Refs: <a href="https://gamma.app/products/presentations">gamma.app/products/presentations</a> · Mobbin: <a href="https://mobbin.com/screens/ac5d667a-5bf3-436e-a417-ec34a503968c">outline review screen</a>, <a href="https://mobbin.com/screens/efe28522-e578-47d5-8fc6-aee0bdb3e026">paste-text screen</a></p>
+</div>
+
+<div class="product">
+<h3>2. Tome <span class="pill">discontinued / cautionary</span></h3>
+<p><span class="label">Flow (historical):</span> single prompt → full deck in &lt;60s, no outline step, non-linear "tile" narrative.</p>
+<p><span class="label">Why it briefly worked:</span> skipping the outline maximized perceived speed/magic for demos.</p>
+<p><span class="label">Drawback — important data point:</span> the no-outline, one-shot approach gave users less structural control, and the standalone product was discontinued (pivoted away from presentations, March 2025) — generation speed alone wasn't a durable differentiator.</p>
+<p><span class="label">Pattern (cautionary):</span> one-shot generation without a review step trades control for speed — risky as a sole differentiator.</p>
+<p class="refs">Refs: <a href="https://skywork.ai/skypage/en/Tome-AI:-A-2025-Deep-Dive-into-the-AI-Storyteller's-Dramatic-Pivot/1972903305876140032">Tome AI 2025 pivot deep-dive</a></p>
+</div>
+
+<div class="product">
+<h3>3. Beautiful.ai</h3>
+<p><span class="label">Flow:</span> "DesignerBot" prompt or Smart Slide template → AI drafts structure/copy/imagery → <strong>layout guardrails enforced live</strong> (add a bullet → auto-reflow; swap image → auto-resize).</p>
+<p><span class="label">Why it works:</span> removes the <em>possibility</em> of an ugly slide rather than just nudging toward good defaults — directly answers "I'm not a designer."</p>
+<p><span class="label">Drawbacks:</span> "no override" frustrates power users; weak at AI-generated diagrams.</p>
+<p><span class="label">Patterns:</span> constraints baked into the object model, not just suggested · branded AI persona as the face of generation.</p>
+<p class="refs">Refs: <a href="https://www.beautiful.ai/ai-presentations">beautiful.ai/ai-presentations</a></p>
+</div>
+
+<div class="product">
+<h3>4. Pitch <span class="pill">Mobbin-verified</span></h3>
+<p><span class="label">Flow:</span> Home offers "Start new," "Start with AI," "Import" as equal-weight tiles → AI prompt generates a deck with a side panel where <strong>Prompt/Fonts/Colors are independently re-rollable</strong> → post-generation welcome modal: "explore myself" vs "quick tour" → slide-level analytics (visitor feed, view-over-time) live inside the editor.</p>
+<p><span class="label">Why it works:</span> granular re-roll avoids all-or-nothing regeneration frustration; opt-in marketing toggle defaults to off, building trust.</p>
+<p><span class="label">Drawbacks:</span> generation quality more basic than Gamma's.</p>
+<p><span class="label">Patterns:</span> facet-level regeneration · privacy-respecting default toggles · post-output tour-or-explore choice.</p>
+<p class="refs">Refs: Mobbin <a href="https://mobbin.com/flows/135416c4-0269-4186-ab0f-f3ff13d7d9c2">Start-with-AI flow</a>, <a href="https://mobbin.com/screens/806dbf0b-619a-458e-a249-bc086ddf41b5">editor tour screen</a></p>
+</div>
+
+<div class="product">
+<h3>5. Plus AI (Slides/PowerPoint add-in)</h3>
+<p><span class="label">Flow:</span> Lives inside Slides/PPT as a native panel → prompt → editable outline → ~10-slide deck as native objects in &lt;2 min → per-slide "ask AI to rewrite" scoped to one selected slide. Separate "Presentation Narrator" add-on bolts on TTS/avatar narration.</p>
+<p><span class="label">Why it works:</span> staying inside the tool people already trust removes the #1 objection ("will this match my template?").</p>
+<p><span class="label">Drawbacks:</span> weaker novel visual layouts than dedicated design tools.</p>
+<p><span class="label">Patterns:</span> embed AI inside the existing trusted workspace · scope AI edits to one selected element · keep narration a separate, optional layer.</p>
+<p class="refs">Refs: <a href="https://plusai.com/">plusai.com</a></p>
+</div>
+
+<h2>Cluster B — Template-Based Design Tools</h2>
+
+<div class="product">
+<h3>6. Canva <span class="pill">Mobbin-verified</span></h3>
+<p><span class="label">Flow:</span> Home shows Your designs/Templates/Canva AI as equal tabs → search-first template gallery with style chips, or AI chat (with quick actions + doc attach), or PPTX import → Present mode splits into Standard/Autoplay/Presenter/<strong>"Present and record."</strong></p>
+<p><span class="label">Why it works:</span> search-first beats folder-browsing for decision speed; treating "record narration" as a mode of Present (not a buried feature) makes voiceover discoverable.</p>
+<p><span class="label">Drawbacks:</span> PPTX export frequently breaks layout/fonts; free tier capped at 10 AI generations/month.</p>
+<p><span class="label">Patterns:</span> AI-prompt and template-browse as equal-weight tabs · narration as a Present-mode option, not a separate menu.</p>
+<p class="refs">Refs: <a href="https://www.canva.com/magic-design/">canva.com/magic-design</a> · Mobbin: <a href="https://mobbin.com/flows/16ed12d5-4a57-435d-8fe0-d3b18c085885">Create-a-design flow</a>, <a href="https://mobbin.com/flows/4b19da2c-909e-4231-86f8-847ad90e3e3d">Canva AI flow</a></p>
+</div>
+
+<div class="product">
+<h3>7. Visme</h3>
+<p><span class="label">Flow:</span> Chat-driven AI with doc/URL upload buttons <strong>inside the prompt composer</strong> → style suggestions → draft → editor with per-element AI Text-to-Speech (6 voices, tone/speed, 4000-char limit).</p>
+<p><span class="label">Why it works:</span> voiceover scoped to specific blocks/hotspots matches async self-review use cases (e.g., a prospect reviewing a sales deck alone).</p>
+<p><span class="label">Drawbacks:</span> free plan lets you build a full deck then blocks download — a bait-and-switch reviewers flag.</p>
+<p><span class="label">Patterns:</span> "upload doc/URL" lives inside the AI prompt box itself · voiceover scoped to individual content blocks, not just whole-deck.</p>
+</div>
+
+<div class="product">
+<h3>8. Prezi</h3>
+<p><span class="label">Flow:</span> Blank/template/AI (prompt or PDF/PPT/Word upload) → zoomable, non-linear "path" presentation → narration via right-click "Add Sound to Path Step" (per-object) or full Prezi Video record with a <strong>"content only" no-webcam toggle</strong>.</p>
+<p><span class="label">Why it works:</span> the no-camera toggle directly removes recording anxiety, a real dropout point.</p>
+<p><span class="label">Drawbacks:</span> zoom/pan navigation can disorient viewers in long decks; export to PPT flattens the zoom.</p>
+<p><span class="label">Patterns:</span> no-camera narration option as a first-class toggle · audio attachable to individual canvas objects, not just deck-level.</p>
+</div>
+
+<div class="product">
+<h3>9. Slidesgo / SlidesAI</h3>
+<p><span class="label">Flow:</span> Slidesgo = searchable template marketplace (free tier = mandatory attribution slide). SlidesAI = Google Slides sidebar: prompt <strong>or</strong> "Create from my Text" (paste up to 2,500 chars) → AI shows an <strong>outline for approval</strong> → generates slides with images, in-place.</p>
+<p><span class="label">Why it works:</span> outline-approval mirrors validating a table of contents before writing — cheap correction point.</p>
+<p><span class="label">Drawbacks:</span> 2,500-char cap forces manuscript content to be trimmed before conversion; billing/cancellation complaints.</p>
+<p><span class="label">Patterns:</span> distinct "describe a topic" vs "paste my existing text" modes · outline approval before full generation.</p>
+</div>
+
+<div class="product">
+<h3>10. Renderforest</h3>
+<p><span class="label">Flow:</span> Template gallery → <strong>"Select Scenes"</strong> step (choose/reorder from hundreds of scenes before adding content) → drag-drop media → AI voiceover applied per scene (language/voice chosen at assembly time) → rendered as an actual video file with a resolution choice.</p>
+<p><span class="label">Why it works:</span> structure-before-content reduces blank-canvas overwhelm; framing output as "a video to render" sets accurate expectations.</p>
+<p><span class="label">Drawbacks:</span> confusing two-currency pricing (subscription + credits); heavy free-tier watermark.</p>
+<p><span class="label">Patterns:</span> separate "arrange structure" from "fill content" as two sequential steps · apply voice/language at the scene-assembly stage, not as a final pass.</p>
+</div>
+
+<div class="section-break"></div>
+<h2>Cluster C — AI Avatar Video Generators</h2>
+
+<div class="product">
+<h3>11. Synthesia <span class="pill">Mobbin-verified</span></h3>
+<p><span class="label">Flow:</span> Blank/template/import (PPTX/PDF/Word/Slides, up to 150 slides) → each slide becomes a <strong>scene</strong>: speaker notes auto-populate the script box → pick avatar from a searchable grid (text-prompt search) → voice/language picker with inline play-to-preview → "Generate" (top-right, distinct from autosave).</p>
+<p><span class="label">Why it works:</span> scene = slide mental model leverages existing PowerPoint literacy; inline preview kills commitment anxiety before burning render credits.</p>
+<p><span class="label">Drawbacks:</span> 8–12 min re-render per change is a real iteration tax; lip-sync uncanny valley.</p>
+<p><span class="label">Patterns:</span> scene as atomic unit (script+avatar+visual) · script editor paired with inline timeline · preview-before-commit on every voice/avatar pick · visually separate draft-state from render-commit action.</p>
+<p class="refs">Refs: <a href="https://docs.synthesia.io/docs/powerpoint">docs.synthesia.io/docs/powerpoint</a> · Mobbin: <a href="https://mobbin.com/screens/d9f371a0-6ab2-41ca-b68c-84500702bb88">scene script editor w/ timeline</a>, <a href="https://mobbin.com/screens/cb274620-521a-466d-8247-e92d5c8ee0ca">voice/language picker</a>, <a href="https://mobbin.com/screens/ac3dce00-142b-489c-b654-346e64baac14">generate modal</a></p>
+</div>
+
+<div class="product">
+<h3>12. HeyGen</h3>
+<p><span class="label">Flow:</span> Script editor central → avatar + "Avatar Engine" mode (Unlimited/IV) with <strong>expressiveness slider + motion-prompt field</strong> kept separate from the script text → voice library with faceted filters (region/accent/age/emotion) + favorites → bulk "apply this voice to all scenes."</p>
+<p><span class="label">Why it works:</span> faceted filtering matches how people search large catalogs (700+ avatars); splitting "what to say" from "how to perform it" gives control without exposing animation complexity.</p>
+<p><span class="label">Drawbacks:</span> every re-render burns credits even on failures — the top complaint (Trustpilot 2.4/5 despite G2 4.8/5, signaling billing-driven dissatisfaction).</p>
+<p><span class="label">Patterns:</span> faceted filtering for large libraries · saved favorites · decouple script from performance/expressiveness controls · bulk-apply-to-all-scenes shortcut.</p>
+</div>
+
+<div class="product">
+<h3>13. Elai.io</h3>
+<p><span class="label">Flow:</span> Blank/AI topic-to-script/import PPTX/PDF → storyboard of scenes (up to 100) → avatar types as tabs (selfie/studio/photo/mascot) + voice cloning as a peer option → AI script drafting embedded directly in the script box → renders <strong>without a full preview</strong>.</p>
+<p><span class="label">Why it works:</span> typed avatar categories cut decision fatigue vs. scrolling 80 lookalikes.</p>
+<p><span class="label">Drawbacks — anti-pattern:</span> no full preview before render consumes a limited monthly minute quota; 2–3 revision rounds can exhaust it.</p>
+<p><span class="label">Patterns:</span> embed AI drafting in the script field itself · categorize avatars by tone/use-case, not just demographics. <strong>Anti-pattern:</strong> never skip a pre-render preview when render time is metered.</p>
+</div>
+
+<div class="product">
+<h3>14. Colossyan</h3>
+<p><span class="label">Flow:</span> "Cora" agent takes doc/URL/script → <strong>staged approval: approach → plan → render</strong>, each requiring explicit user confirmation before the next (expensive) step → up to 4 avatars per scene for dialogue/training content → translation re-syncs text+audio+lip-sync as one atomic action across 100+ languages.</p>
+<p><span class="label">Why it works:</span> staged approval directly targets the "wasted render minutes" pain reported across the whole category.</p>
+<p><span class="label">Drawbacks:</span> still no preview before final export; 10–15+ min processing per clip.</p>
+<p><span class="label">Patterns:</span> gate expensive compute behind staged approval (intent→plan→render) · multi-speaker per scene · treat translation as one atomic multi-asset operation.</p>
+</div>
+
+<div class="product">
+<h3>15. Powtoon</h3>
+<p><span class="label">Flow:</span> Blank/template/"Imagine Script AI"/"Anything-to-Video" (upload doc, pick output style: animated/presentation/footage-based) → Stage+Timeline editor with <strong>object-level</strong> (not scene-level) duration bars → dual preview modes (Video vs Slideshow) before export.</p>
+<p><span class="label">Why it works:</span> object-level timeline appeals to users wanting fine animation control; choosing output style upfront avoids late surprises.</p>
+<p><span class="label">Drawbacks:</span> HD/no-watermark gated to pricier plans; reported export glitches.</p>
+<p><span class="label">Patterns:</span> expose object-level timing on animation content · choose output style/tone before generation · multiple preview modes as a final gate before costly export.</p>
+</div>
+
+<div class="section-break"></div>
+<h2>Cluster D — Voiceover, TTS &amp; Document-to-Audio Tools</h2>
+
+<div class="product">
+<h3>16. Murf.ai</h3>
+<p><span class="label">Flow:</span> Paste/type script → auto-split into sentence blocks → 200+ voice library filtered by language/accent/gender/age/style → per-word emphasis markup, timed pauses, <strong>persistent pronunciation dictionary</strong> → generate → <strong>regenerate a single block</strong> without re-rendering the rest → timeline for music/SFX layering.</p>
+<p><span class="label">Why it works:</span> addressable blocks turn "generate everything" into low-risk, granular edits.</p>
+<p><span class="label">Drawbacks:</span> non-English voices noticeably less natural; strict 24hr/10-min refund policy is the top complaint.</p>
+<p><span class="label">Patterns:</span> faceted voice filters · block-level regeneration · persistent pronunciation overrides that carry across projects.</p>
+</div>
+
+<div class="product">
+<h3>17. Descript (Overdub/Regenerate) <span class="pill">Mobbin-verified</span></h3>
+<p><span class="label">Flow:</span> Auto-transcribe audio/video into an editable script → <strong>editing the text re-cuts the media</strong> → select a passage → contextual floating toolbar ("Regenerate," "Edit for clarity," "Remove filler words") → regenerating unchanged words re-synthesizes tone/delivery; regenerating <strong>new</strong> words requires Overdub voice-cloning consent first.</p>
+<p><span class="label">Why it works:</span> treating audio editing as text editing collapses a technical skill into a familiar one; contextual actions keep the UI clean until intent is signaled.</p>
+<p><span class="label">Drawbacks:</span> quality degrades on long passages; AI credits deplete fast.</p>
+<p><span class="label">Patterns:</span> text-edit = media-edit · contextual selection toolbar · separate consent tiers for "same words, new delivery" vs "new words, new speech."</p>
+<p class="refs">Refs: Mobbin <a href="https://mobbin.com/flows/da674652-2a21-4868-a87d-01123efa69fa">Editing Script Clarity flow</a></p>
+</div>
+
+<div class="product">
+<h3>18. ElevenLabs (Studio + Reader) <span class="pill">Mobbin-verified</span></h3>
+<p><span class="label">Flow:</span> Import doc → auto-split into <strong>Chapters</strong> (sidebar list) → each chapter is independently converted with a status badge ("Converted") and its own <strong>version history</strong> → voice-reuse panel shows "Used in Project" for one-click consistency across chapters. Reader app: paste text/PDF/ePub/URL → instant narration with word-by-word highlighting.</p>
+<p><span class="label">Why it works:</span> chapter-level status turns a long job into a visible checklist, killing "is this done?" anxiety; versioning (not overwriting) protects against destructive AI regenerations.</p>
+<p><span class="label">Drawbacks:</span> credit-based pricing — unused credits vanish on cancellation.</p>
+<p><span class="label">Patterns:</span> decompose long documents into independently-convertible chapters with status indicators · keep version history per section instead of overwriting · surface "voice already used here" for reuse.</p>
+<p class="refs">Refs: Mobbin <a href="https://mobbin.com/flows/5f81a93c-b7cb-4095-bfd7-8322ebe91e29">Creating a Project flow</a>, <a href="https://mobbin.com/screens/fe9614f3-36b0-44d7-8063-386bf7796bb3">Voice Library screen</a></p>
+</div>
+
+<div class="product">
+<h3>19. Google NotebookLM — Audio Overview <span class="pill">Mobbin-verified</span></h3>
+<p><span class="label">Flow:</span> Upload sources → Studio panel → "Audio Overview" → <strong>pre-generation modal</strong>: format presets (Deep Dive/Brief/Critique/Debate) + free-text "Customize" steering box → Generate (async, user can keep working) → audio is one card among other Studio outputs (study guide, FAQ, mind map) → "Interactive mode" lets the user verbally barge into the synthetic conversation.</p>
+<p><span class="label">Why it works:</span> two-host podcast format exploits parasocial familiarity, making dense source material feel low-effort; front-loading steering avoids mid-generation decision paralysis.</p>
+<p><span class="label">Drawbacks — the single most-cited limitation:</span> <strong>no post-generation editing</strong> — any mispronunciation or wrong emphasis requires regenerating the <em>entire</em> file. This is the clearest cautionary example for Designrr.</p>
+<p><span class="label">Patterns:</span> when output can't be edited after, concentrate all steering into one pre-generation step · named output-style presets instead of raw parameters · async non-blocking generation. <strong>Anti-pattern: no segment-level fix-up.</strong></p>
+<p class="refs">Refs: Mobbin <a href="https://mobbin.com/flows/6d8b2aed-de16-424b-97a8-417555d71b46">Generating an Audio Overview flow</a></p>
+</div>
+
+<div class="product">
+<h3>20. Lumen5 (blog/doc-to-video)</h3>
+<p><span class="label">Flow:</span> Paste blog URL/text → AI splits into sentence-level scenes, matches stock footage, drafts voiceover → Script Composer (text editing separate from visual editing) → card-based storyboard, drag-and-drop reorder/retime → optional custom voiceover upload instead of built-in TTS.</p>
+<p><span class="label">Why it works:</span> 1:1 sentence-to-scene mapping gives an immediately legible structure — text becomes video structure.</p>
+<p><span class="label">Drawbacks:</span> generic/repetitive stock footage is the top complaint; built-in TTS still sounds robotic.</p>
+<p><span class="label">Patterns:</span> map source-text structure 1:1 onto output units · keep script-editing and visual-editing surfaces separate · always allow manual override of any AI-automated step.</p>
+</div>
+
+<div class="section-break"></div>
+<h2>1. Pattern Inventory</h2>
+<table>
+<tr><th>Pattern</th><th>Products</th><th>Why it works</th><th>Risks</th><th>Recommendation</th></tr>
+<tr><td>Outline-before-build checkpoint</td><td>Gamma, Plus AI, SlidesAI, Beautiful.ai</td><td>Cheap correction point before expensive generation</td><td>Extra step can feel slow to impatient users</td><td>Show a chapter/section outline pulled from the manuscript; let users pick/reorder sections before slides are generated</td></tr>
+<tr><td>Parallel entry ramps (prompt/paste/import/blank)</td><td>Gamma, Canva, Visme, Prezi</td><td>Meets users wherever their content already lives</td><td>Too many choices → paralysis on the first screen</td><td>Cap at 3 tiles: "From a book," "From a prompt/topic," "Start blank"</td></tr>
+<tr><td>Granular, scoped regeneration (facet/block/scene-level)</td><td>Pitch, Murf, Descript, ElevenLabs</td><td>Avoids all-or-nothing redo; preserves good parts</td><td>More UI surface to design/discover</td><td>Critical for Designrr: regenerate one slide's narration without re-rendering the book</td></tr>
+<tr><td>Scene = atomic unit (text + visual + voice)</td><td>Synthesia, HeyGen, Elai, Colossyan</td><td>Matches existing slide-deck mental model; supports incremental edits</td><td>Can fragment tone consistency across scenes</td><td>Model each presentation page as a scene object carrying text, voice, and timing together</td></tr>
+<tr><td>Preview-before-commit for voice/avatar</td><td>Synthesia, HeyGen, Murf</td><td>Removes regret/risk before spending render credits</td><td>None significant</td><td>Always show an inline play icon in the voice picker before applying</td></tr>
+<tr><td>Staged approval before expensive compute</td><td>Colossyan, Gamma's outline gate</td><td>Prevents wasted compute, builds trust</td><td>More clicks before output</td><td>Confirm scope ("narrate all 12 chapters?") before committing to a full-book render</td></tr>
+<tr><td>Faceted filtering for large libraries</td><td>HeyGen, Murf, ElevenLabs, Canva</td><td>Scales to hundreds of options; matches search behavior</td><td>Too many facets overwhelms casual users</td><td>Filter voices by language/accent/tone; default to a short "recommended" list</td></tr>
+<tr><td>Persistent personalization (pronunciation, favorites)</td><td>Murf, ElevenLabs, HeyGen</td><td>Reduces repetitive correction over a long project</td><td>Needs account-level state</td><td>Save a preferred narrator + custom pronunciations per book project</td></tr>
+<tr><td>Chapter decomposition with status tracking</td><td>ElevenLabs, NotebookLM, Synthesia</td><td>Turns a long job into a visible checklist</td><td>More visual chrome; needs an aggregate view too</td><td>Show per-chapter "Pending/Converted/Regenerate" badges for book-length voiceover</td></tr>
+<tr><td>Version history instead of destructive overwrite</td><td>ElevenLabs</td><td>Protects against AI regressions; builds trust</td><td>Storage/complexity cost</td><td>Keep the last few narration takes per slide; let users revert</td></tr>
+<tr><td>Embed AI inside the existing/trusted workspace</td><td>Plus AI, SlidesAI</td><td>Removes compatibility/migration objection</td><td>N/A — Designrr already owns the workspace</td><td>Keep book→presentation conversion in-place, not an export-then-reimport detour</td></tr>
+<tr><td>Design guardrails baked into the object model</td><td>Beautiful.ai</td><td>Removes the possibility of a bad layout, not just a nudge</td><td>Frustrates power users with "no override"</td><td>Auto-paginate/resize when pasted book text overflows a slide</td></tr>
+<tr><td>Text-edit = media-edit</td><td>Descript</td><td>Reuses a familiar skill (word processing) for a technical one (audio editing)</td><td>Implementation complexity (forced alignment)</td><td>Editing slide text should flag stale narration as "out of sync — regenerate?"</td></tr>
+<tr><td>No-camera / audio-only narration toggle</td><td>Prezi</td><td>Removes recording anxiety</td><td>Minor</td><td>Default to audio-only; never force an avatar/webcam</td></tr>
+<tr><td>Output tone/style chosen upfront</td><td>Powtoon, Renderforest</td><td>Sets expectations before generation; avoids late surprises</td><td>Minor</td><td>Ask narration tone (professional/conversational/dramatic) before generating</td></tr>
+<tr><td>Async, non-blocking long-running generation</td><td>NotebookLM, Synthesia</td><td>User isn't trapped waiting; can keep working</td><td>Needs a clear completion notification</td><td>Let users keep editing while a full-book voiceover renders; notify on completion</td></tr>
+<tr><td>Pre-generation customization when output can't be edited after</td><td>NotebookLM</td><td>Front-loads control to match a real constraint</td><td>Worse than granular post-editing wherever editing IS possible</td><td>Avoid this constraint; favor Descript/Murf-style post-edit instead</td></tr>
+<tr><td>Default privacy-friendly toggle state (opt-in off)</td><td>Pitch</td><td>Builds trust, avoids dark-pattern perception</td><td>None</td><td>Apply to any marketing/data-sharing toggles</td></tr>
+<tr><td>1:1 mapping of source structure to output structure</td><td>Lumen5, ElevenLabs</td><td>Legible mental model — no guessing where content "lives"</td><td>Rigid mapping may not fit unusual book structures</td><td>Map chapters/headings to slides by default; allow manual re-split</td></tr>
+</table>
+
+<h2>2. Common Trends</h2>
+<ul>
+<li><strong>Outline/plan-before-generate is nearly universal</strong> among AI-first tools (Gamma, Plus AI, SlidesAI, Colossyan) — the standard mitigation for one-shot generation's unpredictability.</li>
+<li><strong>Granular regeneration is the single biggest differentiator</strong> between loved and hated AI tools. Every product lacking it (NotebookLM Audio Overview, Elai, one-shot-era Tome) draws complaints about wasted time/credits on full re-runs for one bad line.</li>
+<li><strong>Voice/avatar selection always pairs with inline preview</strong> — no product makes you commit blind.</li>
+<li><strong>Long jobs get decomposed into visible units</strong> (scenes, chapters, Studio cards) with status — never a single opaque spinner for multi-minute generation.</li>
+<li><strong>Render/credit economics shape the UX directly</strong>: staged approvals, previews, and granular edits exist specifically because generation costs real money/compute — exactly the situation Designrr will be in with book-length voiceover.</li>
+<li><strong>Multiple input modalities are offered in parallel</strong>, not gated behind a single forced path — prompt, paste, import, and blank coexist as equal-weight choices.</li>
+</ul>
+
+<h2>3. Best Practices to Adopt</h2>
+<ol>
+<li>Outline-first checkpoint before slide/voice generation.</li>
+<li>Granular, scoped regeneration (per slide/paragraph, never whole-book).</li>
+<li>Scene-as-atomic-unit bundling text + voice + visual.</li>
+<li>Preview-before-commit on every voice/avatar choice.</li>
+<li>Chapter-level decomposition with visible status for long-running jobs.</li>
+<li>Text-edit triggers media-edit (flag stale narration on text change).</li>
+<li>Persistent personalization (preferred voice, pronunciation dictionary) per project.</li>
+<li>Multiple parallel entry points matching where the user's content already lives (book vs. prompt vs. blank).</li>
+</ol>
+
+<h2>4. Anti-Patterns to Avoid</h2>
+<ol>
+<li><strong>One-shot generation with no outline and no post-edit</strong> (Tome's failed model; NotebookLM Audio Overview's top complaint) — pick one safety net or the other, ideally both.</li>
+<li><strong>No preview before consuming metered render credits</strong> (Elai, Colossyan).</li>
+<li><strong>All-or-nothing regeneration</strong> forcing a full re-render to fix one line.</li>
+<li><strong>Opaque/punitive credit economics</strong> (HeyGen's Trustpilot 2.4 despite G2 4.8 — billing, not quality, drives churn).</li>
+<li><strong>Build-then-paywall bait-and-switch</strong> — letting users complete a full project, then blocking export/download (Visme, Slidesgo free tiers).</li>
+<li><strong>Rigid guardrails with zero override</strong> (Beautiful.ai's "no override" complaint) — fine for guardrails, not fine for blocking power users entirely.</li>
+<li><strong>Spatial/non-linear navigation for inherently linear content</strong> (Prezi's disorientation/motion-sickness complaints) — a book is sequential; don't fight that.</li>
+</ol>
+
+<h2>5. Design Recommendations for Designrr</h2>
+<ol>
+<li><strong>Three entry tiles, not a sequential wizard:</strong> "From a book/manuscript" (auto-pulls chapter outline), "From a prompt/topic," "Start blank." Equal weight, same screen — don't force book users down a different path than prompt-first users.</li>
+<li><strong>Auto-generate an editable chapter/section outline</strong> when starting from a manuscript. Let the user select which chapters become slides, merge/split sections, reorder — before any slide design or voice work happens.</li>
+<li><strong>Model each slide as a "scene" object</strong>: layout + text + voiceover script + assigned voice, bundled but independently editable. This directly supports "voiceover can be added at some point, not necessarily upfront" — voiceover becomes a property attached to a scene whenever, not a separate top-level pass.</li>
+<li><strong>Never force whole-book commitment for voiceover.</strong> Offer per-slide or per-chapter generation with status badges (Pending/Converted/Regenerate), mirroring ElevenLabs' Chapters pattern — highest-leverage adoption given book-length content.</li>
+<li><strong>Granular regeneration is non-negotiable.</strong> A user editing chapter 7 of a 20-chapter book should regenerate only that narration, never the whole book (Murf/Descript pattern).</li>
+<li><strong>Always preview voice samples inline</strong> before applying — to a slide or to the whole book.</li>
+<li><strong>Make full-book voiceover generation async and non-blocking,</strong> with a completion notification — books are long; don't trap the user on a spinner.</li>
+<li><strong>Persist a preferred narrator voice + pronunciation list per book project</strong> so recurring character/brand names don't need re-correction every chapter.</li>
+<li><strong>Gate full-book operations behind a lightweight scope-confirmation step</strong> ("Generate voiceover for all 18 chapters — estimated X minutes/credits?") before committing compute — borrowed from Colossyan's staged approval.</li>
+<li><strong>Default any data-sharing/marketing toggles to off</strong>, and never block final export after a user has invested effort building (avoid the Slidesgo/Visme bait-and-switch) — protects trust in an existing paid funnel.</li>
+<li><strong>Give the no-book/AI-first path equal polish:</strong> prompt → outline-checkpoint → deck, same quality bar as the book-derived flow, so "presentation first, book later" users aren't second-class.</li>
+<li><strong>Stick to a linear scene-rail/slide-sequence model</strong>, not a spatial/zooming metaphor — matches both a book's inherent linearity and the voiceover-per-scene pattern used by every avatar-video competitor.</li>
+<li><strong>Flag stale narration on text edits</strong> ("Slide text changed — regenerate narration?") rather than letting script and audio silently drift apart, borrowing Descript's text-edit-is-media-edit philosophy.</li>
+</ol>
+
+<h2>6. Screenshots &amp; References</h2>
+<p>Full source list is embedded inline above per product. Real, verified screenshots/flows exist on Mobbin for: <strong>Gamma, Pitch, Canva, Synthesia, ElevenLabs, Descript, NotebookLM</strong>. For <strong>Tome, Beautiful.ai, Plus AI, Visme, Prezi, Slidesgo/SlidesAI, Renderforest, HeyGen, Elai.io, Colossyan, Powtoon, Murf.ai, Lumen5</strong> — no dedicated Mobbin coverage was found; those are sourced from official product docs, help centers, and G2/Capterra/Trustpilot reviews (linked inline above).</p>
+
+</body>
+</html>
