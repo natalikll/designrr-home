@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { usePresentationFlowStore, type PresentationSlide } from '@/stores/presentationFlowStore';
 import { MOCK_THEMES, type MockTheme } from '@/lib/presentationMocks';
 import { useFlowStore } from '@/stores/flowStore';
+import { useVideoFlowStore } from '@/stores/videoFlowStore';
 import { SideMenuIcon } from '@/components/sidebar/AppSidebar';
 
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
@@ -429,6 +430,7 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
   const [previewTime, setPreviewTime] = useState(0);
   // Script is a recording aid — once you're reviewing a take it's no longer the point of focus, so tuck it away by default.
   const [scriptCollapsed, setScriptCollapsed] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const previewTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const idxRef = useRef(idx);
@@ -455,16 +457,20 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
+      if (confirmDiscard) {
+        if (e.key === 'Escape') setConfirmDiscard(false);
+        return;
+      }
       if (!locked && phase !== 'preview') {
         if (e.key === 'ArrowRight' || e.key === 'ArrowDown') setIdx(i => Math.min(slides.length - 1, i + 1));
         if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   setIdx(i => Math.max(0, i - 1));
       }
-      if (e.key === 'Escape') handleCancel();
+      if (e.key === 'Escape') requestCancel();
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, locked]);
+  }, [phase, locked, confirmDiscard]);
 
   const startTimer = () => {
     timerRef.current = setInterval(() => {
@@ -493,7 +499,13 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
   const handleDone = () => { stopTimer(); onStop(durations); };
   const handleCancel = () => {
     stopTimer();
+    setConfirmDiscard(false);
     onCancel();
+  };
+  // Nothing captured yet in idle — safe to exit without asking. Any other phase means there's a take to lose.
+  const requestCancel = () => {
+    if (phase === 'idle') { handleCancel(); return; }
+    setConfirmDiscard(true);
   };
   const togglePreviewPlay = () => {
     if (elapsed <= 0) return;
@@ -515,7 +527,7 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       style={{ position: 'fixed', inset: 0, background: '#0A0C14', zIndex: 200, display: 'flex', flexDirection: 'column' }}>
-      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 28px 12px' }}>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '18px 28px 12px' }}>
         <div className="flex items-center" style={{ gap: 10, minWidth: 160 }}>
           {phase === 'recording' && <div style={{ width: 9, height: 9, borderRadius: '50%', background: '#E5484D', animation: 'v2blink 1s infinite', flexShrink: 0 }} />}
           <span style={{ ...ns, fontSize: 36, fontWeight: 700, color: '#fff', fontVariantNumeric: 'tabular-nums', letterSpacing: -1 }}>
@@ -523,7 +535,7 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
           </span>
         </div>
         {!locked && phase !== 'preview' && (
-          <div className="flex items-center" style={{ gap: 8 }}>
+          <div className="flex items-center" style={{ gap: 8, marginTop: 6 }}>
             <button onClick={() => setIdx(i => Math.max(0, i - 1))} disabled={idx === 0}
               className="cursor-pointer flex items-center justify-center"
               style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', opacity: idx === 0 ? 0.3 : 1 }}>
@@ -537,8 +549,12 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
             </button>
           </div>
         )}
-        <div style={{ minWidth: 200, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-          {!locked && phase !== 'preview' && nextSlide && nextBg ? (
+        <div style={{ minWidth: 200, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 10 }}>
+          <button onClick={requestCancel} className="cursor-pointer flex items-center justify-center flex-shrink-0"
+            style={{ width: 36, height: 36, borderRadius: 10, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.05)', outline: 'none' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+          {!locked && phase !== 'preview' && nextSlide && nextBg && (
             <>
               <span style={{ ...ns, fontSize: 10.5, fontWeight: 600, color: 'rgba(255,255,255,0.4)', letterSpacing: 0.5, textTransform: 'uppercase' }}>Next</span>
               <div style={{ width: 160, height: 90, borderRadius: 8, overflow: 'hidden', background: nextBg, border: '1px solid rgba(255,255,255,0.1)', position: 'relative', flexShrink: 0 }}>
@@ -547,7 +563,7 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
                 </div>
               </div>
             </>
-          ) : <div style={{ width: 160 }} />}
+          )}
         </div>
       </div>
 
@@ -576,12 +592,8 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
       {phase === 'preview' && (
         <div className="flex justify-center" style={{ flexShrink: 0, margin: '16px 40px 0' }}>
           <button onClick={() => setScriptCollapsed(v => !v)} className="cursor-pointer flex items-center"
-            style={{ gap: 6, height: 30, padding: '0 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)',
+            style={{ height: 30, padding: '0 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)',
               background: 'rgba(255,255,255,0.06)', outline: 'none', ...ns, fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.6)' }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-              style={{ transform: scriptCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }}>
-              <path d="M6 9l6 6 6-6"/>
-            </svg>
             {scriptCollapsed ? 'Show script' : 'Hide script'}
           </button>
         </div>
@@ -624,10 +636,6 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
               </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <button onClick={handleCancel} className="cursor-pointer"
-                style={{ height: 42, padding: '0 20px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.65)', cursor: 'pointer', outline: 'none' }}>
-                Cancel
-              </button>
               <button onClick={handleRerecord} className="cursor-pointer"
                 style={{ height: 42, padding: '0 22px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.25)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none' }}>
                 Re-record
@@ -641,10 +649,6 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
         ) : (
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
-              <button onClick={handleCancel} className="cursor-pointer"
-                style={{ height: 42, padding: '0 20px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.65)', cursor: 'pointer', outline: 'none' }}>
-                Cancel
-              </button>
               <button onClick={phase === 'idle' ? handleStart : handlePauseResume} className="cursor-pointer flex items-center justify-center"
                 style={{ width: 64, height: 64, borderRadius: '50%', border: 'none', outline: 'none',
                   background: phase === 'recording' ? '#E5484D' : '#fff',
@@ -671,6 +675,31 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
           </>
         )}
       </div>
+
+      <AnimatePresence>
+        {confirmDiscard && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(5,7,14,0.6)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <motion.div initial={{ opacity: 0, scale: 0.96, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }}
+              style={{ background: '#151A28', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, padding: '26px 26px 22px', width: 340, textAlign: 'center', boxShadow: '0 24px 60px rgba(0,0,0,0.5)' }}>
+              <p style={{ ...ns, fontSize: 16, fontWeight: 700, color: '#fff', margin: '0 0 8px' }}>Discard this recording?</p>
+              <p style={{ ...ns, fontSize: 13, color: 'rgba(255,255,255,0.55)', margin: '0 0 22px', lineHeight: 1.5 }}>
+                {phase === 'preview' ? "You'll lose this take — it hasn't been saved yet." : "You'll lose what you've recorded so far."}
+              </p>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                <button onClick={() => setConfirmDiscard(false)} className="cursor-pointer"
+                  style={{ height: 40, padding: '0 20px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.8)', cursor: 'pointer', outline: 'none' }}>
+                  Keep editing
+                </button>
+                <button onClick={handleCancel} className="cursor-pointer"
+                  style={{ height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#E5484D', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none' }}>
+                  Discard
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -912,8 +941,7 @@ function AudioControls({ idx, audio, script, cloneName, onAudioChange, onClone, 
 
       {audio.source === 'record' && audio.status === 'empty' && (
         <button onClick={onStartRecord} className="cursor-pointer flex items-center justify-center"
-          style={{ gap: 8, height: 36, borderRadius: 10, border: 'none', background: '#0D1433', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer' }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#E5484D', flexShrink: 0 }} />
+          style={{ width: '100%', height: 36, padding: '0 18px', borderRadius: 10, border: 'none', background: '#006EFE', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer' }}>
           Start recording
         </button>
       )}
@@ -1313,8 +1341,8 @@ function ExportScreen({ slides, theme, totalSecs, onBack }: { slides: Presentati
    ════════════════════════════════════════════════════════════════ */
 
 /* Filmstrip item — shows slide thumbnail + audio status dot */
-function FilmstripItem({ slide, theme, audio, idx, isActive, onClick }: {
-  slide: PresentationSlide; theme: MockTheme; audio: SlideAudio;
+function FilmstripItem({ slide, theme, audio, script, idx, isActive, onClick }: {
+  slide: PresentationSlide; theme: MockTheme; audio: SlideAudio; script: string;
   idx: number; isActive: boolean; onClick: () => void;
 }) {
   const sourceColor = SOURCE_COLORS[audio.source];
@@ -1324,6 +1352,7 @@ function FilmstripItem({ slide, theme, audio, idx, isActive, onClick }: {
     audio.status === 'ready'      ? sourceColor :
     audio.status === 'generating' ? sourceColor :
     '#C8CDD9';
+  const noTranscript = !script.trim();
 
   const thumbWidth = 148;
 
@@ -1342,10 +1371,15 @@ function FilmstripItem({ slide, theme, audio, idx, isActive, onClick }: {
           ) : null}
         </div>
       </div>
-      <p style={{ ...ns, fontSize: 10.5, fontWeight: isActive ? 700 : 500,
-        color: isActive ? '#006EFE' : '#8596AD', margin: '5px 0 0', textAlign: 'center' }}>
-        {idx + 1}
-      </p>
+      <div className="flex items-center justify-between" style={{ margin: '5px 0 0' }}>
+        <span style={{ ...ns, fontSize: 10.5, fontWeight: isActive ? 700 : 500,
+          color: isActive ? '#006EFE' : '#8596AD' }}>
+          {idx + 1}
+        </span>
+        {noTranscript && (
+          <span style={{ ...ns, fontSize: 9, fontWeight: 600, color: '#D68A1B' }}>No transcript</span>
+        )}
+      </div>
     </button>
   );
 }
@@ -1588,13 +1622,24 @@ export default function NarrationViewV2() {
     ? (MOCK_THEMES.find(t => t.id === selectedThemeId) ?? MOCK_THEMES[0])
     : (storeSlides.length > 0 ? NEUTRAL_THEME : MOCK_THEMES[0]);
 
+  // Reopening a saved video (from /projects) should restore exactly how it was left,
+  // not re-derive fresh scripts/audio from the slides. Captured once at mount, then
+  // cleared so a fresh "Create video" flow doesn't inherit stale narration.
+  const savedNarrationRef = useRef(useVideoFlowStore.getState().savedNarration);
+  useEffect(() => { useVideoFlowStore.getState().clearSavedNarration(); }, []);
+  const saved = savedNarrationRef.current;
+  const savedMatchesSlides = !!saved && saved.scripts.length === slides.length && saved.audios.length === slides.length;
+
   const [step, setStep] = useState<Step>('workspace');
-  const [scripts, setScripts] = useState<string[]>(() => slides.map(s => s.notes ?? scriptFromSlide(s)));
-  const [audios, setAudios] = useState<SlideAudio[]>(() =>
-    slides.map(() => ({ source: 'ai', methodSet: false, scopeSet: false, scope: 'single', voiceId: AI_VOICES[0].id, status: 'empty', duration: 0 }))
+  const [scripts, setScripts] = useState<string[]>(() =>
+    savedMatchesSlides ? saved!.scripts : slides.map(s => s.notes ?? scriptFromSlide(s))
   );
-  const [defaultVoice, setDefaultVoice] = useState(AI_VOICES[0].id);
-  const [cloneName, setCloneName] = useState<string | null>(null);
+  const [audios, setAudios] = useState<SlideAudio[]>(() =>
+    savedMatchesSlides ? saved!.audios :
+      slides.map(() => ({ source: 'ai', methodSet: false, scopeSet: false, scope: 'single', voiceId: AI_VOICES[0].id, status: 'empty', duration: 0 }))
+  );
+  const [defaultVoice, setDefaultVoice] = useState(saved?.defaultVoice ?? AI_VOICES[0].id);
+  const [cloneName, setCloneName] = useState<string | null>(saved?.cloneName ?? null);
   const [activeIdx, setActiveIdx] = useState(0);
   const [recordIdx, setRecordIdx] = useState<number | null>(null);
   const [recordLocked, setRecordLocked] = useState(false);
@@ -1668,10 +1713,11 @@ export default function NarrationViewV2() {
     }
   };
 
+  // Only fills in slides with no audio attached yet — never overwrites a slide that already has a take (ready or stale).
   const generateAllAudio = useCallback(() => {
     setAudios(prev => prev.map(a =>
       !a.methodSet ? { ...a, source: 'ai', methodSet: true, status: 'generating', duration: 0 } :
-      a.source === 'ai' ? { ...a, status: 'generating' } : a
+      a.source === 'ai' && a.status === 'empty' ? { ...a, status: 'generating' } : a
     ));
     slides.forEach((_, i) => {
       setTimeout(() => {
@@ -1682,7 +1728,7 @@ export default function NarrationViewV2() {
         ));
       }, 900 + i * 250 + Math.random() * 400);
     });
-    showToast('Generating audio for all slides…');
+    showToast('Generating audio for slides without narration…');
   }, [slides, scripts, showToast]);
 
   const applySync = (segments: { start: number; end: number }[]) => {
@@ -1724,8 +1770,7 @@ export default function NarrationViewV2() {
       const dur = durations[startedIdx] ?? 0;
       setAudios(prev => prev.map((a, i) => i === startedIdx ? { ...a, status: 'ready', duration: dur } : a));
       if (dur > 0) {
-        showToast('Recording saved');
-        setStep('export');
+        router.push('/presentation/editor');
       }
       return;
     }
@@ -1795,20 +1840,22 @@ export default function NarrationViewV2() {
             <span style={{ ...ns, fontSize: 12, color: '#8596AD' }}>slides ready</span>
             {totalSecs > 0 && <span style={{ ...ns, fontSize: 12, color: '#B0BACB' }}>· {formatTime(totalSecs)}</span>}
           </div>
-          <button onClick={() => readyCount > 0 && setStep('review')}
-            title={readyCount === 0 ? 'Add audio to at least one slide first' : missing > 0 ? `${missing} slide${missing > 1 ? 's' : ''} still need audio` : undefined}
-            style={{ height: 36, padding: '0 16px', borderRadius: 9, border: '1px solid #E0E5EB',
-              background: '#fff', ...ns, fontSize: 13, fontWeight: 600, color: readyCount > 0 ? '#15191F' : '#B8C0CC',
-              display: 'flex', alignItems: 'center', gap: 6, cursor: readyCount > 0 ? 'pointer' : 'not-allowed' }}>
-            Preview
-          </button>
-          <button onClick={() => readyCount > 0 && setStep('export')}
-            title={readyCount === 0 ? 'Add audio to at least one slide first' : missing > 0 ? `${missing} slide${missing > 1 ? 's' : ''} still need audio` : undefined}
-            style={{ height: 36, padding: '0 16px', borderRadius: 9, border: 'none',
-              background: readyCount > 0 ? '#006EFE' : '#C3CEDE', ...ns, fontSize: 13, fontWeight: 600, color: '#fff',
-              display: 'flex', alignItems: 'center', gap: 6, cursor: readyCount > 0 ? 'pointer' : 'not-allowed' }}>
-            Export
-          </button>
+          <div className="flex items-center" style={{ gap: 10 }}>
+            <button onClick={() => readyCount > 0 && setStep('review')}
+              title={readyCount === 0 ? 'Add audio to at least one slide first' : missing > 0 ? `${missing} slide${missing > 1 ? 's' : ''} still need audio` : undefined}
+              style={{ height: 36, padding: '0 16px', borderRadius: 9, border: '1px solid #E0E5EB',
+                background: '#fff', ...ns, fontSize: 13, fontWeight: 600, color: readyCount > 0 ? '#15191F' : '#B8C0CC',
+                display: 'flex', alignItems: 'center', gap: 6, cursor: readyCount > 0 ? 'pointer' : 'not-allowed' }}>
+              Preview
+            </button>
+            <button onClick={() => readyCount > 0 && setStep('export')}
+              title={readyCount === 0 ? 'Add audio to at least one slide first' : missing > 0 ? `${missing} slide${missing > 1 ? 's' : ''} still need audio` : undefined}
+              style={{ height: 36, padding: '0 16px', borderRadius: 9, border: 'none',
+                background: readyCount > 0 ? '#006EFE' : '#C3CEDE', ...ns, fontSize: 13, fontWeight: 600, color: '#fff',
+                display: 'flex', alignItems: 'center', gap: 6, cursor: readyCount > 0 ? 'pointer' : 'not-allowed' }}>
+              Export
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1820,7 +1867,7 @@ export default function NarrationViewV2() {
           style={{ width: 172, flexShrink: 0, overflowY: 'auto', background: '#fff',
             borderRight: '1px solid #E0E3EA', padding: '12px 0' }}>
           {slides.map((s, i) => (
-            <FilmstripItem key={s.id} slide={s} theme={theme} audio={audios[i]}
+            <FilmstripItem key={s.id} slide={s} theme={theme} audio={audios[i]} script={scripts[i]}
               idx={i} isActive={activeIdx === i} onClick={() => setActiveIdx(i)} />
           ))}
         </div>

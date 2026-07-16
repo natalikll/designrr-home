@@ -8,6 +8,7 @@ import HomePage from './home/HomePage';
 import HomePageV2 from './home/HomePageV2';
 import HomePageV3 from './home/HomePageV3';
 import HomePageV4 from './home/HomePageV4';
+import HomePageV4B from './home/HomePageV4B';
 import { ChatContainer } from './chat/ChatContainer';
 import { OutlineView } from './outline/OutlineView';
 import { BookView } from './book/BookView';
@@ -16,11 +17,12 @@ import { GenerationTransition } from './transition/GenerationTransition';
 import { AppSidebar } from './sidebar/AppSidebar';
 import { MyAccountView } from './account/MyAccountView';
 
-function HomePageWithKey({ version }: { version: 1 | 2 | 3 | 4 }) {
+function HomePageWithKey({ version }: { version: 1 | 2 | 3 | 4 | 5 }) {
   const homeKey = useFlowStore((s) => s.homeKey);
   if (version === 2) return <HomePageV2 key={homeKey} />;
   if (version === 3) return <HomePageV3 key={homeKey} />;
   if (version === 4) return <HomePageV4 key={homeKey} />;
+  if (version === 5) return <HomePageV4B key={homeKey} />;
   return <HomePage key={homeKey} />;
 }
 
@@ -30,16 +32,16 @@ export function FlowOrchestrator() {
   const setSidebarOpen = useFlowStore((s) => s.setSidebarOpen);
   const showAccount = useFlowStore((s) => s.showAccount);
   const { handleHeroSubmit, handleGenerateBook } = useFlowEngine();
-  const [homeVersion, setHomeVersion] = React.useState<1 | 2 | 3 | 4>(() => {
+  const [homeVersion, setHomeVersion] = React.useState<1 | 2 | 3 | 4 | 5>(() => {
     if (typeof window !== 'undefined') {
       const v = Number(localStorage.getItem('dsgn_home_v'));
-      return ([1,2,3,4].includes(v) ? v : 1) as 1|2|3|4;
+      return ([1,2,3,4,5].includes(v) ? v : 1) as 1|2|3|4|5;
     }
     return 1;
   });
 
   const cycleVersion = () => {
-    const next = (homeVersion === 4 ? 1 : homeVersion + 1) as 1|2|3|4;
+    const next = (homeVersion === 5 ? 1 : homeVersion + 1) as 1|2|3|4|5;
     setHomeVersion(next);
     localStorage.setItem('dsgn_home_v', String(next));
   };
@@ -164,7 +166,7 @@ export function FlowOrchestrator() {
               color: '#52637A', backdropFilter: 'blur(8px)',
             }}
           >
-            {(['A','B','C','D'] as const).map((l, i) => (
+            {(['A','B','C','D','E'] as const).map((l, i) => (
               <React.Fragment key={l}>
                 {i > 0 && <span style={{ color: '#DDE2EA' }}>·</span>}
                 <span style={{ color: homeVersion === i + 1 ? '#006EFE' : '#C5CDD9' }}>{l}</span>

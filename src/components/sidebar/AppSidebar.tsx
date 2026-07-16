@@ -339,13 +339,15 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
   const router = useRouter();
   const pathname = usePathname();
 
-  // 'home' when on main app, 'account' when My Account is open, 'manuscripts' on /docs, 'presentations' on /presentation*
+  // 'home' when on main app, 'account' when My Account is open, 'manuscripts' on /docs, 'presentations' on /presentation*, 'projects' on /projects
   const activeNav = showAccount
     ? 'account'
     : pathname === '/docs'
     ? 'manuscripts'
     : pathname?.startsWith('/presentation')
     ? 'presentations'
+    : pathname === '/projects'
+    ? 'projects'
     : 'home';
 
   const [activePopup, setActivePopup] = useState<PopupType>(null);
@@ -478,12 +480,12 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                   {/* Projects */}
                   <button
                     ref={projectsRef}
-                    style={navItemStyle(pathname === '/projects')}
+                    style={navItemStyle(activeNav === 'projects')}
                     onClick={() => { router.push('/projects'); onClose(); setActivePopup(null); }}
                     onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = pathname === '/projects' ? '#F6F7F9' : 'transparent')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = activeNav === 'projects' ? '#F6F7F9' : 'transparent')}
                   >
-                    <ProjectsIcon active={pathname === '/projects'} />
+                    <ProjectsIcon active={activeNav === 'projects'} />
                     Projects
                   </button>
 

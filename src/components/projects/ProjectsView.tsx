@@ -5,6 +5,10 @@ import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { useFlowStore } from '@/stores/flowStore';
+import { usePresentationFlowStore } from '@/stores/presentationFlowStore';
+import { useVideoFlowStore } from '@/stores/videoFlowStore';
+import { SAVED_PRESENTATIONS } from '@/lib/presentationMocks';
+import { SAVED_VIDEOS } from '@/lib/videoMocks';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
 
@@ -46,11 +50,11 @@ const TABS: { id: ProjectType | 'all'; label: string }[] = [
   { id: 'ebook',        label: 'eBooks' },
   { id: 'flipbook',     label: 'Flipbooks' },
   { id: 'audiobook',   label: 'Audiobooks' },
-  { id: 'video',        label: 'Videos' },
   { id: 'print',        label: 'Print Books' },
   { id: 'kindle',       label: 'Kindle Books' },
   { id: 'cover',        label: 'Covers' },
   { id: 'presentation', label: 'Presentations' },
+  { id: 'video',        label: 'Videos' },
 ];
 
 function tabCount(type: ProjectType | 'all'): number | null {
@@ -255,7 +259,7 @@ function DropdownIcon({ type }: { type: string }) {
 }
 
 /* ── Project card ── */
-function ProjectCard({ project }: { project: Project }) {
+function ProjectCard({ project, onOpen }: { project: Project; onOpen: (project: Project) => void }) {
   const [hovered, setHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -315,7 +319,7 @@ function ProjectCard({ project }: { project: Project }) {
     >
       {DROPDOWN_ITEMS.map(renderItem)}
       <div style={{ height: 1, background: '#E8EBF2', margin: '4px 8px' }} />
-      {project.type !== 'presentation' && (
+      {project.type !== 'presentation' && project.type !== 'video' && (
         <button
           onClick={() => setMenuOpen(false)}
           className="flex items-center gap-3 text-left cursor-pointer rounded-lg w-full"
@@ -351,6 +355,7 @@ function ProjectCard({ project }: { project: Project }) {
       style={{ gap: 10 }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onClick={() => onOpen(project)}
     >
       <div className="relative">
         <CardThumbnail project={project} />
@@ -367,6 +372,7 @@ function ProjectCard({ project }: { project: Project }) {
         {showOverlay && (
           <div className="absolute flex items-center" style={{ top: 10, right: 10, gap: 6, zIndex: 10 }}>
             <button
+              onClick={(e) => e.stopPropagation()}
               className="flex items-center justify-center cursor-pointer"
               style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(20,26,40,0.78)', border: 'none' }}
             >
@@ -410,11 +416,36 @@ export function ProjectsView() {
   const sidebarOpen = useFlowStore(s => s.sidebarOpen);
   const setSidebarOpen = useFlowStore(s => s.setSidebarOpen);
   const router = useRouter();
+  const setPresentationTitle = usePresentationFlowStore(s => s.setPresentationTitle);
+  const setPresentationThemeId = usePresentationFlowStore(s => s.setSelectedThemeId);
+  const setPresentationSlides = usePresentationFlowStore(s => s.setSlides);
   const [activeTab, setActiveTab] = useState<ProjectType>('ebook');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [search, setSearch] = useState('');
 
   const filtered = PROJECTS.filter(p => p.type === activeTab && (!search || p.title.toLowerCase().includes(search.toLowerCase())));
+
+  const handleOpenProject = (project: Project) => {
+    if (project.type === 'presentation') {
+      const saved = SAVED_PRESENTATIONS[project.id];
+      if (!saved) return;
+      setPresentationTitle(saved.title);
+      setPresentationThemeId(saved.themeId);
+      setPresentationSlides(saved.slides);
+      router.push('/presentation/editor');
+      return;
+    }
+    if (project.type === 'video') {
+      const saved = SAVED_VIDEOS[project.id];
+      if (!saved) return;
+      setPresentationTitle(saved.title);
+      setPresentationThemeId(saved.themeId);
+      setPresentationSlides(saved.slides);
+      useVideoFlowStore.getState().loadSavedNarration(saved.narration);
+      router.push('/presentation/narration?v=2');
+      return;
+    }
+  };
 
   return (
     <div className="h-full flex flex-col bg-white">
@@ -526,7 +557,7 @@ export function ProjectsView() {
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: viewMode === 'grid' ? 'repeat(auto-fill, minmax(240px, 1fr))' : '1fr', gap: viewMode === 'grid' ? 24 : 12 }}>
               {filtered.map(project => (
-                <ProjectCard key={project.id} project={project} />
+                <ProjectCard key={project.id} project={project} onOpen={handleOpenProject} />
               ))}
             </div>
           )}

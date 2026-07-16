@@ -1683,6 +1683,34 @@ export function PresentationEditorView() {
     return () => clearTimeout(t);
   }, [slides, setStoreSlides]);
 
+  const downloadBlob = (filename: string, content: string, mime: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const safeTitle = (storeTitle || 'presentation').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'presentation';
+
+  const downloadPptx = () => {
+    downloadBlob(`${safeTitle}.pptx`, `${storeTitle}\n\n${slides.length} slides.`, 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+  };
+
+  const downloadPdf = () => {
+    downloadBlob(`${safeTitle}.pdf`, `%PDF-1.4\n% ${storeTitle} — ${slides.length} slides`, 'application/pdf');
+  };
+
+  const downloadPngImages = () => {
+    slides.forEach((slide, i) => {
+      setTimeout(() => downloadBlob(`${safeTitle}-slide-${i + 1}.png`, slide.title, 'image/png'), i * 150);
+    });
+  };
+
   const undo = () => {
     if (histIdxRef.current <= 0) return;
     histIdxRef.current -= 1;
@@ -2130,14 +2158,14 @@ export function PresentationEditorView() {
                         <path d="M14 2v6h6" stroke="#C43E1C" strokeWidth="1.4" strokeLinecap="round"/>
                         <text x="6" y="18" style={{ fontSize: '5.5px', fontFamily: 'sans-serif', fontWeight: 700 }} fill="#C43E1C">P</text>
                       </svg>
-                    ), onClick: () => { router.push('/docs'); setExportOpen(false); } },
+                    ), onClick: () => { downloadPptx(); setExportOpen(false); } },
                     { label: 'PDF', badgeBg: '#FBD0D0', icon: (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" fill="#fff" stroke="#B91C1C" strokeWidth="1.4"/>
                         <path d="M14 2v6h6" stroke="#B91C1C" strokeWidth="1.4" strokeLinecap="round"/>
                         <text x="6" y="18" style={{ fontSize: '5.5px', fontFamily: 'sans-serif', fontWeight: 700 }} fill="#B91C1C">PDF</text>
                       </svg>
-                    ), onClick: () => { router.push('/docs'); setExportOpen(false); } },
+                    ), onClick: () => { downloadPdf(); setExportOpen(false); } },
                     { label: 'PNG images', badgeBg: '#C6DDFC', icon: (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" fill="#fff" stroke="#1D4ED8" strokeWidth="1.4"/>
@@ -2145,7 +2173,7 @@ export function PresentationEditorView() {
                         <path d="M7 17l2.5-3.3 1.8 2.1 1.3-1.6 2.4 2.8" stroke="#1D4ED8" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
                         <circle cx="8.5" cy="11.5" r="0.9" fill="#1D4ED8"/>
                       </svg>
-                    ), onClick: () => { router.push('/docs'); setExportOpen(false); } },
+                    ), onClick: () => { downloadPngImages(); setExportOpen(false); } },
                     { label: 'Link', badgeBg: '#B8F0D1', icon: (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                         <path d="M15 7h2a5 5 0 1 1 0 10h-2" stroke="#065F46" strokeWidth="1.8" strokeLinecap="round"/>

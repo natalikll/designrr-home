@@ -169,6 +169,27 @@ export const MOCK_THEMES: MockTheme[] = [
   { id: 'classic', name: 'Classic', bg: '#FFFFFF', titleColor: '#15191F', accentColor: '#D0342C', slides: starterDeck('Classic') },
 ];
 
+/** Presentations already created and saved under /projects — reopening one should restore exactly this state. */
+export interface SavedPresentation {
+  title: string;
+  themeId: string;
+  slides: MockSlide[];
+}
+
+export const SAVED_PRESENTATIONS: Record<string, SavedPresentation> = {
+  '13': {
+    title: 'Q2 Roadmap',
+    themeId: 'corporate',
+    slides: [
+      { id: 'q2-1', type: 'headline', title: 'Q2 Roadmap', points: [], layout: 'centered' },
+      { id: 'q2-2', type: 'content', title: 'Where We Left Off', points: ['Q1 shipped the redesigned onboarding flow', 'Activation rate up 18% quarter over quarter'], layout: 'standard' },
+      { id: 'q2-3', type: 'content', title: 'Priorities This Quarter', points: ['Ship the new billing system', 'Launch mobile app beta', 'Reduce churn in the enterprise tier'], layout: 'standard' },
+      { id: 'q2-4', type: 'content', title: 'Key Risks', points: ['Mobile beta depends on the payments API landing on time', 'Enterprise churn work needs a dedicated support hire'], layout: 'standard' },
+      { id: 'q2-5', type: 'content', title: 'Thank You', points: ['Questions & discussion'], layout: 'centered' },
+    ],
+  },
+};
+
 export function getMockSlidesForManuscript(manuscriptId: string, sectionIds: string[]): MockSlide[] {
   const manuscript = MOCK_MANUSCRIPTS.find((m) => m.id === manuscriptId);
   if (!manuscript) return [];
