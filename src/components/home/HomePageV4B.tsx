@@ -122,19 +122,21 @@ interface VideoCardDef { key: string; title: string; subtitle: string; soon?: bo
 const VIDEO_CARDS: VideoCardDef[] = [
   { key: 'presentation', title: 'From a presentation', subtitle: 'Add narration, export as video' },
   { key: 'photos',       title: 'From photos',          subtitle: 'Turn images into a slideshow', soon: true },
-  { key: 'script',       title: 'From URL',              subtitle: 'Generate video from text',      soon: true },
+  { key: 'script',       title: 'From a script or URL', subtitle: 'Generate video from text',      soon: true },
 ];
 
 function VideoCardIcon({ soon }: { soon?: boolean }) {
   const tint = soon ? '#EEF0F4' : '#FFE8E2';
   const fg   = soon ? '#A6AEBC' : '#FF5B39';
   return (
-    <div className="shrink-0 flex items-center justify-center" style={{ width: 44, height: 44, borderRadius: 12, background: tint, marginLeft: 14 }}>
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-        <rect x="2" y="4" width="12" height="12" rx="2" stroke={fg} strokeWidth="1.6"/>
-        <path d="M14 8l4-2.5v9L14 12" stroke={fg} strokeWidth="1.6" strokeLinejoin="round"/>
-        <path d="M7.3 7.3v5.4l4.4-2.7-4.4-2.7z" fill={fg}/>
-      </svg>
+    <div className="shrink-0 flex items-center justify-center" style={{ width: 72, height: 72 }}>
+      <div className="flex items-center justify-center" style={{ width: 44, height: 44, borderRadius: 12, background: tint }}>
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <rect x="2" y="4" width="12" height="12" rx="2" stroke={fg} strokeWidth="1.6"/>
+          <path d="M14 8l4-2.5v9L14 12" stroke={fg} strokeWidth="1.6" strokeLinejoin="round"/>
+          <path d="M7.3 7.3v5.4l4.4-2.7-4.4-2.7z" fill={fg}/>
+        </svg>
+      </div>
     </div>
   );
 }
@@ -203,6 +205,9 @@ function VideoStartCards() {
           <VideoCard key={card.key} card={card} onClick={() => handleClick(card.key)} />
         ))}
       </div>
+      <p className="mt-8 text-center font-normal" style={{ fontSize: 14, lineHeight: '18px', color: '#667C98' }}>
+        More sources — photos, script, blog/URL — are on the way.
+      </p>
     </div>
   );
 }

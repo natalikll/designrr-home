@@ -13,6 +13,8 @@ import { SideMenuIcon } from '../sidebar/AppSidebar';
 
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 const ZOOM_OPTIONS = [33, 50, 75, 90, 100, 125, 150, 175, 200];
+const ZOOM_MIN = 25;
+const ZOOM_MAX = 250;
 const FILMSTRIP_W = 240;
 const RIGHT_PANEL_W = 296;
 const NAV_W = 76;
@@ -28,7 +30,60 @@ const LAYOUTS: { id: SlideLayout; name: string }[] = [
   { id: 'big-title',   name: 'Big title'   },
   { id: 'split',       name: 'Split panel' },
   { id: 'minimal',     name: 'Minimal'     },
+  { id: 'fig-cover-1', name: 'Classic' }, { id: 'fig-cover-2', name: 'Accent' }, { id: 'fig-cover-3', name: 'Bold' },
+  { id: 'fig-section-1', name: 'Classic' }, { id: 'fig-section-2', name: 'Accent' }, { id: 'fig-section-3', name: 'Bold' },
+  { id: 'fig-bullets-1', name: 'Classic' }, { id: 'fig-bullets-2', name: 'Accent' }, { id: 'fig-bullets-3', name: 'Bold' },
+  { id: 'fig-two-col-1', name: 'Classic' }, { id: 'fig-two-col-2', name: 'Accent' }, { id: 'fig-two-col-3', name: 'Bold' },
+  { id: 'fig-three-col-1', name: 'Classic' }, { id: 'fig-three-col-2', name: 'Accent' }, { id: 'fig-three-col-3', name: 'Bold' },
+  { id: 'fig-photo-text-1', name: 'Classic' }, { id: 'fig-photo-text-2', name: 'Accent' }, { id: 'fig-photo-text-3', name: 'Bold' },
+  { id: 'fig-text-photo-1', name: 'Classic' }, { id: 'fig-text-photo-2', name: 'Accent' }, { id: 'fig-text-photo-3', name: 'Bold' },
+  { id: 'fig-full-image-1', name: 'Classic' }, { id: 'fig-full-image-2', name: 'Accent' }, { id: 'fig-full-image-3', name: 'Bold' },
+  { id: 'fig-comparison-1', name: 'Classic' }, { id: 'fig-comparison-2', name: 'Accent' }, { id: 'fig-comparison-3', name: 'Bold' },
+  { id: 'fig-grid-1', name: 'Classic' }, { id: 'fig-grid-2', name: 'Accent' }, { id: 'fig-grid-3', name: 'Bold' },
+  { id: 'fig-quote-1', name: 'Classic' }, { id: 'fig-quote-2', name: 'Accent' }, { id: 'fig-quote-3', name: 'Bold' },
+  { id: 'fig-closing-1', name: 'Classic' }, { id: 'fig-closing-2', name: 'Accent' }, { id: 'fig-closing-3', name: 'Bold' },
 ];
+
+/** Ascend template layouts are named `fig-<family>-<1|2|3>` — this extracts the family, or null for the original 8 layouts */
+function figFamilyOf(id: SlideLayout): string | null {
+  const m = /^fig-(.+)-[123]$/.exec(id);
+  return m ? m[1] : null;
+}
+
+/** Default seed content for an Ascend-family layout, used when switching into one with no existing points */
+const FIG_DEFAULT_POINTS: Record<string, string[]> = {
+  cover: ['A concise and compelling subtitle that supports your main message', 'Author Name  ·  2026'],
+  section: ['SECTION 01'],
+  bullets: [
+    'First key point\nA brief explanation that supports this idea with relevant context or data.',
+    'Second key point\nAnother supporting detail. Keep each bullet to one clear, digestible idea.',
+    'Third key point\nA third insight that builds on the previous points and adds depth.',
+  ],
+  'two-col': [
+    'Key Point One\nA brief description that supports this key idea and adds context to your presentation audience.',
+    'Key Point Two\nAnother supporting detail that helps tell your story. Keep it concise and visually balanced.',
+  ],
+  'three-col': [
+    'Key Point One\nA brief description that supports this key idea and adds context to your presentation audience.',
+    'Key Point Two\nAnother supporting detail that helps tell your story. Keep it concise and visually balanced.',
+    'Key Point Three\nA third insight or takeaway that rounds out this section and drives your message home.',
+  ],
+  'photo-text': ['Supporting description that expands on the slide title. Keep this concise and let the image do the heavy lifting.'],
+  'text-photo': ['Supporting description that expands on the slide title. Keep this concise and let the image do the heavy lifting.'],
+  comparison: [
+    'Current Approach', 'First characteristic of this option', 'Second characteristic of this option',
+    '---',
+    'Proposed Approach', 'First characteristic of this option', 'Second characteristic of this option',
+  ],
+  grid: [
+    'First Point\nA supporting explanation for this item. Keep it short and focused on one idea.',
+    'Second Point\nAnother explanation here. Each block should be self-contained and easy to scan.',
+    'Third Point\nA third idea that rounds out the top row and contributes to the overall message.',
+    'Fourth Point\nA final point that ties the slide together and reinforces the headline above.',
+  ],
+  quote: ['— Author Name, Role or Organization'],
+  closing: ['name@email.com  ·  www.yourwebsite.com'],
+};
 
 /* ───────────────────────── Icons ───────────────────────── */
 
@@ -57,6 +112,11 @@ function SavedIcon() {
   return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#29A341" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>;
 }
 const AI_GRADIENT = 'linear-gradient(244.79deg, #006EFE 2.17%, #5326BD 103.16%)';
+// Natural/authoring width for slide content — every slide canvas (thumbnail, main editor,
+// present mode) renders its content at this fixed width, then scales the whole thing via
+// CSS transform to fit whatever box it's placed in, so fixed/vw-based font sizes stay
+// visually proportional to the slide instead of wrapping when the box is resized.
+const SLIDE_VIRTUAL_W = 880;
 
 function hexLuminance(hex: string): number {
   const h = hex.replace('#', '');
@@ -67,28 +127,47 @@ function hexLuminance(hex: string): number {
 }
 function isDark(hex: string): boolean { return hexLuminance(hex) < 0.35; }
 
-function AISparkleIcon() {
+function withAlpha(hex: string, alpha: number): string {
+  if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return `rgba(79,70,229,${alpha})`;
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/** Card wrapper used by the "boxed" variants of the Ascend template's layouts */
+function FigCard({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+  return <div style={{ background: '#fff', border: '1px solid #E8EBF2', borderRadius: 10, boxShadow: '0px 4px 16px rgba(15,23,51,0.06)', ...style }}>{children}</div>;
+}
+
+function AISparkleIcon({ size = 18 }: { size?: number }) {
+  // The official Wordgenie mark — same source as public/assets/wordgenie-icon.svg (used in the "by New Wordgenie" lockup).
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+      <path d="M16 4L13.4507 11.7507C13.3202 12.1473 13.0984 12.5078 12.8031 12.8031C12.5078 13.0984 12.1473 13.3202 11.7507 13.4507L4 16L11.7507 18.5493C12.1473 18.6798 12.5078 18.9016 12.8031 19.1969C13.0984 19.4922 13.3202 19.8527 13.4507 20.2493L16 28L18.5493 20.2493C18.6798 19.8527 18.9016 19.4922 19.1969 19.1969C19.4922 18.9016 19.8527 18.6798 20.2493 18.5493L28 16L20.2493 13.4507C19.8527 13.3202 19.4922 13.0984 19.1969 12.8031C18.9016 12.5078 18.6798 12.1473 18.5493 11.7507L16 4Z" fill="url(#wgIconGradA)" stroke="url(#wgIconGradA)" strokeWidth="1.125" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M6 2L5.15022 4.58356C5.10673 4.71578 5.0328 4.83595 4.93437 4.93437C4.83595 5.0328 4.71578 5.10673 4.58356 5.15022L2 6L4.58356 6.84978C4.71578 6.89327 4.83595 6.9672 4.93437 7.06563C5.0328 7.16405 5.10673 7.28422 5.15022 7.41644L6 10L6.84978 7.41644C6.89327 7.28422 6.9672 7.16405 7.06563 7.06563C7.16405 6.9672 7.28422 6.89327 7.41644 6.84978L10 6L7.41644 5.15022C7.28422 5.10673 7.16405 5.0328 7.06563 4.93437C6.9672 4.83595 6.89327 4.71578 6.84978 4.58356L6 2Z" fill="url(#wgIconGradB)" stroke="url(#wgIconGradB)" strokeWidth="0.375" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M26 22L25.1502 24.5836C25.1067 24.7158 25.0328 24.8359 24.9344 24.9344C24.8359 25.0328 24.7158 25.1067 24.5836 25.1502L22 26L24.5836 26.8498C24.7158 26.8933 24.8359 26.9672 24.9344 27.0656C25.0328 27.1641 25.1067 27.2842 25.1502 27.4164L26 30L26.8498 27.4164C26.8933 27.2842 26.9672 27.1641 27.0656 27.0656C27.1641 26.9672 27.2842 26.8933 27.4164 26.8498L30 26L27.4164 25.1502C27.2842 25.1067 27.1641 25.0328 27.0656 24.9344C26.9672 24.8359 26.8933 24.7158 26.8498 24.5836L26 22Z" fill="url(#wgIconGradC)" stroke="url(#wgIconGradC)" strokeWidth="0.375" strokeLinecap="round" strokeLinejoin="round"/>
       <defs>
-        <linearGradient id="aiIconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#006EFE"/>
-          <stop offset="100%" stopColor="#5326BD"/>
+        <linearGradient id="wgIconGradA" x1="28.3864" y1="2.78745" x2="-0.682789" y2="8.38556" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#006EFE"/><stop offset="1" stopColor="#5326BD"/>
+        </linearGradient>
+        <linearGradient id="wgIconGradB" x1="10.1288" y1="1.59582" x2="0.43907" y2="3.46185" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#006EFE"/><stop offset="1" stopColor="#5326BD"/>
+        </linearGradient>
+        <linearGradient id="wgIconGradC" x1="30.1288" y1="21.5958" x2="20.4391" y2="23.4619" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#006EFE"/><stop offset="1" stopColor="#5326BD"/>
         </linearGradient>
       </defs>
-      <path d="M12 3v3M12 18v3M3 12h3M18 12h3M6.34 6.34l2.12 2.12M15.54 15.54l2.12 2.12M6.34 17.66l2.12-2.12M15.54 8.46l2.12-2.12" stroke="url(#aiIconGrad)" strokeWidth="2" strokeLinecap="round"/>
-      <circle cx="12" cy="12" r="3" fill="url(#aiIconGrad)"/>
     </svg>
   );
 }
 
 function AIButton({ label, onClick, active, style }: { label: string; onClick: () => void; active?: boolean; style?: React.CSSProperties }) {
+  // Matches the design system's "AI-outline" button (Figma node 8793:29409).
   return (
     <button
       onClick={onClick}
       className="flex items-center cursor-pointer"
       style={{
-        gap: 6, height: 34, padding: '0 16px', borderRadius: 8,
+        gap: 8, height: 38, padding: '10px 20px', borderRadius: 8,
         border: active ? '1px solid #006EFE' : '1px solid #E0E5EB',
         background: active ? '#F0F6FF' : '#fff',
         transition: 'all 0.15s ease',
@@ -98,7 +177,7 @@ function AIButton({ label, onClick, active, style }: { label: string; onClick: (
       onMouseLeave={e => { if (!active) { e.currentTarget.style.borderColor = '#E0E5EB'; e.currentTarget.style.background = '#fff'; } }}
     >
       <AISparkleIcon />
-      <span style={{ ...ns, fontSize: 13, fontWeight: 600, background: AI_GRADIENT, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text', whiteSpace: 'nowrap' }}>
+      <span style={{ ...ns, fontSize: 14, fontWeight: 600, background: AI_GRADIENT, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text', whiteSpace: 'nowrap' }}>
         {label}
       </span>
     </button>
@@ -144,7 +223,7 @@ function DecorativeGraphic({ theme }: { theme: MockTheme }) {
 
 /* ───────────────────────── Draggable text block ───────────────────────── */
 
-function DraggableBlock({ children, offset, onOffsetChange, stageRef, zoom, label, onFocus, isActive, onAiRewrite, onDuplicate, onDelete }: {
+function DraggableBlock({ children, offset, onOffsetChange, stageRef, zoom, label, onFocus, isActive, onGuideChange, selectKey, onShiftSelect, groupDragActive, onGroupDragStart, onGroupDragMove, onGroupDragEnd }: {
   children: React.ReactNode;
   offset?: TextOffset;
   onOffsetChange: (o: TextOffset) => void;
@@ -153,76 +232,36 @@ function DraggableBlock({ children, offset, onOffsetChange, stageRef, zoom, labe
   label: string;
   onFocus?: () => void;
   isActive?: boolean;
-  onAiRewrite?: () => void;
-  onDuplicate?: () => void;
-  onDelete?: () => void;
+  onGuideChange?: (g: { x: boolean; y: boolean }) => void;
+  selectKey?: string;
+  onShiftSelect?: () => void;
+  groupDragActive?: boolean;
+  onGroupDragStart?: () => void;
+  onGroupDragMove?: (dxPx: number, dyPx: number) => void;
+  onGroupDragEnd?: () => void;
 }) {
-  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const blockRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number; rect: DOMRect } | null>(null);
+  const groupDragOriginRef = useRef<{ sx: number; sy: number } | null>(null);
   const [textFocused, setTextFocused] = useState(false);
   const ox = offset?.x ?? 0, oy = offset?.y ?? 0;
 
+  const SNAP = 6; // px, screen space
+
   return (
-    <div className="group/db relative" style={{ transform: `translate(${ox}px, ${oy}px)` }}
+    <div ref={blockRef} className="group/db relative" data-select-key={selectKey} style={{ transform: `translate(${ox}px, ${oy}px)` }}
       onFocus={() => { setTextFocused(true); onFocus?.(); }}
-      onBlur={() => setTextFocused(false)}>
+      onBlur={() => setTextFocused(false)}
+      onMouseDownCapture={e => {
+        // Shift+click toggles this block in/out of the multi-selection instead of
+        // entering edit mode (which would otherwise happen automatically on focus).
+        if (e.shiftKey) { e.preventDefault(); onShiftSelect?.(); }
+      }}
+    >
 
       {/* Selection outline */}
       {isActive && (
         <div style={{ position: 'absolute', inset: -5, borderRadius: 6, border: '1.5px solid #006EFE', pointerEvents: 'none', zIndex: 5 }}/>
-      )}
-
-      {/* Floating toolbar — above block when active but not typing */}
-      {isActive && !textFocused && (
-        <div
-          className="flex items-center bg-white"
-          style={{ position: 'absolute', bottom: 'calc(100% + 10px)', left: '50%', transform: 'translateX(-50%)', borderRadius: 10, boxShadow: '0px 4px 20px rgba(15,23,51,0.18)', border: '1px solid #ECEEF2', overflow: 'hidden', zIndex: 30, whiteSpace: 'nowrap' }}
-          onMouseDown={e => e.stopPropagation()}
-        >
-          {onAiRewrite && (
-            <>
-              <button
-                onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onAiRewrite(); }}
-                className="flex items-center cursor-pointer"
-                style={{ gap: 6, height: 34, padding: '0 12px', border: 'none', background: 'none', ...ns, fontSize: 12.5, fontWeight: 600, color: '#7C5CFC' }}
-                onMouseEnter={e => { e.currentTarget.style.background = '#F6F3FF'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
-              >
-                <SparkleIcon color="#7C5CFC"/>
-                Regenerate
-              </button>
-              <div style={{ width: 1, height: 18, background: '#ECEEF2', flexShrink: 0 }}/>
-            </>
-          )}
-          {onDuplicate && (
-            <Tooltip label="Duplicate slide" position="top">
-              <button
-                onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onDuplicate(); }}
-                className="flex items-center justify-center cursor-pointer"
-                style={{ width: 34, height: 34, border: 'none', background: 'none' }}
-                onMouseEnter={e => { e.currentTarget.style.background = '#F5F7FA'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
-              >
-                <DuplicateIcon color="#3D4A5C"/>
-              </button>
-            </Tooltip>
-          )}
-          {onDelete && (
-            <>
-              <div style={{ width: 1, height: 18, background: '#ECEEF2', flexShrink: 0 }}/>
-              <Tooltip label="Delete slide" position="top">
-                <button
-                  onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onDelete(); }}
-                  className="flex items-center justify-center cursor-pointer"
-                  style={{ width: 34, height: 34, border: 'none', background: 'none' }}
-                  onMouseEnter={e => { e.currentTarget.style.background = '#FFF5F5'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
-                >
-                  <TrashIcon/>
-                </button>
-              </Tooltip>
-            </>
-          )}
-        </div>
       )}
 
       {/* Drag handle */}
@@ -232,14 +271,48 @@ function DraggableBlock({ children, offset, onOffsetChange, stageRef, zoom, labe
         onPointerDown={e => {
           e.preventDefault(); e.stopPropagation();
           (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-          dragRef.current = { sx: e.clientX, sy: e.clientY, ox, oy };
+          if (groupDragActive) {
+            groupDragOriginRef.current = { sx: e.clientX, sy: e.clientY };
+            onGroupDragStart?.();
+            return;
+          }
+          const rect = blockRef.current?.getBoundingClientRect();
+          if (!rect) return;
+          dragRef.current = { sx: e.clientX, sy: e.clientY, ox, oy, rect };
         }}
         onPointerMove={e => {
+          if (groupDragActive && groupDragOriginRef.current) {
+            onGroupDragMove?.(e.clientX - groupDragOriginRef.current.sx, e.clientY - groupDragOriginRef.current.sy);
+            return;
+          }
           if (!dragRef.current) return;
           const scale = zoom / 100;
-          onOffsetChange({ x: dragRef.current.ox + (e.clientX - dragRef.current.sx) / scale, y: dragRef.current.oy + (e.clientY - dragRef.current.sy) / scale });
+          let dx = e.clientX - dragRef.current.sx;
+          let dy = e.clientY - dragRef.current.sy;
+
+          const stageRect = stageRef.current?.getBoundingClientRect();
+          if (stageRect) {
+            const { rect } = dragRef.current;
+            const cx = rect.left + rect.width / 2 + dx;
+            const cy = rect.top + rect.height / 2 + dy;
+            const stageCx = stageRect.left + stageRect.width / 2;
+            const stageCy = stageRect.top + stageRect.height / 2;
+            const isX = Math.abs(cx - stageCx) <= SNAP;
+            const isY = Math.abs(cy - stageCy) <= SNAP;
+            if (isX) dx -= cx - stageCx;
+            if (isY) dy -= cy - stageCy;
+            onGuideChange?.({ x: isX, y: isY });
+          }
+
+          onOffsetChange({ x: dragRef.current.ox + dx / scale, y: dragRef.current.oy + dy / scale });
         }}
-        onPointerUp={() => { dragRef.current = null; }}
+        onPointerUp={() => {
+          dragRef.current = null;
+          if (groupDragOriginRef.current) { groupDragOriginRef.current = null; onGroupDragEnd?.(); }
+          onGuideChange?.({ x: false, y: false });
+        }}
+        onDoubleClick={e => { e.stopPropagation(); onOffsetChange({ x: 0, y: 0 }); }}
+        title="Drag to reposition · double-click to reset to center"
       >
         <MoveIcon/>
         <span style={{ ...ns, fontSize: 9, fontWeight: 600, color: 'white' }}>{label}</span>
@@ -258,6 +331,27 @@ function LayoutThumbSVG({ layout }: { layout: SlideLayout }) {
   const Img= (x: number, y: number, w: number, h: number) => <rect x={x} y={y} width={w} height={h} rx="5" fill="#DDE6F5"/>;
   const Blk= (x: number, y: number, w: number, h: number) => <rect x={x} y={y} width={w} height={h} rx="0" fill="#E2ECF8"/>;
 
+  // Ascend template thumbnails: one schematic shape per slide family, reused across its 3 layout variants
+  // (variant 2 gets a small dot marker, variant 3 a small bar marker, so the 3 siblings stay visually distinct)
+  const figMarker = (variant: '1' | '2' | '3') =>
+    variant === '2' ? <circle cx="108" cy="8" r="4" fill="#9AA8BE"/> :
+    variant === '3' ? <rect x="4" y="65" width="14" height="4" rx="2" fill="#9AA8BE"/> : null;
+  const figBase: Record<string, React.ReactNode> = {
+    cover:        <>{S(10,14,26)}{T(10,24,70,14)}{L(10,44,60,0.5)}</>,
+    section:      <>{S(10,30,26)}{T(10,40,80,14)}</>,
+    bullets:      <>{T(8,8,70)}{L(8,22,60,0.6)}{L(8,30,55,0.5)}{L(8,42,60,0.6)}{L(8,50,55,0.5)}</>,
+    'two-col':    <>{T(8,8,60)}{S(8,20,30)}{L(8,28,44,0.6)}{L(8,36,40,0.5)}{S(62,20,30)}{L(62,28,44,0.6)}{L(62,36,40,0.5)}</>,
+    'three-col':  <>{T(8,8,60)}{S(6,20,24)}{L(6,28,30,0.6)}{S(44,20,24)}{L(44,28,30,0.6)}{S(82,20,24)}{L(82,28,26,0.6)}</>,
+    'photo-text': <>{T(6,10,36)}{L(6,24,40,0.6)}{L(6,32,36,0.5)}{Img(60,6,50,61)}</>,
+    'text-photo': <>{Img(6,6,50,61)}{T(63,10,36)}{L(63,24,40,0.6)}{L(63,32,36,0.5)}</>,
+    'full-image': <>{Blk(0,0,116,73)}{T(8,54,60,10)}</>,
+    comparison:   <>{T(8,8,60)}{S(8,20,24)}{L(8,28,44,0.55)}{L(8,36,40,0.5)}{S(62,20,24)}{L(62,28,44,0.55)}{L(62,36,40,0.5)}</>,
+    grid:         <>{T(8,8,70)}{S(8,22,20)}{L(8,30,44,0.6)}{S(62,22,20)}{L(62,30,44,0.6)}{S(8,46,20)}{L(8,54,44,0.6)}{S(62,46,20)}{L(62,54,44,0.6)}</>,
+    quote:        <>{T(40,8,36,20)}{L(20,38,76,0.6)}{L(30,46,56,0.5)}</>,
+    closing:      <>{S(44,20,28)}{T(18,32,80,14)}{L(30,52,56,0.5)}</>,
+  };
+  const figThumb = (family: string, variant: '1' | '2' | '3') => <>{figBase[family]}{figMarker(variant)}</>;
+
   const map: Record<SlideLayout, React.ReactNode> = {
     standard:     <>{T(8,10,52)}{S(8,21,22)}{L(8,30,66)}{L(8,38,58,0.55)}{L(8,46,62,0.55)}{L(8,54,44,0.5)}</>,
     centered:     <>{T(22,16,72)}{S(44,27,28)}{L(14,36,88,0.6)}{L(24,44,68,0.5)}{L(30,52,56,0.45)}</>,
@@ -267,6 +361,18 @@ function LayoutThumbSVG({ layout }: { layout: SlideLayout }) {
     'big-title':  <>{T(10,19,96,11)}{T(18,34,80,11)}{S(36,50,44)}</>,
     split:        <>{Blk(0,0,46,73)}{T(7,19,30,7)}{S(7,30,18)}{L(7,40,30,0.7)}{L(7,49,26,0.6)}{T(52,11,56)}{S(52,22,22)}{L(52,31,56,0.65)}{L(52,39,50,0.55)}{L(52,47,54,0.55)}{L(52,55,42,0.5)}</>,
     minimal:      <>{T(18,26,80,8)}{S(44,38,28)}</>,
+    'fig-cover-1': figThumb('cover','1'), 'fig-cover-2': figThumb('cover','2'), 'fig-cover-3': figThumb('cover','3'),
+    'fig-section-1': figThumb('section','1'), 'fig-section-2': figThumb('section','2'), 'fig-section-3': figThumb('section','3'),
+    'fig-bullets-1': figThumb('bullets','1'), 'fig-bullets-2': figThumb('bullets','2'), 'fig-bullets-3': figThumb('bullets','3'),
+    'fig-two-col-1': figThumb('two-col','1'), 'fig-two-col-2': figThumb('two-col','2'), 'fig-two-col-3': figThumb('two-col','3'),
+    'fig-three-col-1': figThumb('three-col','1'), 'fig-three-col-2': figThumb('three-col','2'), 'fig-three-col-3': figThumb('three-col','3'),
+    'fig-photo-text-1': figThumb('photo-text','1'), 'fig-photo-text-2': figThumb('photo-text','2'), 'fig-photo-text-3': figThumb('photo-text','3'),
+    'fig-text-photo-1': figThumb('text-photo','1'), 'fig-text-photo-2': figThumb('text-photo','2'), 'fig-text-photo-3': figThumb('text-photo','3'),
+    'fig-full-image-1': figThumb('full-image','1'), 'fig-full-image-2': figThumb('full-image','2'), 'fig-full-image-3': figThumb('full-image','3'),
+    'fig-comparison-1': figThumb('comparison','1'), 'fig-comparison-2': figThumb('comparison','2'), 'fig-comparison-3': figThumb('comparison','3'),
+    'fig-grid-1': figThumb('grid','1'), 'fig-grid-2': figThumb('grid','2'), 'fig-grid-3': figThumb('grid','3'),
+    'fig-quote-1': figThumb('quote','1'), 'fig-quote-2': figThumb('quote','2'), 'fig-quote-3': figThumb('quote','3'),
+    'fig-closing-1': figThumb('closing','1'), 'fig-closing-2': figThumb('closing','2'), 'fig-closing-3': figThumb('closing','3'),
   };
   return <svg width="116" height="73" viewBox="0 0 116 73" fill="none">{map[layout]}</svg>;
 }
@@ -310,39 +416,67 @@ function LayoutSwitcherModal({ currentLayout, onSelect, onClose }: {
 
 /* ───────────────────────── Floating photo on slide ───────────────────────── */
 
-type SlidePhotoData = NonNullable<import('@/stores/presentationFlowStore').PresentationSlide['slidePhoto']>;
+type SlidePhotoData = NonNullable<import('@/stores/presentationFlowStore').PresentationSlide['slidePhotos']>[number];
 
-function PhotoLayer({ photo, editable, onPhotoChange, onSetBackground }: {
+// Selection keys shared by the multi-select system (photos + text blocks).
+const photoKey = (id: string) => `photo:${id}`;
+const TEXT_TITLE_KEY = 'text:title';
+const TEXT_CONTENT_KEY = 'text:content';
+const textKey = (block: 'title' | 'content') => block === 'title' ? TEXT_TITLE_KEY : TEXT_CONTENT_KEY;
+
+function PhotoLayer({ photo, editable, selected, onSelectedChange, onPhotoChange, onGuideChange }: {
   photo: SlidePhotoData;
   editable: boolean;
+  selected: boolean;
+  onSelectedChange: (v: boolean, shiftKey?: boolean) => void;
   onPhotoChange: (p: SlidePhotoData) => void;
-  onSetBackground: () => void;
+  onGuideChange?: (g: { x: boolean; y: boolean }) => void;
 }) {
-  const [selected, setSelected] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isIcon = !!photo.iconId;
 
-  // Deselect on outside click
+  // Deselect on outside click — the format bar now floats at the top of the canvas
+  // (outside this element's own DOM subtree), so clicks inside it must not count as "outside".
   useEffect(() => {
     if (!selected) return;
     const h = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setSelected(false);
+      const target = e.target as HTMLElement;
+      if (containerRef.current?.contains(target)) return;
+      if (target.closest?.('[data-photo-format-bar]')) return;
+      // Clicking a *different* selectable element (another photo, or a text block) is owned
+      // by that element's own click/shift-click handler — it must not also trigger a
+      // competing "clear everything" from this instance's outside-click listener.
+      if (target.closest?.('[data-select-key]')) return;
+      onSelectedChange(false);
     };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
-  }, [selected]);
+  }, [selected, onSelectedChange]);
 
   const startDrag = (e: React.PointerEvent) => {
     if (!editable) return;
     e.preventDefault(); e.stopPropagation();
-    setSelected(true);
+    if (e.shiftKey) { onSelectedChange(true, true); return; }
+    onSelectedChange(true);
     const parent = containerRef.current?.parentElement;
     if (!parent) return;
     const rect = parent.getBoundingClientRect();
     const ox = e.clientX, oy = e.clientY, sx = photo.x, sy = photo.y;
+    const SNAP = 0.8; // percent
     const onMove = (ev: PointerEvent) => {
-      onPhotoChange({ ...photo, x: Math.max(0, Math.min(95 - photo.w, sx + (ev.clientX - ox) / rect.width * 100)), y: Math.max(0, Math.min(95 - photo.h, sy + (ev.clientY - oy) / rect.height * 100)) });
+      let x = Math.max(0, Math.min(95 - photo.w, sx + (ev.clientX - ox) / rect.width * 100));
+      let y = Math.max(0, Math.min(95 - photo.h, sy + (ev.clientY - oy) / rect.height * 100));
+      const isX = Math.abs((x + photo.w / 2) - 50) <= SNAP;
+      const isY = Math.abs((y + photo.h / 2) - 50) <= SNAP;
+      if (isX) x = 50 - photo.w / 2;
+      if (isY) y = 50 - photo.h / 2;
+      onGuideChange?.({ x: isX, y: isY });
+      onPhotoChange({ ...photo, x, y });
     };
-    const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp);
+      onGuideChange?.({ x: false, y: false });
+    };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
   };
@@ -364,32 +498,16 @@ function PhotoLayer({ photo, editable, onPhotoChange, onSetBackground }: {
   return (
     <div
       ref={containerRef}
+      data-select-key={photoKey(photo.id)}
       style={{ position: 'absolute', left: `${photo.x}%`, top: `${photo.y}%`, width: `${photo.w}%`, height: `${photo.h}%`, zIndex: 10, borderRadius: 4, overflow: 'visible', userSelect: 'none' }}
       onPointerDown={startDrag}
-      onClick={e => { e.stopPropagation(); setSelected(true); }}
+      onClick={e => e.stopPropagation()}
     >
-      <img src={photo.url} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 4, cursor: editable ? 'move' : 'default', outline: selected && editable ? '2.5px solid #006EFE' : 'none', outlineOffset: 2, pointerEvents: 'none' }}/>
+      <img src={photo.url} style={{ width: '100%', height: '100%', objectFit: isIcon ? 'contain' : 'cover', display: 'block', borderRadius: 4, cursor: editable ? 'move' : 'default', outline: selected && editable ? '2.5px solid #006EFE' : 'none', outlineOffset: 2, pointerEvents: 'none' }}/>
 
       {/* Resize handle */}
       {selected && editable && (
         <div onPointerDown={startResize} style={{ position: 'absolute', bottom: -4, right: -4, width: 12, height: 12, borderRadius: 3, background: '#006EFE', border: '2px solid #fff', cursor: 'se-resize', zIndex: 12 }}/>
-      )}
-
-      {/* Floating toolbar */}
-      {selected && editable && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 1, background: '#15191F', borderRadius: 8, padding: '3px 4px', zIndex: 20, boxShadow: '0px 4px 12px rgba(0,0,0,0.25)', whiteSpace: 'nowrap' }}>
-          <button onClick={e => { e.stopPropagation(); onSetBackground(); setSelected(false); }} style={{ ...ns, fontSize: 11, fontWeight: 500, color: '#fff', background: 'none', border: 'none', cursor: 'pointer', padding: '3px 8px', borderRadius: 5 }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-            Set as background
-          </button>
-          <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.15)' }}/>
-          <button onClick={e => { e.stopPropagation(); onPhotoChange({ url: photo.url, x: -9999, y: 0, w: 0, h: 0 }); setSelected(false); }} style={{ ...ns, fontSize: 11, fontWeight: 500, color: '#FF7B7B', background: 'none', border: 'none', cursor: 'pointer', padding: '3px 8px', borderRadius: 5 }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-            Remove
-          </button>
-        </div>
       )}
     </div>
   );
@@ -425,9 +543,13 @@ interface DragProps {
   onContentOffsetChange: (o: TextOffset) => void;
   onBlockFocus: (block: 'title' | 'content') => void;
   focusedBlock: 'title' | 'content' | null;
-  onAiRewrite: (block: 'title' | 'content') => void;
-  onDuplicateSlide: () => void;
-  onDeleteSlide: () => void;
+  onGuideChange: (g: { x: boolean; y: boolean }) => void;
+  isSelected: (block: 'title' | 'content') => boolean;
+  onShiftSelect: (block: 'title' | 'content') => void;
+  groupDragActive: (block: 'title' | 'content') => boolean;
+  onGroupDragStart: () => void;
+  onGroupDragMove: (dxPx: number, dyPx: number) => void;
+  onGroupDragEnd: () => void;
 }
 
 function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, onPointDelete, dragProps, onImageClick, onAiRewriteTitle, onAiRewritePoint, aiRewritingTitle = false, aiRewritingPointIndex = null }: {
@@ -481,7 +603,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         const globalIdx = off + i;
         const isRewiring = aiRewritingPointIndex === globalIdx;
         const marker = slideListStyle === 'bullet'
-          ? <div style={{ width: 5, height: 5, borderRadius: '50%', background: theme.accentColor, marginTop: 6, flexShrink: 0 }}/>
+          ? <div style={{ width: 5, height: 5, borderRadius: '50%', background: theme.accentGradient ?? theme.accentColor, marginTop: 6, flexShrink: 0 }}/>
           : slideListStyle === 'numbered'
           ? <span style={{ fontFamily: contentFamily, fontSize: contentFontSize, fontWeight: slide.contentFontWeight ?? 600, color: theme.accentColor, flexShrink: 0, minWidth: 18, lineHeight: 1.5 }}>{globalIdx + 1}.</span>
           : null;
@@ -520,10 +642,14 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         offset={dragProps.titleOffset} onOffsetChange={dragProps.onTitleOffsetChange}
         stageRef={dragProps.stageRef} zoom={dragProps.zoom} label="Title"
         onFocus={() => dragProps.onBlockFocus('title')}
-        isActive={dragProps.focusedBlock === 'title'}
-        onAiRewrite={() => dragProps.onAiRewrite('title')}
-        onDuplicate={dragProps.onDuplicateSlide}
-        onDelete={dragProps.onDeleteSlide}
+        isActive={dragProps.focusedBlock === 'title' || dragProps.isSelected('title')}
+        onGuideChange={dragProps.onGuideChange}
+        selectKey={TEXT_TITLE_KEY}
+        onShiftSelect={() => dragProps.onShiftSelect('title')}
+        groupDragActive={dragProps.groupDragActive('title')}
+        onGroupDragStart={dragProps.onGroupDragStart}
+        onGroupDragMove={dragProps.onGroupDragMove}
+        onGroupDragEnd={dragProps.onGroupDragEnd}
       >{children}</DraggableBlock>
     ) : children;
 
@@ -533,10 +659,14 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         offset={dragProps.contentOffset} onOffsetChange={dragProps.onContentOffsetChange}
         stageRef={dragProps.stageRef} zoom={dragProps.zoom} label="Content"
         onFocus={() => dragProps.onBlockFocus('content')}
-        isActive={dragProps.focusedBlock === 'content'}
-        onAiRewrite={() => dragProps.onAiRewrite('content')}
-        onDuplicate={dragProps.onDuplicateSlide}
-        onDelete={dragProps.onDeleteSlide}
+        isActive={dragProps.focusedBlock === 'content' || dragProps.isSelected('content')}
+        onGuideChange={dragProps.onGuideChange}
+        selectKey={TEXT_CONTENT_KEY}
+        onShiftSelect={() => dragProps.onShiftSelect('content')}
+        groupDragActive={dragProps.groupDragActive('content')}
+        onGroupDragStart={dragProps.onGroupDragStart}
+        onGroupDragMove={dragProps.onGroupDragMove}
+        onGroupDragEnd={dragProps.onGroupDragEnd}
       >{children}</DraggableBlock>
     ) : children;
 
@@ -554,6 +684,77 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
       )}
     </div>
   );
+
+  // ── Ascend template — shared helpers ──
+  const figTitleFont = slide.titleFontFamily ?? theme.figTitleFont ?? "'Syne', sans-serif";
+  const figBodyFont = slide.contentFontFamily ?? "'Manrope', sans-serif";
+  // Aurora (gradient) themes paint rules/dots/badges with the theme's accent gradient; every other
+  // theme keeps painting them with the flat accentColor exactly as before.
+  const figAccentPaint = theme.accentGradient ?? theme.accentColor;
+  const figTitleStyle = (size: string, weight = 700): React.CSSProperties => ({
+    fontFamily: figTitleFont, fontSize: slide.titleFontSize ? `${slide.titleFontSize}px` : size,
+    fontWeight: slide.titleFontWeight ?? weight, color: textColor, lineHeight: 1.15, outline: 'none',
+    ...(titleTA ? { textAlign: titleTA } : {}),
+  });
+  const figBodyStyle = (size = 'clamp(10px,1.3vw,13px)'): React.CSSProperties => ({
+    fontFamily: figBodyFont, fontSize: slide.contentFontSize ? `${slide.contentFontSize}px` : size,
+    fontWeight: slide.contentFontWeight ?? 400, color: textColor, opacity: 0.85, lineHeight: 1.55, outline: 'none',
+    ...(contentTA ? { textAlign: contentTA } : {}),
+  });
+  /** Merges gradient-clip text properties onto a base style when the theme has an accent gradient; returns base unchanged otherwise. */
+  const figGradientTextStyle = (base: React.CSSProperties): React.CSSProperties =>
+    theme.accentGradient
+      ? { ...base, backgroundImage: theme.accentGradient, WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent', WebkitTextFillColor: 'transparent' }
+      : base;
+  const figEyebrow = (text: string, align: 'left' | 'center' = 'left') => (
+    theme.accentGradient ? (
+      <div style={{ display: 'inline-flex', alignSelf: align === 'center' ? 'center' : 'flex-start', fontFamily: figTitleFont, fontSize: 'clamp(8px,0.95vw,11px)', fontWeight: 600, color: '#fff', letterSpacing: '0.15em', textTransform: 'uppercase', background: theme.accentGradient, padding: '7px 16px', borderRadius: 100 }}>{text}</div>
+    ) : (
+      <p style={{ fontFamily: figTitleFont, fontSize: 'clamp(8px,0.95vw,11px)', fontWeight: 600, color: theme.accentColor, letterSpacing: '0.15em', textTransform: 'uppercase', textAlign: align, margin: 0 }}>{text}</p>
+    )
+  );
+  const figRule = (w = 40, h = 3, style: React.CSSProperties = {}) => <div style={{ width: w, height: h, borderRadius: h / 2, background: figAccentPaint, flexShrink: 0, ...style }}/>;
+  /** Blurred decorative gradient blob, used behind Aurora-style fig- slides only. */
+  const figGlowBlob = (style: React.CSSProperties) => (
+    <div style={{ position: 'absolute', borderRadius: '50%', background: theme.accentGradient, filter: 'blur(70px)', pointerEvents: 'none', ...style }}/>
+  );
+  /** FigCard style override for Aurora — a translucent glass panel instead of the default solid-white card. */
+  const figPanelStyle: React.CSSProperties | undefined = theme.accentGradient
+    ? { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)', boxShadow: 'none' }
+    : undefined;
+  const figGhostNum = (n: number, size = 'clamp(30px,4.5vw,48px)', mode: 'ghost' | 'badge' = 'ghost') => (
+    theme.accentGradient && mode === 'badge' ? (
+      <div style={{ width: size, height: size, borderRadius: '50%', background: theme.accentGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <span style={{ fontFamily: figTitleFont, fontWeight: 700, fontSize: 'clamp(11px,1.5vw,16px)', color: '#fff', lineHeight: 1 }}>{String(n).padStart(2, '0')}</span>
+      </div>
+    ) : (
+      <span style={{ fontFamily: figTitleFont, fontWeight: 800, fontSize: size, color: withAlpha(theme.accentColor, 0.18), lineHeight: 1, flexShrink: 0 }}>{String(n).padStart(2, '0')}</span>
+    )
+  );
+  const splitItem = (s: string): { heading: string; body: string } => {
+    const idx = s.indexOf('\n');
+    return idx === -1 ? { heading: s, body: '' } : { heading: s.slice(0, idx), body: s.slice(idx + 1) };
+  };
+  /** One heading+description unit shared by Headline+Bullets / Two-Three Columns / 2x2 Grid */
+  const figItem = (pt: string, i: number, opts: { ghost?: boolean; ruleAbove?: boolean } = {}) => {
+    const { heading, body } = splitItem(pt);
+    const isRewiring = aiRewritingPointIndex === i;
+    return (
+      <div key={i} className="group/pt flex flex-col" style={{ gap: 6, opacity: isRewiring ? 0.4 : undefined, transition: 'opacity 0.2s' }}>
+        {opts.ghost ? figGhostNum(i + 1, 'clamp(22px,3.2vw,34px)', 'badge') : opts.ruleAbove !== false ? figRule(24, 3, { marginBottom: 2 }) : null}
+        <div className="group/pt flex items-start" style={{ gap: 6 }}>
+          <p {...ep(v => onPointChange?.(i, `${v}\n${body}`))} style={{ ...figTitleStyle('clamp(13px,1.7vw,17px)', 700), flex: 1 }}>{heading}</p>
+          {editable && onPointDelete && (
+            <button onClick={e => { e.stopPropagation(); onPointDelete(i); }} className="opacity-0 group-hover/pt:opacity-100 transition-opacity flex items-center justify-center cursor-pointer flex-shrink-0"
+              style={{ width: 16, height: 16, borderRadius: 4, border: 'none', background: 'rgba(0,0,0,0.12)', marginTop: 3 }}>
+              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke={textColor} strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          )}
+        </div>
+        <p {...ep(v => onPointChange?.(i, `${heading}\n${v}`))} style={figBodyStyle()}>{body}</p>
+      </div>
+    );
+  };
 
   if (layout === 'centered') return (
     <div className="w-full h-full flex flex-col items-center text-center" style={{ padding: '8% 10%', justifyContent: alignJustify }}>
@@ -630,6 +831,314 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
     </div>
   );
 
+  // ── Ascend template: Cover ──
+  if (layout === 'fig-cover-1' || layout === 'fig-cover-2' || layout === 'fig-cover-3') {
+    const v = layout.slice(-1);
+    const centered = v === '3';
+    const circles = theme.accentGradient ? (
+      v === '1' ? (
+        <>
+          {figGlowBlob({ top: -220, right: -160, width: 560, height: 560, opacity: 0.28 })}
+          {figGlowBlob({ bottom: -180, left: -120, width: 380, height: 380, opacity: 0.24 })}
+        </>
+      ) : v === '2' ? (
+        <>
+          {figGlowBlob({ top: -260, right: -180, width: 620, height: 620, opacity: 0.35 })}
+          {figGlowBlob({ bottom: -200, left: -140, width: 420, height: 420, opacity: 0.3 })}
+        </>
+      ) : (
+        <>
+          {figGlowBlob({ top: '-10%', right: '-8%', width: 500, height: 500, opacity: 0.3 })}
+          {figGlowBlob({ bottom: '-8%', left: '-6%', width: 340, height: 340, opacity: 0.26 })}
+        </>
+      )
+    ) : v === '1' ? (
+      <div style={{ position: 'absolute', top: -60, right: -60, width: 220, height: 220, borderRadius: '50%', background: withAlpha(theme.accentColor, 0.12) }}/>
+    ) : v === '2' ? (
+      <>
+        <div style={{ position: 'absolute', top: -60, right: -60, width: 220, height: 220, borderRadius: '50%', background: withAlpha(theme.accentColor, 0.12) }}/>
+        <div style={{ position: 'absolute', bottom: -80, left: -80, width: 260, height: 260, borderRadius: '50%', background: withAlpha(theme.accentColor, 0.08) }}/>
+        <div style={{ position: 'absolute', bottom: 40, left: 60, width: 90, height: 90, borderRadius: '50%', background: withAlpha(theme.accentColor, 0.14) }}/>
+      </>
+    ) : (
+      <>
+        <div style={{ position: 'absolute', top: -140, right: -140, width: 440, height: 440, borderRadius: '50%', background: withAlpha(theme.accentColor, 0.10) }}/>
+        <div style={{ position: 'absolute', bottom: -100, left: -100, width: 300, height: 300, borderRadius: '50%', background: withAlpha(theme.accentColor, 0.08) }}/>
+      </>
+    );
+    return (
+      <div className="w-full h-full relative overflow-hidden">
+        {circles}
+        <div className="relative w-full h-full flex flex-col" style={{ padding: centered ? '8% 12%' : '10% 8% 10% 9%', justifyContent: centered ? 'center' : 'flex-end', alignItems: centered ? 'center' : 'flex-start', gap: 10 }}>
+          {figEyebrow('PRESENTATION', centered ? 'center' : 'left')}
+          {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(28px,5.6vw,60px)'), textAlign: centered ? 'center' : 'left', marginTop: 6 }}>{slide.title}</h2>)}
+          {wrapC(
+            <div className="flex flex-col" style={{ gap: 8, alignItems: centered ? 'center' : 'flex-start' }}>
+              {(slide.points[0] || editable) && <p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.7vw,18px)'), textAlign: centered ? 'center' : 'left', opacity: 0.7, maxWidth: 620 }}>{slide.points[0]}</p>}
+              {slide.points[1] && <p {...ep(v => onPointChange?.(1, v))} style={{ ...figBodyStyle('clamp(9px,1.1vw,13px)'), textAlign: centered ? 'center' : 'left', opacity: 0.45 }}>{slide.points[1]}</p>}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Ascend template: Section Divider ──
+  if (layout === 'fig-section-1' || layout === 'fig-section-2' || layout === 'fig-section-3') {
+    const v = layout.slice(-1);
+    const centered = v === '2';
+    return (
+      <div className="w-full h-full relative overflow-hidden flex flex-col" style={{ padding: '10% 9%', justifyContent: 'center', alignItems: centered ? 'center' : 'flex-start', gap: 12 }}>
+        {theme.accentGradient && (
+          <>
+            {figGlowBlob({ top: -260, right: -180, width: 620, height: 620, opacity: 0.35 })}
+            {figGlowBlob({ bottom: -200, left: -140, width: 420, height: 420, opacity: 0.3 })}
+          </>
+        )}
+        {v === '3' && <div style={{ position: 'absolute', right: '4%', top: '50%', transform: 'translateY(-50%)' }}>{figGhostNum(1, 'clamp(80px,14vw,180px)')}</div>}
+        {centered && figRule(48, 3, { margin: '0 auto' })}
+        {wrapC(figEyebrow(slide.points[0] || 'SECTION 01', centered ? 'center' : 'left'))}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(28px,5.6vw,60px)'), textAlign: centered ? 'center' : 'left', maxWidth: v === '3' ? '62%' : undefined }}>{slide.title}</h2>)}
+      </div>
+    );
+  }
+
+  // ── Ascend template: Quote ──
+  if (layout === 'fig-quote-1' || layout === 'fig-quote-2' || layout === 'fig-quote-3') {
+    const v = layout.slice(-1);
+    const centered = v !== '2';
+    return (
+      <div className="w-full h-full relative overflow-hidden flex flex-col" style={{ padding: '9% 11%', justifyContent: 'center', alignItems: centered ? 'center' : 'flex-start', gap: 14, textAlign: centered ? 'center' : 'left' }}>
+        {theme.accentGradient && (
+          <>
+            {figGlowBlob({ width: 70, height: 70, opacity: 0.5, top: '10%', right: '16%' })}
+            {figGlowBlob({ width: 26, height: 26, opacity: 0.6, bottom: '14%', right: '26%' })}
+          </>
+        )}
+        {v === '1' && <span style={figGradientTextStyle({ position: 'absolute', top: '4%', left: centered ? '8%' : '9%', fontFamily: figTitleFont, fontWeight: 800, fontSize: 'clamp(80px,14vw,180px)', color: withAlpha(theme.accentColor, 0.10), lineHeight: 1 })}>&ldquo;</span>}
+        {v === '3' && figRule(48, 3, { margin: centered ? '0 auto' : undefined })}
+        {figEyebrow('QUOTE', centered ? 'center' : 'left')}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.6vw,40px)'), textAlign: centered ? 'center' : 'left', maxWidth: 900 }}>{slide.title}</h2>)}
+        {v === '3' && figRule(48, 3, { margin: centered ? '0 auto' : undefined })}
+        {wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.6vw,16px)'), textAlign: centered ? 'center' : 'left', opacity: 0.55 }}>{slide.points[0]}</p>)}
+      </div>
+    );
+  }
+
+  // ── Ascend template: Closing ──
+  if (layout === 'fig-closing-1' || layout === 'fig-closing-2' || layout === 'fig-closing-3') {
+    const v = layout.slice(-1);
+    const align: 'left' | 'center' = v === '2' ? 'left' : 'center';
+    return (
+      <div className="w-full h-full relative overflow-hidden flex flex-col" style={{ padding: '9% 11%', justifyContent: 'center', alignItems: align === 'center' ? 'center' : (v === '3' ? 'flex-end' : 'flex-start'), gap: 12, textAlign: align === 'center' ? 'center' : (v === '3' ? 'right' : 'left') }}>
+        {theme.accentGradient && figGlowBlob({ bottom: -200, right: -140, width: 460, height: 460, opacity: 0.24 })}
+        {figEyebrow('THANK YOU', align === 'center' ? 'center' : (v === '3' ? 'left' : 'left'))}
+        {figRule(48, 3, { margin: align === 'center' ? '0 auto' : undefined })}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(28px,5.6vw,60px)'), textAlign: align === 'center' ? 'center' : (v === '3' ? 'right' : 'left') }}>{slide.title}</h2>)}
+        {wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.5vw,15px)'), textAlign: align === 'center' ? 'center' : (v === '3' ? 'right' : 'left'), opacity: 0.55 }}>{slide.points[0]}</p>)}
+      </div>
+    );
+  }
+
+  // ── Ascend template: Headline + Bullets ──
+  if (layout === 'fig-bullets-1' || layout === 'fig-bullets-2' || layout === 'fig-bullets-3') {
+    const v = layout.slice(-1);
+    if (v === '3') {
+      return (
+        <div className="w-full h-full flex" style={{ padding: '8% 7%', gap: '6%' }}>
+          <div className="flex flex-col flex-shrink-0" style={{ width: '38%', justifyContent: 'center' }}>
+            {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(20px,3.4vw,32px)')}>{slide.title}</h2>)}
+          </div>
+          <div className="flex-1" style={{ overflow: 'hidden' }}>
+            {wrapC(<div className="flex flex-col" style={{ gap: '6%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ruleAbove: true }))}</div>)}
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="w-full h-full flex flex-col" style={{ padding: '7% 8%' }}>
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{slide.title}</h2>)}
+        {wrapC(
+          v === '2' ? (
+            <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', columnGap: '6%', rowGap: '5%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ghost: true }))}</div>
+          ) : (
+            <div className="flex flex-col" style={{ gap: '4%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ruleAbove: true }))}</div>
+          )
+        )}
+      </div>
+    );
+  }
+
+  // ── Ascend template: Two Columns / Three Columns ──
+  if (layout === 'fig-two-col-1' || layout === 'fig-two-col-2' || layout === 'fig-two-col-3'
+    || layout === 'fig-three-col-1' || layout === 'fig-three-col-2' || layout === 'fig-three-col-3') {
+    const v = layout.slice(-1);
+    const stacked = v === '3';
+    return (
+      <div className="w-full h-full flex flex-col" style={{ padding: '7% 8%' }}>
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{slide.title}</h2>)}
+        {wrapC(
+          stacked ? (
+            <div className="flex flex-col" style={{ gap: '6%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ruleAbove: true }))}</div>
+          ) : (
+            <div className="flex" style={{ gap: '6%' }}>{slide.points.map((pt, i) => <div key={i} className="flex-1" style={{ minWidth: 0 }}>{figItem(pt, i, { ghost: v === '2' })}</div>)}</div>
+          )
+        )}
+      </div>
+    );
+  }
+
+  // ── Ascend template: Headline + 2x2 Grid ──
+  if (layout === 'fig-grid-1' || layout === 'fig-grid-2' || layout === 'fig-grid-3') {
+    const v = layout.slice(-1);
+    if (v === '3') {
+      return (
+        <div className="w-full h-full flex" style={{ padding: '8% 7%', gap: '6%' }}>
+          <div className="flex flex-col flex-shrink-0" style={{ width: '38%', justifyContent: 'center' }}>
+            {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(20px,3.4vw,32px)')}>{slide.title}</h2>)}
+          </div>
+          <div className="flex-1" style={{ overflow: 'hidden' }}>
+            {wrapC(<div className="grid" style={{ gridTemplateColumns: '1fr 1fr', columnGap: '6%', rowGap: '6%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ruleAbove: true }))}</div>)}
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="w-full h-full flex flex-col" style={{ padding: '7% 8%' }}>
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{slide.title}</h2>)}
+        {wrapC(<div className="grid" style={{ gridTemplateColumns: '1fr 1fr', columnGap: '6%', rowGap: '5%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ghost: v === '2' }))}</div>)}
+      </div>
+    );
+  }
+
+  // ── Ascend template: Photo + Text (image on the right) ──
+  if (layout === 'fig-photo-text-1' || layout === 'fig-photo-text-2' || layout === 'fig-photo-text-3') {
+    const v = layout.slice(-1);
+    const textBlock = (
+      <div className="flex flex-col" style={{ gap: 10, justifyContent: 'center' }}>
+        {figEyebrow('PRESENTATION')}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(22px,4vw,42px)')}>{slide.title}</h2>)}
+        {wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.5vw,15px)'), opacity: 0.75 }}>{slide.points[0]}</p>)}
+      </div>
+    );
+    if (v === '2') return (
+      <div className="w-full h-full flex flex-col">
+        <div style={{ flex: '0 0 47%' }}><ImageZone imageUrl={slide.imageUrl} editable={editable} onImageClick={onImageClick}/></div>
+        <div className="flex-1" style={{ padding: '5% 8%' }}>{textBlock}</div>
+      </div>
+    );
+    if (v === '3') return (
+      <div className="w-full h-full flex" style={{ padding: '4%', gap: '5%' }}>
+        <div className="flex-1" style={{ padding: '4% 0' }}>{textBlock}</div>
+        <div className="flex-shrink-0 overflow-hidden" style={{ width: '42%', borderRadius: 14 }}><ImageZone imageUrl={slide.imageUrl} editable={editable} onImageClick={onImageClick}/></div>
+      </div>
+    );
+    return (
+      <div className="w-full h-full flex">
+        <div className="flex-1" style={{ padding: '6% 5% 6% 7%' }}>{textBlock}</div>
+        <div className="flex-shrink-0 overflow-hidden" style={{ width: '48%' }}><ImageZone imageUrl={slide.imageUrl} editable={editable} onImageClick={onImageClick}/></div>
+      </div>
+    );
+  }
+
+  // ── Ascend template: Text + Photo (image on the left) ──
+  if (layout === 'fig-text-photo-1' || layout === 'fig-text-photo-2' || layout === 'fig-text-photo-3') {
+    const v = layout.slice(-1);
+    const textBlock = (
+      <div className="flex flex-col" style={{ gap: 10, justifyContent: 'center' }}>
+        {figEyebrow('PRESENTATION')}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(22px,4vw,42px)')}>{slide.title}</h2>)}
+        {wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.5vw,15px)'), opacity: 0.75 }}>{slide.points[0]}</p>)}
+      </div>
+    );
+    if (v === '2') return (
+      <div className="w-full h-full flex flex-col">
+        <div className="flex-1" style={{ padding: '5% 8%' }}>{textBlock}</div>
+        <div style={{ flex: '0 0 47%' }}><ImageZone imageUrl={slide.imageUrl} editable={editable} onImageClick={onImageClick}/></div>
+      </div>
+    );
+    if (v === '3') return (
+      <div className="w-full h-full flex" style={{ padding: '4%', gap: '5%' }}>
+        <div className="flex-shrink-0 overflow-hidden" style={{ width: '42%', borderRadius: 14 }}><ImageZone imageUrl={slide.imageUrl} editable={editable} onImageClick={onImageClick}/></div>
+        <div className="flex-1" style={{ padding: '4% 0' }}>{textBlock}</div>
+      </div>
+    );
+    return (
+      <div className="w-full h-full flex">
+        <div className="flex-shrink-0 overflow-hidden" style={{ width: '48%' }}><ImageZone imageUrl={slide.imageUrl} editable={editable} onImageClick={onImageClick}/></div>
+        <div className="flex-1" style={{ padding: '6% 7% 6% 5%' }}>{textBlock}</div>
+      </div>
+    );
+  }
+
+  // ── Ascend template: Full Image (bgImageUrl/bgColor already painted by the caller) ──
+  if (layout === 'fig-full-image-1' || layout === 'fig-full-image-2' || layout === 'fig-full-image-3') {
+    const v = layout.slice(-1);
+    const justify = v === '1' ? 'flex-end' : v === '2' ? 'flex-start' : 'center';
+    const scrim = v === '1'
+      ? 'linear-gradient(to top, rgba(0,0,0,0.72) 0%, rgba(0,0,0,0) 55%)'
+      : v === '2'
+      ? 'linear-gradient(to bottom, rgba(0,0,0,0.62) 0%, rgba(0,0,0,0) 55%)'
+      : 'rgba(0,0,0,0.35)';
+    return (
+      <div className="w-full h-full relative flex flex-col" style={{ padding: '8% 8%', justifyContent: justify }}>
+        <div className="absolute inset-0" style={{ background: scrim, pointerEvents: 'none' }}/>
+        <div className="relative flex flex-col" style={{ gap: 12 }}>
+          {theme.accentGradient && figEyebrow('FEATURE')}
+          {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(26px,5vw,52px)'), color: '#fff' }}>{slide.title}</h2>)}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Ascend template: Comparison ──
+  if (layout === 'fig-comparison-1' || layout === 'fig-comparison-2' || layout === 'fig-comparison-3') {
+    const v = layout.slice(-1);
+    const splitAt = slide.points.indexOf('---');
+    const leftPts = splitAt === -1 ? slide.points : slide.points.slice(0, splitAt);
+    const rightPts = splitAt === -1 ? [] : slide.points.slice(splitAt + 1);
+    const [leftHeading, ...leftBullets] = leftPts;
+    const [rightHeading, ...rightBullets] = rightPts;
+    const dotList = (bullets: string[], offset: number) => (
+      <div className="flex flex-col" style={{ gap: '6%' }}>
+        {bullets.map((b, i) => (
+          <div key={i} className="group/pt flex items-start" style={{ gap: 8 }}>
+            <div style={{ width: 6, height: 6, borderRadius: '50%', background: figAccentPaint, marginTop: 7, flexShrink: 0 }}/>
+            <p {...ep(v => onPointChange?.(offset + i, v))} style={{ ...figBodyStyle('clamp(10px,1.4vw,14px)'), flex: 1 }}>{b}</p>
+          </div>
+        ))}
+      </div>
+    );
+    const card = (heading: string, bullets: string[], offset: number, gradientHeading = false) => (
+      <div className="flex flex-col" style={{ gap: 14 }}>
+        <h3 style={gradientHeading ? figGradientTextStyle(figTitleStyle('clamp(14px,2vw,20px)')) : figTitleStyle('clamp(14px,2vw,20px)')}>{heading}</h3>
+        {dotList(bullets, offset)}
+      </div>
+    );
+    const panels = v === '1' ? (
+      <div className="flex flex-1 min-h-0" style={{ gap: '6%' }}>
+        <div className="flex-1">{card(leftHeading, leftBullets, 1)}</div>
+        <div className="flex-1">{card(rightHeading, rightBullets, splitAt + 2, true)}</div>
+      </div>
+    ) : v === '2' ? (
+      <div className="flex flex-1 min-h-0" style={{ gap: '4%' }}>
+        <FigCard style={{ flex: 1, padding: '5% 6%', ...figPanelStyle }}>{card(leftHeading, leftBullets, 1)}</FigCard>
+        <FigCard style={{ flex: 1, padding: '5% 6%', ...figPanelStyle }}>{card(rightHeading, rightBullets, splitAt + 2, true)}</FigCard>
+      </div>
+    ) : (
+      <div className="flex flex-col flex-1 min-h-0" style={{ gap: '4%' }}>
+        <FigCard style={{ padding: '4% 5%', ...figPanelStyle }}>{card(leftHeading, leftBullets, 1)}</FigCard>
+        <FigCard style={{ padding: '4% 5%', ...figPanelStyle }}>{card(rightHeading, rightBullets, splitAt + 2, true)}</FigCard>
+      </div>
+    );
+    return (
+      <div className="w-full h-full flex flex-col" style={{ padding: '7% 8%' }}>
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{slide.title}</h2>)}
+        {wrapC(panels)}
+      </div>
+    );
+  }
+
   // standard
   return (
     <div className="w-full h-full flex flex-col" style={{ padding: '7% 8%', justifyContent: alignJustify }}>
@@ -650,15 +1159,14 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
 /* ───────────────────────── Filmstrip thumbnail ───────────────────────── */
 
 function SlideThumbnail({ slide, theme, rounded = true }: { slide: PresentationSlide; theme: MockTheme; rounded?: boolean }) {
-  const VIRTUAL_W = 880;
   const containerRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(176 / VIRTUAL_W);
+  const [scale, setScale] = useState(176 / SLIDE_VIRTUAL_W);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const ro = new ResizeObserver(([entry]) => {
-      setScale(entry.contentRect.width / VIRTUAL_W);
+      setScale(entry.contentRect.width / SLIDE_VIRTUAL_W);
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -666,7 +1174,7 @@ function SlideThumbnail({ slide, theme, rounded = true }: { slide: PresentationS
 
   return (
     <div ref={containerRef} className={`relative w-full overflow-hidden${rounded ? ' rounded-[5px]' : ''}`} style={{ aspectRatio: '16/9', background: slide.bgImageUrl ? `url(${slide.bgImageUrl}) center/cover` : (slide.bgColor ?? theme.bg) }}>
-      <div style={{ position: 'absolute', top: 0, left: 0, width: VIRTUAL_W, height: VIRTUAL_W * 9 / 16, transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', top: 0, left: 0, width: SLIDE_VIRTUAL_W, height: SLIDE_VIRTUAL_W * 9 / 16, transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
         <SlideContent slide={slide} theme={theme} editable={false}/>
       </div>
     </div>
@@ -727,7 +1235,7 @@ function FilmstripItem({ slide, theme, index, isActive, isBlank, loading, onClic
           </button>
           {menuOpen && (
             <div className="absolute bg-white" style={{ top: 'calc(100% + 4px)', right: 0, width: 182, borderRadius: 9, border: '1px solid #E8EBF2', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)', padding: 4, zIndex: 40 }}>
-              {mi(isBlank ? 'Generate content' : 'Regenerate content', <SparkleIcon color="#7C5CFC"/>, () => { onGenerate(); setMenuOpen(false); })}
+              {mi(isBlank ? 'Generate content' : 'Regenerate content', <AISparkleIcon size={13}/>, () => { onGenerate(); setMenuOpen(false); })}
               {mi('Duplicate', <DuplicateIcon/>, () => { onDuplicate(); setMenuOpen(false); })}
               <div style={{ borderTop: '1px solid #F0F2F5', margin: '3px 0' }}/>
               {mi('Delete', <TrashIcon/>, () => { onRemove(); setMenuOpen(false); }, true)}
@@ -874,6 +1382,187 @@ function MediaPanel({ uploadedImages, setUploadedImages, mediaFileRef, onImageSe
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ───────────────────────── Artworks panel ───────────────────────── */
+
+// Shapes reuse the exact same element (a recolorable SVG dropped onto the slide) as icons —
+// the only real difference is intent: icons are small accents, shapes are often backgrounds,
+// dividers, or callouts, so they default to a noticeably bigger placement size.
+type ArtworkIcon = { id: string; keywords: string[]; svg: string; defaultWidthPct?: number };
+
+const ARTWORK_SHAPES: ArtworkIcon[] = [
+  { id: 'shape-rectangle', keywords: ['rectangle', 'square', 'box', 'rect'], defaultWidthPct: 30, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" fill="#15191F"/></svg>` },
+  { id: 'shape-rounded-rectangle', keywords: ['rounded rectangle', 'square', 'box', 'rect'], defaultWidthPct: 30, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="4" fill="#15191F"/></svg>` },
+  { id: 'shape-circle', keywords: ['circle', 'round', 'dot', 'oval'], defaultWidthPct: 24, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#15191F"/></svg>` },
+  { id: 'shape-ellipse', keywords: ['ellipse', 'oval'], defaultWidthPct: 30, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="6" fill="#15191F"/></svg>` },
+  { id: 'shape-triangle', keywords: ['triangle', 'wedge'], defaultWidthPct: 26, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2 22 20 2 20z" fill="#15191F"/></svg>` },
+  { id: 'shape-diamond', keywords: ['diamond', 'rhombus'], defaultWidthPct: 26, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2 22 12 12 22 2 12z" fill="#15191F"/></svg>` },
+  { id: 'shape-pentagon', keywords: ['pentagon'], defaultWidthPct: 26, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2 22 9.5 18 21 6 21 2 9.5z" fill="#15191F"/></svg>` },
+  { id: 'shape-hexagon', keywords: ['hexagon'], defaultWidthPct: 26, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 3 18 3 23 12 18 21 6 21 1 12z" fill="#15191F"/></svg>` },
+  { id: 'shape-star', keywords: ['star', 'favorite', 'rating'], defaultWidthPct: 26, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2l2.9 6.1 6.6.9-4.8 4.7 1.1 6.6-5.8-3-5.8 3 1.1-6.6-4.8-4.7 6.6-.9L12 2z" fill="#15191F"/></svg>` },
+  { id: 'shape-line', keywords: ['line', 'divider', 'separator'], defaultWidthPct: 34, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="1" y="11" width="22" height="2" rx="1" fill="#15191F"/></svg>` },
+  { id: 'shape-arrow-right', keywords: ['arrow', 'right', 'pointer'], defaultWidthPct: 30, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2 10h14V6l8 6-8 6v-4H2z" fill="#15191F"/></svg>` },
+  { id: 'shape-arrow-double', keywords: ['arrow', 'double', 'both ways'], defaultWidthPct: 34, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2 12l5-5v3h10v-3l5 5-5 5v-3H7v3z" fill="#15191F"/></svg>` },
+  { id: 'shape-speech-bubble', keywords: ['speech bubble', 'chat', 'callout', 'message'], defaultWidthPct: 30, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 5.5h18v11H9l-5 4v-4H3z" fill="#15191F"/></svg>` },
+];
+
+const ARTWORK_ICONS: ArtworkIcon[] = [
+  // Home / house family — several variants, like a real icon library
+  { id: 'house-outline', keywords: ['home', 'house', 'building', 'real estate'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v9.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V10"/><path d="M9.5 20.5v-6h5v6"/></svg>` },
+  { id: 'house-filled', keywords: ['home', 'house', 'building'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2.5 2 11h3v10h5v-7h4v7h5V11h3L12 2.5z" fill="#15191F"/></svg>` },
+  { id: 'house-simple-outline', keywords: ['home', 'house'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5 12 4l8 7.5"/><rect x="6" y="11" width="12" height="9" rx="0.6"/></svg>` },
+  { id: 'house-door-filled', keywords: ['home', 'house', 'door'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 3 3 11h2v9h14v-9h2L12 3z" fill="#15191F"/><rect x="10" y="14" width="4" height="6" fill="#fff"/></svg>` },
+  { id: 'house-compact-filled', keywords: ['home', 'house', 'cabin'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 4 4 10.5V20h16v-9.5L12 4z" fill="#15191F"/></svg>` },
+  { id: 'house-tall-outline', keywords: ['home', 'house', 'window'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10 12 2l9 8"/><path d="M6 9v12h12V9"/><line x1="9" y1="21" x2="9" y2="15"/><line x1="15" y1="21" x2="15" y2="15"/><line x1="9" y1="15" x2="15" y2="15"/></svg>` },
+  { id: 'house-overhang-outline', keywords: ['home', 'house', 'roof'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10.5 12 3l10 7.5"/><line x1="4" y1="10.5" x2="20" y2="10.5"/><path d="M5 10.5V21h14V10.5"/></svg>` },
+  { id: 'house-heart-outline', keywords: ['home', 'house', 'favorite', 'real estate'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 12 3l9 8"/><path d="M5 10v10h14V10"/><path d="M12 19c-2.7-1.8-4-3.3-4-4.9a1.9 1.9 0 0 1 3.6-.9 1.9 1.9 0 0 1 3.6.9c0 1.6-1.3 3.1-4 4.9z" fill="#15191F" stroke="none"/></svg>` },
+  { id: 'roof-triangle-filled', keywords: ['home', 'roof', 'triangle', 'tent'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 4 2 14h20L12 4z" fill="#15191F"/></svg>` },
+  { id: 'roof-triangle-outline', keywords: ['home', 'roof', 'triangle', 'mountain'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 2 14h20L12 4z"/></svg>` },
+
+  // General
+  { id: 'user-outline', keywords: ['user', 'person', 'profile', 'account'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg>` },
+  { id: 'user-filled', keywords: ['user', 'person', 'profile'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" fill="#15191F"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7z" fill="#15191F"/></svg>` },
+  { id: 'users-outline', keywords: ['users', 'people', 'team', 'group'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c0-3.8 3-6 6.5-6s6.5 2.2 6.5 6"/><path d="M16 8.5a2.8 2.8 0 1 1 0-5.6"/><path d="M15 14.3c2.9.4 4.5 2.3 4.5 5.7"/></svg>` },
+  { id: 'heart-outline', keywords: ['heart', 'like', 'love', 'favorite'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.5C6 16.7 3 13.3 3 9.6a4.6 4.6 0 0 1 8.5-2.4A4.6 4.6 0 0 1 21 9.6c0 3.7-3 7.1-9 10.9z"/></svg>` },
+  { id: 'heart-filled', keywords: ['heart', 'like', 'love', 'favorite'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 20.5C6 16.7 3 13.3 3 9.6a4.6 4.6 0 0 1 8.5-2.4A4.6 4.6 0 0 1 21 9.6c0 3.7-3 7.1-9 10.9z" fill="#15191F"/></svg>` },
+  { id: 'star-outline', keywords: ['star', 'favorite', 'rating'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.8 5.7 6.2.9-4.5 4.4 1 6.2-5.5-2.9-5.5 2.9 1-6.2-4.5-4.4 6.2-.9L12 3.5z"/></svg>` },
+  { id: 'star-filled', keywords: ['star', 'favorite', 'rating'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 3.5l2.8 5.7 6.2.9-4.5 4.4 1 6.2-5.5-2.9-5.5 2.9 1-6.2-4.5-4.4 6.2-.9L12 3.5z" fill="#15191F"/></svg>` },
+  { id: 'mail-outline', keywords: ['mail', 'email', 'message', 'envelope'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 6.5 12 13l8.5-6.5"/></svg>` },
+  { id: 'phone-outline', keywords: ['phone', 'call', 'telephone'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3h3l1.5 4.5-2.2 1.8a12 12 0 0 0 5.9 5.9l1.8-2.2 4.5 1.5v3a2 2 0 0 1-2.2 2A17.5 17.5 0 0 1 4.5 5.2 2 2 0 0 1 6.5 3z"/></svg>` },
+  { id: 'calendar-outline', keywords: ['calendar', 'date', 'schedule', 'event'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/></svg>` },
+  { id: 'clock-outline', keywords: ['clock', 'time', 'watch'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>` },
+  { id: 'check-circle-filled', keywords: ['check', 'done', 'success', 'complete'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#15191F"/><path d="M7.5 12.5l3 3 6-6.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>` },
+  { id: 'close-circle-outline', keywords: ['close', 'cancel', 'x', 'remove'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>` },
+  { id: 'search-outline', keywords: ['search', 'find', 'magnify'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><line x1="20" y1="20" x2="15.2" y2="15.2"/></svg>` },
+  { id: 'settings-gear-outline', keywords: ['settings', 'gear', 'config'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.07-.4.1-.8.1-1.2z"/></svg>` },
+  { id: 'camera-outline', keywords: ['camera', 'photo', 'picture'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2.5h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/></svg>` },
+  { id: 'image-outline', keywords: ['image', 'picture', 'photo'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5.5-5.5L4 20"/></svg>` },
+  { id: 'video-outline', keywords: ['video', 'camera', 'film'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="M15.5 10.5 21.5 7v10l-6-3.5z"/></svg>` },
+  { id: 'music-note-outline', keywords: ['music', 'note', 'audio', 'sound'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V4l11-2v14"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></svg>` },
+  { id: 'folder-outline', keywords: ['folder', 'files', 'directory'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7z"/></svg>` },
+  { id: 'file-outline', keywords: ['file', 'document', 'page'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.5h9l4 4V21a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1z"/><path d="M15 2.5V7h4"/></svg>` },
+  { id: 'download-outline', keywords: ['download', 'arrow', 'save'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10.5 12 15.5 17 10.5"/><path d="M4 19.5h16"/></svg>` },
+  { id: 'upload-outline', keywords: ['upload', 'arrow', 'cloud'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M7 7.5 12 2.5 17 7.5"/><path d="M4 19.5h16"/></svg>` },
+  { id: 'link-outline', keywords: ['link', 'chain', 'url'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 14.5 14.5 9.5"/><path d="M11 6.5 13.3 4.2a3.5 3.5 0 1 1 5 5L15.8 11.5"/><path d="M13 17.5 10.7 19.8a3.5 3.5 0 1 1-5-5L8.2 12.5"/></svg>` },
+  { id: 'lock-outline', keywords: ['lock', 'security', 'private'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="11" width="15" height="10" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></svg>` },
+  { id: 'shopping-cart-outline', keywords: ['cart', 'shopping', 'store', 'buy'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h2.2l1 3M6.2 7l1.9 8h9.8l1.8-6.5H6.2"/><circle cx="9.5" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/></svg>` },
+  { id: 'shopping-bag-outline', keywords: ['bag', 'shopping', 'store', 'buy'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h12l1 12.5H5L6 8z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>` },
+  { id: 'tag-outline', keywords: ['tag', 'label', 'price'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12.5 3.5H20v7.5L11 20l-8-8 8.5-8.5z"/><circle cx="16" cy="8" r="1.4"/></svg>` },
+  { id: 'gift-outline', keywords: ['gift', 'present', 'box'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="9" width="18" height="4" rx="0.6"/><rect x="4.5" y="13" width="15" height="8" rx="0.8"/><path d="M12 9v12"/><path d="M12 9C9 9 8 7.3 8 6a2 2 0 0 1 4 0zM12 9c3 0 4-1.7 4-3a2 2 0 0 0-4 0z"/></svg>` },
+  { id: 'bell-outline', keywords: ['bell', 'notification', 'alert'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 17V10a6 6 0 0 1 12 0v7l2 2H4l2-2z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>` },
+  { id: 'flag-outline', keywords: ['flag', 'marker', 'milestone'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4.5h13l-3 4.5 3 4.5H5"/></svg>` },
+  { id: 'map-pin-outline', keywords: ['pin', 'location', 'map', 'place'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-6.4 7-11.5A7 7 0 0 0 5 9.5C5 14.6 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>` },
+  { id: 'globe-outline', keywords: ['globe', 'world', 'earth', 'web'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><line x1="3" y1="12" x2="21" y2="12"/></svg>` },
+  { id: 'sun-outline', keywords: ['sun', 'weather', 'bright'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2.5 12H5M19 12h2.5M4.2 19.8 6 18M18 6l1.8-1.8"/></svg>` },
+  { id: 'moon-outline', keywords: ['moon', 'night', 'dark'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 0 0 10.5 10.5z"/></svg>` },
+  { id: 'cloud-outline', keywords: ['cloud', 'weather', 'storage'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18.5a4.5 4.5 0 0 1-.5-9 5.5 5.5 0 0 1 10.6-1.9A4.2 4.2 0 0 1 17 18.5H7z"/></svg>` },
+  { id: 'thumbs-up-outline', keywords: ['thumbs up', 'like', 'approve'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11h4v10H3z"/><path d="M7 11l4-8a2 2 0 0 1 2 2v4h5a2 2 0 0 1 2 2.3l-1.3 7A2 2 0 0 1 16.8 21H7"/></svg>` },
+  { id: 'message-outline', keywords: ['message', 'chat', 'bubble'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.5h18v11H8l-5 4v-4H3z"/></svg>` },
+  { id: 'send-outline', keywords: ['send', 'arrow', 'message'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 3 10.5l7.5 3L14 21l7-18z"/><path d="M10.5 13.5 21 3"/></svg>` },
+  { id: 'trash-outline', keywords: ['trash', 'delete', 'bin'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6 7l1 13.5h10L18 7"/></svg>` },
+  { id: 'edit-pencil-outline', keywords: ['edit', 'pencil', 'write'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l1-4.5L15.5 5 19 8.5 8.5 19 4 20z"/><path d="M13.5 6.5 17.5 10"/></svg>` },
+  { id: 'plus-circle-outline', keywords: ['plus', 'add', 'new'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>` },
+  { id: 'arrow-right-outline', keywords: ['arrow', 'right', 'next'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="19" y2="12"/><path d="M13 6l6 6-6 6"/></svg>` },
+  { id: 'play-circle-filled', keywords: ['play', 'video', 'media'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#15191F"/><path d="M10 8.5l6 3.5-6 3.5z" fill="#fff"/></svg>` },
+  { id: 'book-outline', keywords: ['book', 'read', 'education'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5h7A2.5 2.5 0 0 1 13.5 7v13A2.5 2.5 0 0 0 11 18H4z"/><path d="M20 4.5h-7A2.5 2.5 0 0 0 10.5 7v13A2.5 2.5 0 0 1 13 18h7z"/></svg>` },
+  { id: 'bookmark-outline', keywords: ['bookmark', 'save', 'favorite'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5h12v17l-6-4-6 4v-17z"/></svg>` },
+  { id: 'briefcase-outline', keywords: ['briefcase', 'work', 'business', 'job'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7.5" width="18" height="12" rx="2"/><path d="M8 7.5V5.5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="3" y1="13" x2="21" y2="13"/></svg>` },
+  { id: 'target-outline', keywords: ['target', 'goal', 'aim'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="#15191F" stroke="none"/></svg>` },
+  { id: 'lightbulb-outline', keywords: ['idea', 'lightbulb', 'bright'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M12 3a6.5 6.5 0 0 0-3.5 12c.7.5 1 1 1 1.8V18h5v-1.2c0-.8.3-1.3 1-1.8A6.5 6.5 0 0 0 12 3z"/></svg>` },
+  { id: 'rocket-outline', keywords: ['rocket', 'launch', 'growth'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5c3 1.5 5 5 5 9.5-1 1-2 2-5 3-3-1-4-2-5-3 0-4.5 2-8 5-9.5z"/><circle cx="12" cy="10" r="1.6"/><path d="M8 15l-3 4 4-1"/><path d="M16 15l3 4-4-1"/></svg>` },
+  { id: 'shield-outline', keywords: ['shield', 'security', 'protect'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 20 5.5v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10v-6z"/><path d="M8.5 12l2.3 2.3L15.5 9.8"/></svg>` },
+  { id: 'chart-bar-outline', keywords: ['chart', 'bar', 'analytics', 'graph'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="20" y2="21"/><rect x="5.5" y="13" width="3.5" height="8"/><rect x="10.5" y="8" width="3.5" height="13"/><rect x="15.5" y="4" width="3.5" height="17"/></svg>` },
+  { id: 'trending-up-outline', keywords: ['trending', 'growth', 'chart', 'arrow'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 17 9 11 13 15 21 6"/><polyline points="15 6 21 6 21 12"/></svg>` },
+  { id: 'grid-outline', keywords: ['grid', 'layout', 'dashboard'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>` },
+  { id: 'list-outline', keywords: ['list', 'menu', 'items'], svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#15191F" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="4.5" cy="6" r="1" fill="#15191F"/><circle cx="4.5" cy="12" r="1" fill="#15191F"/><circle cx="4.5" cy="18" r="1" fill="#15191F"/><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/></svg>` },
+];
+
+const ARTWORK_ICON_DEFAULT_COLOR = '#15191F';
+const recolorArtworkSvg = (svg: string, color: string) => svg.replace(/#15191F/g, color);
+const artworkIconUri = (svg: string) => `data:image/svg+xml,${encodeURIComponent(svg)}`;
+const ARTWORK_DND_TYPE = 'application/x-designrr-artwork';
+
+function ArtworksPanel({ onIconSelect }: { onIconSelect: (icon: ArtworkIcon) => void }) {
+  const [query, setQuery] = useState('');
+  // Shapes and icons are both just recolorable SVGs dropped on the slide (same onIconSelect
+  // path) — the only reason they're not one flat list is that mixing "circle" in with "user
+  // profile icon" makes both harder to scan, so a tab keeps each list purposeful.
+  const [tab, setTab] = useState<'icons' | 'shapes'>('icons');
+
+  const source = tab === 'icons' ? ARTWORK_ICONS : ARTWORK_SHAPES;
+  const filtered = query.trim()
+    ? source.filter(icon => icon.keywords.some(k => k.includes(query.trim().toLowerCase())))
+    : source;
+
+  return (
+    <div className="flex flex-col" style={{ gap: 12 }}>
+      <div className="flex items-center" style={{ background: '#F0F2F5', borderRadius: 9, padding: 3, gap: 2 }}>
+        {([['icons', 'Icons'], ['shapes', 'Shapes']] as const).map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} className="flex-1 cursor-pointer"
+            style={{ height: 30, borderRadius: 7, border: 'none', ...ns, fontSize: 12.5, fontWeight: 700,
+              transition: 'background 0.15s, color 0.15s, box-shadow 0.15s',
+              background: tab === id ? '#fff' : 'transparent',
+              boxShadow: tab === id ? '0 1px 3px rgba(15,23,51,0.12)' : 'none',
+              color: tab === id ? '#15191F' : '#8996AC' }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center" style={{ gap: 6, border: '1px solid #E0E5EB', borderRadius: 8, padding: '9px 10px', background: '#fff' }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0AABA" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder={tab === 'icons' ? 'Search icons…' : 'Search shapes…'}
+          className="flex-1 outline-none bg-transparent"
+          style={{ ...ns, fontSize: 13, color: '#15191F', border: 'none' }}
+        />
+      </div>
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center" style={{ paddingTop: 40, gap: 4 }}>
+          <div className="flex items-center justify-center" style={{ width: 44, height: 44, borderRadius: '50%', background: '#F4F5F7', marginBottom: 6 }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#B0BBCA" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><line x1="20" y1="20" x2="15.2" y2="15.2"/><line x1="8" y1="10.5" x2="13" y2="10.5"/></svg>
+          </div>
+          <span style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#52637A' }}>{tab === 'icons' ? 'No icons found' : 'No shapes found'}</span>
+          <span style={{ ...ns, fontSize: 12, color: '#A0AABA', textAlign: 'center', maxWidth: 180 }}>
+            {`No results for “${query.trim()}”. Try a different search term.`}
+          </span>
+          <button
+            onClick={() => setQuery('')}
+            className="cursor-pointer"
+            style={{ marginTop: 10, border: 'none', background: 'none', padding: 0, ...ns, fontSize: 12.5, fontWeight: 600, color: '#006EFE' }}
+          >
+            Clear search
+          </button>
+        </div>
+      ) : (
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+          {filtered.map(icon => (
+            <button
+              key={icon.id}
+              draggable
+              onDragStart={e => {
+                e.dataTransfer.setData(ARTWORK_DND_TYPE, icon.id);
+                e.dataTransfer.setData('text/uri-list', artworkIconUri(icon.svg));
+                e.dataTransfer.effectAllowed = 'copy';
+              }}
+              onClick={() => onIconSelect(icon)}
+              className="cursor-grab active:cursor-grabbing flex items-center justify-center"
+              style={{ aspectRatio: '1/1', borderRadius: 10, border: '1px solid #E8EBF2', background: '#fff', padding: 0 }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = '#006EFE'; e.currentTarget.style.background = '#F8FBFF'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = '#E8EBF2'; e.currentTarget.style.background = '#fff'; }}
+            >
+              <img src={artworkIconUri(icon.svg)} draggable={false} style={{ width: tab === 'shapes' ? '62%' : '48%', height: tab === 'shapes' ? '62%' : '48%', objectFit: 'contain', display: 'block', pointerEvents: 'none' }}/>
+            </button>
+          ))}
+        </div>
+      )}
+      <p style={{ ...ns, fontSize: 11.5, color: '#A0AABA', textAlign: 'center', marginTop: 4 }}>
+        Artwork by <a href="https://iconify.design" target="_blank" rel="noopener noreferrer" style={{ color: '#A0AABA', textDecoration: 'underline' }}>Iconify</a>
+      </p>
     </div>
   );
 }
@@ -1034,6 +1723,220 @@ function FontSizeDropdown({ value, onChange }: { value: number; onChange: (v: nu
   );
 }
 
+const LANGUAGE_OPTIONS = [
+  { value: 'en-US', label: 'English (US)', flag: '🇺🇸' },
+  { value: 'en-GB', label: 'English (UK)', flag: '🇬🇧' },
+  { value: 'es', label: 'Spanish', flag: '🇪🇸' },
+  { value: 'fr', label: 'French', flag: '🇫🇷' },
+  { value: 'de', label: 'German', flag: '🇩🇪' },
+  { value: 'pt', label: 'Portuguese', flag: '🇵🇹' },
+  { value: 'it', label: 'Italian', flag: '🇮🇹' },
+  { value: 'nl', label: 'Dutch', flag: '🇳🇱' },
+  { value: 'pl', label: 'Polish', flag: '🇵🇱' },
+  { value: 'ru', label: 'Russian', flag: '🇷🇺' },
+  { value: 'ja', label: 'Japanese', flag: '🇯🇵' },
+  { value: 'zh-Hans', label: 'Chinese (Simplified)', flag: '🇨🇳' },
+  { value: 'zh-Hant', label: 'Chinese (Traditional)', flag: '🇹🇼' },
+  { value: 'ko', label: 'Korean', flag: '🇰🇷' },
+  { value: 'ar', label: 'Arabic', flag: '🇸🇦' },
+  { value: 'hi', label: 'Hindi', flag: '🇮🇳' },
+  { value: 'tr', label: 'Turkish', flag: '🇹🇷' },
+  { value: 'sv', label: 'Swedish', flag: '🇸🇪' },
+  { value: 'no', label: 'Norwegian', flag: '🇳🇴' },
+  { value: 'da', label: 'Danish', flag: '🇩🇰' },
+] as const;
+
+const TRANSITION_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'fade', label: 'Fade' },
+  { value: 'slide', label: 'Slide' },
+  { value: 'zoom', label: 'Zoom' },
+  { value: 'dissolve', label: 'Dissolve' },
+] as const;
+
+function SettingsGlobeIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+      <circle cx="8" cy="8" r="6.3" stroke="#15191F" strokeWidth="1.3" />
+      <ellipse cx="8" cy="8" rx="2.7" ry="6.3" stroke="#15191F" strokeWidth="1.3" />
+      <line x1="1.7" y1="8" x2="14.3" y2="8" stroke="#15191F" strokeWidth="1.3" />
+    </svg>
+  );
+}
+
+function SettingsTransitionIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#15191F" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="17 2 21 6 17 10" />
+      <path d="M3 6h18" />
+      <polyline points="7 22 3 18 7 14" />
+      <path d="M21 18H3" />
+    </svg>
+  );
+}
+
+function SettingsClockIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#15191F" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="12 7 12 12 15.5 13.5" />
+    </svg>
+  );
+}
+
+function SettingsClockHistoryIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#15191F" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <polyline points="3 4 3 9 8 9" />
+      <polyline points="12 7 12 12 15 14" />
+    </svg>
+  );
+}
+
+function LanguageSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setTimeout(() => inputRef.current?.focus(), 50);
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  const filtered = query.trim()
+    ? LANGUAGE_OPTIONS.filter(l => l.label.toLowerCase().includes(query.toLowerCase()))
+    : LANGUAGE_OPTIONS;
+
+  const current = LANGUAGE_OPTIONS.find(l => l.value === value) ?? LANGUAGE_OPTIONS[0];
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        onMouseDown={e => { e.preventDefault(); setOpen(v => !v); }}
+        className="w-full flex items-center justify-between cursor-pointer"
+        style={{ height: 44, padding: '0 14px', borderRadius: 10, border: '1px solid #E0E5EB', background: '#fff' }}
+      >
+        <span className="flex items-center" style={{ gap: 9 }}>
+          <span style={{ fontSize: 17 }}>{current.flag}</span>
+          <span style={{ ...ns, fontSize: 14.5, fontWeight: 600, color: '#15191F' }}>{current.label}</span>
+        </span>
+        <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="#8C97A8" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      </button>
+      {open && (
+        <div className="absolute z-50 bg-white" style={{ top: 'calc(100% + 4px)', left: 0, right: 0, borderRadius: 10, border: '1.5px solid #E3E6EC', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)', overflow: 'hidden' }}>
+          <div style={{ padding: '8px 8px 4px' }}>
+            <div className="flex items-center" style={{ gap: 6, background: '#F5F7FA', borderRadius: 7, padding: '5px 8px' }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A0AABA" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search language…"
+                className="flex-1 outline-none bg-transparent"
+                style={{ ...ns, fontSize: 12, color: '#15191F', border: 'none' }}
+              />
+            </div>
+          </div>
+          <div style={{ maxHeight: 220, overflowY: 'auto', padding: '4px 8px 8px' }}>
+            {filtered.length === 0 ? (
+              <p style={{ ...ns, fontSize: 12, color: '#A0AABA', padding: '8px 4px' }}>No languages found</p>
+            ) : filtered.map(l => (
+              <button key={l.value}
+                onMouseDown={e => { e.preventDefault(); onChange(l.value); setOpen(false); setQuery(''); }}
+                className="w-full flex items-center cursor-pointer"
+                style={{ gap: 8, height: 32, padding: '0 8px', borderRadius: 6, border: 'none', background: l.value === value ? '#EFF6FF' : 'none', ...ns, fontSize: 13, fontWeight: 500, color: l.value === value ? '#006EFE' : '#15191F', textAlign: 'left' }}
+                onMouseEnter={e => { if (l.value !== value) e.currentTarget.style.background = '#F5F7FA'; }}
+                onMouseLeave={e => { if (l.value !== value) e.currentTarget.style.background = 'none'; }}
+              >
+                <span style={{ fontSize: 15 }}>{l.flag}</span>
+                {l.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TransitionTypeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  const current = TRANSITION_OPTIONS.find(t => t.value === value) ?? TRANSITION_OPTIONS[0];
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+      <button
+        onMouseDown={e => { e.preventDefault(); setOpen(v => !v); }}
+        className="w-full flex items-center justify-between cursor-pointer"
+        style={{ height: 44, padding: '0 14px', borderRadius: 10, border: '1px solid #E0E5EB', background: '#fff' }}
+      >
+        <span style={{ ...ns, fontSize: 14.5, fontWeight: 600, color: '#15191F' }}>{current.label}</span>
+        <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="#8C97A8" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      </button>
+      {open && (
+        <div className="absolute z-50 bg-white" style={{ top: 'calc(100% + 4px)', left: 0, right: 0, borderRadius: 10, border: '1.5px solid #E3E6EC', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)', overflow: 'hidden' }}>
+          {TRANSITION_OPTIONS.map(t => (
+            <button key={t.value}
+              onMouseDown={e => { e.preventDefault(); onChange(t.value); setOpen(false); }}
+              className="w-full flex items-center cursor-pointer text-left"
+              style={{ height: 34, padding: '0 12px', border: 'none', background: t.value === value ? '#EFF6FF' : 'none', ...ns, fontSize: 13.5, fontWeight: t.value === value ? 600 : 500, color: t.value === value ? '#006EFE' : '#15191F' }}
+              onMouseEnter={e => { if (t.value !== value) e.currentTarget.style.background = '#F5F7FA'; }}
+              onMouseLeave={e => { if (t.value !== value) e.currentTarget.style.background = 'none'; }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SettingsNumberField({ value, onChange, min, max, width = 64 }: { value: number; onChange: (v: number) => void; min: number; max: number; width?: number }) {
+  const [raw, setRaw] = useState(String(value));
+  useEffect(() => { setRaw(String(value)); }, [value]);
+
+  const commit = () => {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n)) {
+      const clamped = Math.min(max, Math.max(min, n));
+      onChange(clamped);
+      setRaw(String(clamped));
+    } else {
+      setRaw(String(value));
+    }
+  };
+
+  return (
+    <input
+      value={raw}
+      onChange={e => setRaw(e.target.value.replace(/[^0-9]/g, ''))}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+      inputMode="numeric"
+      style={{ width, height: 44, flexShrink: 0, textAlign: 'center', border: '1px solid #E0E5EB', borderRadius: 10, ...ns, fontSize: 14.5, fontWeight: 600, color: '#15191F' }}
+    />
+  );
+}
+
+function SettingsSectionDivider() {
+  return <div style={{ height: 1, background: '#EEF0F4', margin: '13px 0' }} />;
+}
+
 const TEXT_COLORS = [
   '#15191F', '#52637A', '#FFFFFF', '#006EFE',
   '#5326BD', '#E54B4B', '#29A341', '#F4C430',
@@ -1173,7 +2076,7 @@ function TextFormatBar({ slide, theme, focusedBlock, onFontFamilyChange, onFontW
         {content}
       </button>
     );
-    return tooltipLabel ? <Tooltip key={tooltipLabel} label={tooltipLabel} position="top">{btn}</Tooltip> : btn;
+    return tooltipLabel ? <Tooltip key={tooltipLabel} label={tooltipLabel} position="bottom">{btn}</Tooltip> : btn;
   };
 
   return (
@@ -1222,7 +2125,132 @@ function TextFormatBar({ slide, theme, focusedBlock, onFontFamilyChange, onFontW
   );
 }
 
-function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode, focusedBlock, onFontSizeChange, onFontFamilyChange, onFontWeightChange, onTextColorChange, onListStyleChange, onTextAlignChange, onThemeChange, onBgColorChange, onBgImageChange, onBgToSlidePhoto, onContentAlignChange }: {
+/* Floating bar for a selected photo/icon — same shell as TextFormatBar so only one
+   style of format bar ever appears, whichever kind of content is selected. */
+const DIMENSION_MIN = 10;
+const DIMENSION_MAX = 95;
+
+// The slide canvas is 16:9, so equal w%/h% does NOT render as a square — h% covers a
+// physically shorter axis. To render a box that's visually square, h% must be w% * 16/9.
+const SLIDE_ASPECT = 16 / 9;
+const squareIconHeightPct = (widthPct: number) => Math.round(widthPct * SLIDE_ASPECT);
+
+function DimensionField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  const [inputVal, setInputVal] = useState(String(Math.round(value)));
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { setInputVal(String(Math.round(value))); }, [value]);
+
+  const commit = (raw: string) => {
+    const v = Math.round(parseFloat(raw));
+    if (!isNaN(v)) onChange(Math.max(DIMENSION_MIN, Math.min(DIMENSION_MAX, v)));
+    else setInputVal(String(Math.round(value)));
+  };
+
+  const step = (delta: number) => onChange(Math.max(DIMENSION_MIN, Math.min(DIMENSION_MAX, Math.round(value) + delta)));
+
+  return (
+    <div className="flex items-center flex-shrink-0" style={{ gap: 5, height: 32, padding: '0 6px 0 9px', borderRadius: 7, border: '1px solid #E3E6EC', background: '#FAFBFC' }}>
+      <span style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#B0BBCA', letterSpacing: 0.3 }}>{label}</span>
+      <input
+        ref={inputRef}
+        value={inputVal}
+        onChange={e => setInputVal(e.target.value)}
+        onFocus={() => inputRef.current?.select()}
+        onBlur={e => commit(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { commit(inputVal); inputRef.current?.blur(); }
+          if (e.key === 'Escape') { setInputVal(String(Math.round(value))); inputRef.current?.blur(); }
+          if (e.key === 'ArrowUp') { e.preventDefault(); step(1); }
+          if (e.key === 'ArrowDown') { e.preventDefault(); step(-1); }
+        }}
+        style={{ width: 18, border: 'none', outline: 'none', background: 'transparent', ...ns, fontSize: 12.5, fontWeight: 600, color: '#15191F' }}
+      />
+      <button
+        onMouseDown={e => { e.preventDefault(); step(-1); }}
+        title="Step down (or use ↑/↓ while editing)"
+        className="cursor-pointer flex-shrink-0"
+        style={{ width: 14, height: 14, border: 'none', background: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#A0AABA', padding: 0 }}
+        onMouseEnter={e => { e.currentTarget.style.color = '#52637A'; }} onMouseLeave={e => { e.currentTarget.style.color = '#A0AABA'; }}
+      >
+        <svg width="8" height="5" viewBox="0 0 8 5" fill="none"><path d="M1 1l3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      </button>
+    </div>
+  );
+}
+
+function DimensionGroup({ w, h, lockAspect, onLockToggle, onWChange, onHChange }: {
+  w: number; h: number; lockAspect: boolean; onLockToggle: () => void;
+  onWChange: (v: number) => void; onHChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center flex-shrink-0" style={{ gap: 6 }}>
+      <DimensionField label="W" value={w} onChange={onWChange} />
+      <Tooltip label={lockAspect ? 'Unlock aspect ratio' : 'Lock aspect ratio'} position="bottom">
+        <button
+          onClick={onLockToggle}
+          className="cursor-pointer flex items-center justify-center flex-shrink-0"
+          style={{ width: 32, height: 32, borderRadius: 7, border: '1px solid #E3E6EC', background: lockAspect ? '#EFF6FF' : '#FAFBFC', color: lockAspect ? '#006EFE' : '#8C97A8' }}
+        >
+          {lockAspect ? (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          ) : (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.75-1.5"/></svg>
+          )}
+        </button>
+      </Tooltip>
+      <DimensionField label="H" value={h} onChange={onHChange} />
+    </div>
+  );
+}
+
+function PhotoFormatBar({ photo, isIcon, onColorChange, onSetBackground, onResize }: {
+  photo: SlidePhotoData;
+  isIcon: boolean;
+  onColorChange?: (color: string) => void;
+  onSetBackground: () => void;
+  onResize: (w: number, h: number) => void;
+}) {
+  const [lockAspect, setLockAspect] = useState(true);
+  const sep = <div style={{ width: 1, height: 18, background: '#E3E6EC', flexShrink: 0, margin: '0 4px' }} />;
+  const textBtn = (label: string, color: string, hoverBg: string, onClick: () => void) => (
+    <button onClick={onClick} className="cursor-pointer" style={{ ...ns, fontSize: 12, fontWeight: 500, color, background: 'none', border: 'none', padding: '5px 8px', borderRadius: 6 }}
+      onMouseEnter={e => { e.currentTarget.style.background = hoverBg; }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+      {label}
+    </button>
+  );
+
+  const handleWChange = (w: number) => {
+    if (lockAspect && photo.w > 0) onResize(w, Math.max(DIMENSION_MIN, Math.min(DIMENSION_MAX, Math.round(w * (photo.h / photo.w)))));
+    else onResize(w, photo.h);
+  };
+  const handleHChange = (h: number) => {
+    if (lockAspect && photo.h > 0) onResize(Math.max(DIMENSION_MIN, Math.min(DIMENSION_MAX, Math.round(h * (photo.w / photo.h)))), h);
+    else onResize(photo.w, h);
+  };
+
+  return (
+    <div className="flex items-center" style={{ background: '#fff', borderRadius: 12, border: '1px solid #E3E6EC', boxShadow: '0px 4px 20px rgba(15,23,51,0.12)', padding: '5px 10px', gap: 3, flexShrink: 0 }}>
+      {isIcon && onColorChange ? (
+        <BarColorPicker value={photo.iconColor ?? ARTWORK_ICON_DEFAULT_COLOR} onChange={onColorChange} />
+      ) : (
+        textBtn('Set as background', '#52637A', '#F5F7FA', onSetBackground)
+      )}
+      {sep}
+      <DimensionGroup
+        w={photo.w}
+        h={photo.h}
+        lockAspect={lockAspect}
+        onLockToggle={() => setLockAspect(v => !v)}
+        onWChange={handleWChange}
+        onHChange={handleHChange}
+      />
+    </div>
+  );
+}
+
+function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode, focusedBlock, onFontSizeChange, onFontFamilyChange, onFontWeightChange, onTextColorChange, onListStyleChange, onTextAlignChange, onThemeChange, onBgColorChange, onBgImageChange, onBgToSlidePhoto, onContentAlignChange, selectedPhotoId, onPhotoColorChange, onPhotoSetBackground, onPhotoResize }: {
   slide: PresentationSlide | null;
   theme: MockTheme;
   onLayoutChange: (l: SlideLayout) => void;
@@ -1240,10 +2268,14 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
   onBgImageChange: (url: string | undefined) => void;
   onBgToSlidePhoto?: () => void;
   onContentAlignChange: (align: 'top' | 'center' | 'bottom') => void;
+  selectedPhotoId: string | null;
+  onPhotoColorChange: (color: string) => void;
+  onPhotoSetBackground: () => void;
+  onPhotoResize: (w: number, h: number) => void;
 }) {
+  const [photoLockAspect, setPhotoLockAspect] = useState(true);
+  const selectedPhoto = slide?.slidePhotos?.find(p => p.id === selectedPhotoId) ?? null;
   const currentLayout: SlideLayout = slide?.layout ?? (slide?.type === 'headline' ? 'centered' : 'standard');
-  const currentType: SlideType = slide?.type ?? 'content';
-  const isHeadline = currentType === 'headline';
 
   const currentFontSize = focusedBlock === 'title' ? (slide?.titleFontSize ?? 24) : (slide?.contentFontSize ?? 14);
   const curFamily = focusedBlock === 'title' ? (slide?.titleFontFamily ?? "'Nunito Sans', sans-serif") : (slide?.contentFontFamily ?? "'Nunito Sans', sans-serif");
@@ -1253,20 +2285,26 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
   const curAlign  = (focusedBlock === 'title' ? slide?.titleTextAlign : slide?.contentTextAlign) ?? 'left';
 
   const section = (label: string, children: React.ReactNode) => (
-    <div style={{ padding: '14px 16px', borderBottom: '1px solid #F0F2F5' }}>
-      <p style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#A0AABA', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 10 }}>{label}</p>
+    <div style={{ padding: '16px', borderBottom: '1px solid #F0F2F5' }}>
+      <p style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: '#15191F', letterSpacing: 0, marginBottom: 14 }}>{label}</p>
       {children}
     </div>
   );
 
   const miniLabel = (text: string) => (
-    <p style={{ ...ns, fontSize: 9, fontWeight: 700, color: '#A8B3C4', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8 }}>{text}</p>
+    <p style={{ ...ns, fontSize: 9.5, fontWeight: 700, color: '#A8B3C4', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8 }}>{text}</p>
   );
 
 
-  const headlineLayouts: SlideLayout[] = ['centered', 'big-title', 'minimal'];
-  const contentLayouts: SlideLayout[] = ['standard', 'image-right', 'image-left', 'two-column', 'split', 'minimal'];
-  const visibleLayouts = LAYOUTS.filter(l => isHeadline ? headlineLayouts.includes(l.id) : contentLayouts.includes(l.id));
+  // Every slide, headline or content, picks from the same 3 layouts — matches the
+  // Ascend template families below, which are likewise always scoped to 3 siblings.
+  const universalLayouts: SlideLayout[] = ['centered', 'big-title', 'minimal'];
+  // Ascend template layouts (fig-<family>-<1|2|3>) are scoped to their own 3 sibling variants,
+  // rather than mixed into the generic layout list above.
+  const curFigFamily = figFamilyOf(currentLayout);
+  const visibleLayouts = curFigFamily
+    ? LAYOUTS.filter(l => figFamilyOf(l.id) === curFigFamily)
+    : LAYOUTS.filter(l => universalLayouts.includes(l.id));
 
   return (
     <div className="flex-shrink-0 h-full overflow-y-auto border-l border-border-light bg-white" style={{ width: RIGHT_PANEL_W, overflowX: 'hidden' }}>
@@ -1278,9 +2316,8 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
         /* ── Option 1: modern text panel ── */
         <>
           {/* Header */}
-          <div className="flex items-center" style={{ padding: '10px 14px 9px', borderBottom: '1px solid #F2F3F7', gap: 6 }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7C5CFC" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
-            <span style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#7C5CFC', letterSpacing: 0.4, textTransform: 'uppercase' }}>
+          <div className="flex items-center" style={{ padding: '10px 14px 9px', borderBottom: '1px solid #F2F3F7' }}>
+            <span style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#52637A', letterSpacing: 0.4, textTransform: 'uppercase' }}>
               Text — {focusedBlock === 'title' ? 'Title' : 'Content'}
             </span>
           </div>
@@ -1378,14 +2415,76 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
         </>
       ) : (
         <>
-          {section('Layout', (
+          {selectedPhoto && (() => {
+            const photo = selectedPhoto;
+            const isIcon = !!photo.iconId;
+            const handleWChange = (w: number) => {
+              if (photoLockAspect && photo.w > 0) onPhotoResize(w, Math.max(DIMENSION_MIN, Math.min(DIMENSION_MAX, Math.round(w * (photo.h / photo.w)))));
+              else onPhotoResize(w, photo.h);
+            };
+            const handleHChange = (h: number) => {
+              if (photoLockAspect && photo.h > 0) onPhotoResize(Math.max(DIMENSION_MIN, Math.min(DIMENSION_MAX, Math.round(h * (photo.w / photo.h)))), h);
+              else onPhotoResize(photo.w, h);
+            };
+            return (
+              <div data-photo-format-bar>
+                {/* Header — same shape as the Text panel's header, styled neutral */}
+                <div className="flex items-center" style={{ padding: '10px 14px 9px', borderBottom: '1px solid #F2F3F7' }}>
+                  <span style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#52637A', letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                    {isIcon ? 'Icon' : 'Photo'}
+                  </span>
+                </div>
+
+                <div style={{ padding: '12px 14px', borderBottom: '1px solid #F2F3F7' }}>
+                  {miniLabel('Dimensions')}
+                  <DimensionGroup
+                    w={photo.w}
+                    h={photo.h}
+                    lockAspect={photoLockAspect}
+                    onLockToggle={() => setPhotoLockAspect(v => !v)}
+                    onWChange={handleWChange}
+                    onHChange={handleHChange}
+                  />
+                </div>
+
+                {isIcon ? (
+                  <div style={{ padding: '12px 14px', borderBottom: '1px solid #F2F3F7' }}>
+                    {miniLabel('Color')}
+                    <div className="flex items-center" style={{ gap: 6 }}>
+                      {TEXT_COLORS.map(hex => {
+                        const active = (photo.iconColor ?? ARTWORK_ICON_DEFAULT_COLOR) === hex;
+                        return (
+                          <button key={hex} onClick={() => onPhotoColorChange(hex)} className="cursor-pointer flex-shrink-0"
+                            style={{ width: 22, height: 22, borderRadius: '50%', background: hex, border: 'none', padding: 0, boxShadow: active ? '0 0 0 2px #fff, 0 0 0 3.5px #006EFE' : '0 0 0 1px rgba(0,0,0,0.12)' }}/>
+                        );
+                      })}
+                      <label className="cursor-pointer flex-shrink-0 flex items-center justify-center" title="Custom colour"
+                        style={{ width: 22, height: 22, borderRadius: '50%', border: '1px dashed #C8CDD8', background: '#F7F8FA', position: 'relative', overflow: 'hidden' }}>
+                        <svg width="11" height="11" viewBox="0 0 640 640" fill="#8E99AB" style={{ pointerEvents: 'none' }}><path d={paintBucketPath}/></svg>
+                        <input type="color" value={photo.iconColor ?? ARTWORK_ICON_DEFAULT_COLOR} onChange={e => onPhotoColorChange(e.target.value)} className="absolute opacity-0 cursor-pointer" style={{ width: '100%', height: '100%', top: 0, left: 0 }}/>
+                      </label>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ padding: '12px 14px', borderBottom: '1px solid #F2F3F7' }}>
+                    <button onClick={onPhotoSetBackground} className="cursor-pointer" style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', padding: 0, textAlign: 'left' }}>
+                      Set as background
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          {!selectedPhoto && section('Layout', (
             <div className="grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: 7 }}>
               {visibleLayouts.map(l => {
                 const isSel = l.id === currentLayout;
                 return (
                   <div key={l.id} className="flex flex-col" style={{ gap: 5 }}>
                     <button onClick={() => onLayoutChange(l.id)} className="flex flex-col items-start cursor-pointer" style={{ borderRadius: 7, border: isSel ? '1.5px solid #006EFE' : '1.5px solid #E3E6EC', background: isSel ? '#EFF6FF' : '#fff', padding: 4, overflow: 'hidden' }}>
-                      <div className="w-full overflow-hidden" style={{ borderRadius: 4, background: '#fff' }}><LayoutThumbSVG layout={l.id}/></div>
+                      <div className="w-full overflow-hidden" style={{ borderRadius: 4, background: '#fff' }}>
+                        {slide ? <SlideThumbnail slide={{ ...slide, layout: l.id }} theme={theme} rounded={false}/> : <LayoutThumbSVG layout={l.id}/>}
+                      </div>
                     </button>
                     <span style={{ ...ns, fontSize: 10.5, fontWeight: isSel ? 600 : 500, color: isSel ? '#006EFE' : '#52637A' }}>{l.name}</span>
                   </div>
@@ -1393,7 +2492,7 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
               })}
             </div>
           ))}
-          {section('Background', (
+          {!selectedPhoto && section('Background', (
             <div className="flex flex-col" style={{ gap: 8 }}>
               <div className="flex items-center" style={{ gap: 6 }}>
                 {[
@@ -1589,6 +2688,33 @@ export function PresentationEditorView() {
   const [slides, setSlides]     = useState<PresentationSlide[]>(storeSlides);
   const [zoom, setZoom]         = useState(100);
   const [zoomOpen, setZoomOpen] = useState(false);
+  const canvasScrollRef = useRef<HTMLDivElement>(null);
+  const editorRootRef = useRef<HTMLDivElement>(null);
+
+  // Trackpad pinch-to-zoom: browsers report pinch gestures as wheel events with ctrlKey
+  // set to true (also covers ctrl/cmd + scroll-wheel on a mouse), distinct from normal
+  // two-finger scrolling which has ctrlKey false. React registers onWheel as a passive
+  // listener, so preventDefault() there can't stop the browser's own page zoom — it has
+  // to be a native, non-passive listener. The listener is bound to the whole editor (not
+  // just the canvas) so that pinching over the side panels/toolbar also gets blocked from
+  // triggering the browser's page zoom — but the zoom level itself only changes when the
+  // gesture happens over the canvas (center panel), leaving other panels un-zoomed.
+  useEffect(() => {
+    const root = editorRootRef.current;
+    const canvas = canvasScrollRef.current;
+    if (!root || !canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      if (!canvas.contains(e.target as Node)) return;
+      setZoom(z => {
+        const next = Math.round(z - e.deltaY);
+        return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, next));
+      });
+    };
+    root.addEventListener('wheel', onWheel, { passive: false });
+    return () => root.removeEventListener('wheel', onWheel);
+  }, []);
   const [themeOpen, setThemeOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [narratedVideoOpen, setNarratedVideoOpen] = useState(false);
@@ -1623,9 +2749,22 @@ export function PresentationEditorView() {
   const [canRedo, setCanRedo] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<'slide' | 'text'>('slide');
   const [focusedBlock, setFocusedBlock]   = useState<'title' | 'content' | null>(null);
+  // Unified multi-select: each entry is `photo:<id>` or `text:title` / `text:content`.
+  // A "single selection" of one photo or one text block drives the existing property
+  // panels; 2+ entries means a group is selected (group move + group delete only).
+  const [selection, setSelection] = useState<string[]>([]);
+  const groupDragStartRef = useRef<{ photos: Record<string, { x: number; y: number }>; title: TextOffset; content: TextOffset } | null>(null);
+  const [centerGuides, setCenterGuides] = useState<{ x: boolean; y: boolean }>({ x: false, y: false });
+  const [artworkDropActive, setArtworkDropActive] = useState(false);
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [textEditorMode, setTextEditorMode] = useState<'panel' | 'bar'>('panel');
   const [notesPanelHeight, setNotesPanelHeight] = useState(90);
-  const [leftPanel, setLeftPanel] = useState<'slides' | 'media' | 'templates' | 'text' | 'settings'>('slides');
+  const [leftPanel, setLeftPanel] = useState<'slides' | 'media' | 'templates' | 'text' | 'artworks' | 'settings'>('slides');
+  const [settingsLanguage, setSettingsLanguage] = useState('en-US');
+  const [settingsTransitionType, setSettingsTransitionType] = useState('fade');
+  const [settingsTransitionMs, setSettingsTransitionMs] = useState(600);
+  const [settingsDefaultDuration, setSettingsDefaultDuration] = useState(5);
+  const [settingsMinDuration, setSettingsMinDuration] = useState(3);
   const [templateDetailId, setTemplateDetailId] = useState<string | null>(null);
   const [checkedSlideIds, setCheckedSlideIds] = useState<string[]>([]);
   const [activeFont, setActiveFont] = useState<string>("'Nunito Sans', sans-serif");
@@ -1639,6 +2778,7 @@ export function PresentationEditorView() {
   const themeRef  = useRef<HTMLDivElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const stageRef  = useRef<HTMLDivElement>(null);
+  const stageBoxRef = useRef<HTMLDivElement>(null);
   const historyRef = useRef<PresentationSlide[][]>([JSON.parse(JSON.stringify(storeSlides))]);
   const histIdxRef = useRef(0);
   const notesResizeRef = useRef<{ sy: number; sh: number } | null>(null);
@@ -1647,6 +2787,10 @@ export function PresentationEditorView() {
   const theme = (selectedThemeId && selectedThemeId !== 'blank') ? (MOCK_THEMES.find(t => t.id === selectedThemeId) ?? MOCK_THEMES[0]) : NEUTRAL_THEME;
   const activeSlide = slides.find(s => s.id === activeSlideId) ?? slides[0] ?? null;
   const activeIndex = slides.findIndex(s => s.id === (activeSlide?.id ?? ''));
+  const isMultiSelect = selection.length > 1;
+  const selectedPhotoId = selection.length === 1 && selection[0].startsWith('photo:') ? selection[0].slice(6) : null;
+  const selectedPhoto = activeSlide?.slidePhotos?.find(p => p.id === selectedPhotoId) ?? null;
+  const isKeySelected = (key: string) => selection.includes(key);
 
   // Generation progress animation on first load
   const [isFirstLoad, setIsFirstLoad] = useState(slides.length > 0);
@@ -1666,6 +2810,25 @@ export function PresentationEditorView() {
     return () => { clearInterval(iv); clearTimeout(to); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The slide box's on-screen width changes whenever surrounding chrome (side panels,
+  // window size) changes. Content is authored at a fixed natural width (SLIDE_VIRTUAL_W,
+  // shared with SlideThumbnail) and scaled to fit — otherwise fixed/vw-based font sizes
+  // stay the same CSS px regardless of the box shrinking, and text wraps instead of scaling.
+  const [containerScale, setContainerScale] = useState(1);
+  useEffect(() => {
+    const el = stageBoxRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setContainerScale(entry.contentRect.width / SLIDE_VIRTUAL_W);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+    // Re-attach whenever the observed node itself changes: the skeleton (isFirstLoad) renders
+    // no stage box at all (ref is null until it clears), and the box remounts on every slide
+    // switch (key={activeSlide.id}) — without these deps the observer keeps watching a stale
+    // or nonexistent node and containerScale never updates from its default of 1.
+  }, [isFirstLoad, activeSlide?.id]);
 
   // Auto-save + history
   useEffect(() => {
@@ -1728,6 +2891,7 @@ export function PresentationEditorView() {
   useEffect(() => {
     setRightPanelMode('slide');
     setFocusedBlock(null);
+    setSelection([]);
     setPendingGenerateId(null);
     setSlidePrompt('');
   }, [activeSlideId]);
@@ -1760,24 +2924,114 @@ export function PresentationEditorView() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.contentEditable === 'true') return;
       if (e.key === 'ArrowDown' && activeIndex < slides.length-1) setActiveSlideId(slides[activeIndex+1].id);
       if (e.key === 'ArrowUp' && activeIndex > 0) setActiveSlideId(slides[activeIndex-1].id);
-      if ((e.key === 'Delete' || e.key === 'Backspace') && activeSlide) { e.preventDefault(); removeSlide(activeSlide.id); }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && activeSlide) {
+        const photoIdsToRemove = selection.filter(k => k.startsWith('photo:')).map(k => k.slice(6));
+        if (photoIdsToRemove.length > 0) {
+          e.preventDefault();
+          updateSlidePartial(activeSlide.id, { slidePhotos: (activeSlide.slidePhotos ?? []).filter(p => !photoIdsToRemove.includes(p.id)) });
+          // Text blocks in a mixed selection aren't deleted (that would destroy slide content) —
+          // just drop the removed photos from the selection, keep any selected text selected.
+          setSelection(prev => prev.filter(k => !k.startsWith('photo:')));
+        } else {
+          e.preventDefault();
+          removeSlide(activeSlide.id);
+        }
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === 'z') { e.preventDefault(); undo(); }
       if ((e.metaKey || e.ctrlKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); redo(); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [activeIndex, slides, presentIndex, activeSlide]);
+  }, [activeIndex, slides, presentIndex, activeSlide, selection]);
 
   const updateSlidePartial = (id: string, changes: Partial<PresentationSlide>) =>
     setSlides(p => p.map(s => s.id === id ? { ...s, ...changes } : s));
+
+  const genPhotoId = () => `photo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const addSlidePhoto = (slideId: string, photo: SlidePhotoData) =>
+    setSlides(p => p.map(s => s.id === slideId ? { ...s, slidePhotos: [...(s.slidePhotos ?? []), photo] } : s));
+
+  const updateSlidePhoto = (slideId: string, photoId: string, changes: Partial<SlidePhotoData>) =>
+    setSlides(p => p.map(s => s.id === slideId ? { ...s, slidePhotos: (s.slidePhotos ?? []).map(ph => ph.id === photoId ? { ...ph, ...changes } : ph) } : s));
+
+  const removeSlidePhoto = (slideId: string, photoId: string) =>
+    setSlides(p => p.map(s => s.id === slideId ? { ...s, slidePhotos: (s.slidePhotos ?? []).filter(ph => ph.id !== photoId) } : s));
+
+  // Shared by both the floating photo/icon toolbar (option B) and the right-panel
+  // photo section (option A) so the two UIs stay behaviorally identical.
+  const handlePhotoColorChange = (color: string) => {
+    if (!activeSlide || !selectedPhotoId) return;
+    const photo = activeSlide.slidePhotos?.find(p => p.id === selectedPhotoId);
+    if (!photo?.iconId) return;
+    const icon = ARTWORK_ICONS.find(i => i.id === photo.iconId);
+    if (!icon) return;
+    updateSlidePhoto(activeSlide.id, selectedPhotoId, { url: artworkIconUri(recolorArtworkSvg(icon.svg, color)), iconColor: color });
+  };
+  const handlePhotoSetBackground = () => {
+    if (!activeSlide || !selectedPhotoId) return;
+    const photo = activeSlide.slidePhotos?.find(p => p.id === selectedPhotoId);
+    if (!photo) return;
+    updateSlidePartial(activeSlide.id, {
+      bgImageUrl: photo.url,
+      slidePhotos: (activeSlide.slidePhotos ?? []).filter(p => p.id !== selectedPhotoId),
+      textColorOverride: '#FFFFFF',
+    });
+    setSelection([]);
+  };
+  const handlePhotoResize = (w: number, h: number) => {
+    if (!activeSlide || !selectedPhotoId) return;
+    updateSlidePhoto(activeSlide.id, selectedPhotoId, { w, h });
+  };
+
+  // Group move: snapshot every selected item's starting position, then apply the same
+  // raw screen-pixel delta to all of them (converted into each item's own coordinate
+  // system — percent-of-stage for photos, offset px for text, matching their solo-drag math).
+  const beginGroupDrag = () => {
+    if (!activeSlide) return;
+    const photos: Record<string, { x: number; y: number }> = {};
+    selection.forEach(k => {
+      if (!k.startsWith('photo:')) return;
+      const p = activeSlide.slidePhotos?.find(ph => ph.id === k.slice(6));
+      if (p) photos[p.id] = { x: p.x, y: p.y };
+    });
+    groupDragStartRef.current = {
+      photos,
+      title: activeSlide.titleOffset ?? { x: 0, y: 0 },
+      content: activeSlide.contentOffset ?? { x: 0, y: 0 },
+    };
+  };
+
+  const applyGroupDragDelta = (dxPx: number, dyPx: number) => {
+    const start = groupDragStartRef.current;
+    if (!activeSlide || !start) return;
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    if (stageRect) {
+      const dxPct = dxPx / stageRect.width * 100;
+      const dyPct = dyPx / stageRect.height * 100;
+      Object.entries(start.photos).forEach(([id, s]) => {
+        updateSlidePhoto(activeSlide.id, id, { x: s.x + dxPct, y: s.y + dyPct });
+      });
+    }
+    const textScale = (zoom * containerScale) / 100;
+    const updates: Partial<PresentationSlide> = {};
+    if (selection.includes(TEXT_TITLE_KEY)) updates.titleOffset = { x: start.title.x + dxPx / textScale, y: start.title.y + dyPx / textScale };
+    if (selection.includes(TEXT_CONTENT_KEY)) updates.contentOffset = { x: start.content.x + dxPx / textScale, y: start.content.y + dyPx / textScale };
+    if (Object.keys(updates).length) updateSlidePartial(activeSlide.id, updates);
+  };
 
   const updateTitle  = (id: string, v: string) => updateSlidePartial(id, { title: v });
   const updatePoint  = (id: string, i: number, v: string) => setSlides(p => p.map(s => s.id === id ? { ...s, points: s.points.map((pt, j) => j === i ? v : pt) } : s));
   const removePoint  = (id: string, i: number) => setSlides(p => p.map(s => s.id === id ? { ...s, points: s.points.filter((_, j) => j !== i) } : s));
   const updateLayout = (id: string, layout: SlideLayout) => {
     const bulletLayouts: SlideLayout[] = ['standard', 'image-right', 'image-left', 'two-column'];
+    const figFamily = figFamilyOf(layout);
     setSlides(p => p.map(s => {
       if (s.id !== id) return s;
+      if (figFamily && s.points.length === 0) {
+        const seed = FIG_DEFAULT_POINTS[figFamily];
+        return { ...s, layout, ...(seed ? { points: seed } : {}) };
+      }
       const needsPoints = bulletLayouts.includes(layout) && s.points.length === 0;
       return { ...s, layout, ...(needsPoints ? { points: ['Add a point…'] } : {}) };
     }));
@@ -2004,25 +3258,30 @@ export function PresentationEditorView() {
   const isBlankSlide = (s: PresentationSlide) =>
     s.title === 'New slide' || (s.title === '' && s.points.length === 0) || (s.points.length > 0 && s.points.every(p => p === 'Add a point…'));
 
-  const handleAddTemplateSlides = () => {
+  const handleAddTemplateSlides = (mode: 'add' | 'replace' = 'add') => {
     const tmpl = MOCK_THEMES.find(t => t.id === templateDetailId);
     if (!tmpl) return;
+    // Full spread — a slide's look (bg/photo/fonts/alignment) lives in these fields, not just
+    // title/type/points/layout, so applying a template must carry all of it or slides render
+    // as plain text instead of matching what the template preview showed.
     const toAdd = tmpl.slides
       .filter(s => checkedSlideIds.length === 0 || checkedSlideIds.includes(s.id))
       .map(s => ({
+        ...s,
         id: `${s.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        title: s.title,
-        type: s.type as SlideType,
         points: [...s.points],
-        layout: s.layout as SlideLayout | undefined,
       } as PresentationSlide));
-    setSlides(prev => {
-      const idx = prev.findIndex(s => s.id === activeSlideId);
-      const insertAt = idx >= 0 ? idx + 1 : prev.length;
-      const next = [...prev];
-      next.splice(insertAt, 0, ...toAdd);
-      return next;
-    });
+    if (mode === 'replace') {
+      setSlides(toAdd);
+    } else {
+      setSlides(prev => {
+        const idx = prev.findIndex(s => s.id === activeSlideId);
+        const insertAt = idx >= 0 ? idx + 1 : prev.length;
+        const next = [...prev];
+        next.splice(insertAt, 0, ...toAdd);
+        return next;
+      });
+    }
     setActiveSlideId(toAdd[0].id);
     setLeftPanel('slides');
   };
@@ -2031,19 +3290,20 @@ export function PresentationEditorView() {
 
   const dragProps: DragProps | undefined = activeSlide ? {
     stageRef,
-    zoom,
+    zoom: zoom * containerScale,
     titleOffset: activeSlide.titleOffset,
     contentOffset: activeSlide.contentOffset,
     onTitleOffsetChange: (o) => updateSlidePartial(activeSlide.id, { titleOffset: o }),
     onContentOffsetChange: (o) => updateSlidePartial(activeSlide.id, { contentOffset: o }),
-    onBlockFocus: (block) => { setFocusedBlock(block); setRightPanelMode('text'); },
+    onBlockFocus: (block) => { setFocusedBlock(block); setRightPanelMode('text'); setSelection([textKey(block)]); },
     focusedBlock,
-    onAiRewrite: (block) => {
-      if (block === 'title') handleAiRewriteTitle();
-      else openAiForSlide(activeSlide, isBlankSlide(activeSlide));
-    },
-    onDuplicateSlide: () => duplicateSlide(activeSlide.id),
-    onDeleteSlide: () => removeSlide(activeSlide.id),
+    onGuideChange: setCenterGuides,
+    isSelected: (block) => isKeySelected(textKey(block)),
+    onShiftSelect: (block) => setSelection(prev => prev.includes(textKey(block)) ? prev.filter(k => k !== textKey(block)) : [...prev, textKey(block)]),
+    groupDragActive: (block) => isMultiSelect && isKeySelected(textKey(block)),
+    onGroupDragStart: beginGroupDrag,
+    onGroupDragMove: applyGroupDragDelta,
+    onGroupDragEnd: () => { groupDragStartRef.current = null; },
   } : undefined;
 
   if (slides.length === 0) {
@@ -2059,7 +3319,7 @@ export function PresentationEditorView() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-white">
+    <div ref={editorRootRef} className="h-full flex flex-col bg-white">
       {/* ── Bar 1: Navigation (hides on scroll down) ── */}
       <div className="flex-shrink-0" style={{ overflow: (exportOpen || presentMenuOpen) ? 'visible' : 'hidden', transition: 'max-height 0.25s ease' }}>
         <motion.div
@@ -2079,7 +3339,7 @@ export function PresentationEditorView() {
           </button>
 
           <div className="flex-shrink-0" style={{ marginLeft: 8 }}>
-            <AIButton label="AI Agent" onClick={() => setAiPanelOpen(v => !v)} active={aiPanelOpen} />
+            <AIButton label="Wordgenie" onClick={() => setAiPanelOpen(v => !v)} active={aiPanelOpen} />
           </div>
 
           <div className="flex-1"/>
@@ -2112,73 +3372,42 @@ export function PresentationEditorView() {
                 </div>
               )}
             </div>
-            {narrationVersion === '2' && (
-              <div className="relative">
-                <button
-                  onClick={() => router.push('/presentation/narration?v=2')}
-                  className="flex items-center cursor-pointer" style={{ gap: 6, height: 34, padding: '0 16px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff' }}
-                  onMouseEnter={e => { e.currentTarget.style.background = '#F4F6F9'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                    <rect x="2" y="6" width="13" height="12" rx="2.5" fill="#001633"/>
-                    <path d="M15 9L21 6V18L15 15V9Z" fill="#001633"/>
-                  </svg>
-                  <span style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#001633' }}>Create video</span>
-                </button>
-              </div>
-            )}
             <div ref={exportRef} className="relative">
               <button onClick={() => setExportOpen(v => !v)} className="flex items-center cursor-pointer" style={{ gap: 7, height: 34, padding: '0 16px', borderRadius: 8, border: 'none', background: '#006EFE' }}
                 onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
                 onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
-                <span style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff' }}>Share</span>
+                <span style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff' }}>{narrationVersion === '2' ? 'Share' : 'Publish'}</span>
                 <svg width="8" height="5" viewBox="0 0 8 5" fill="none"><path d="M1 1L4 4L7 1" stroke="white" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
               </button>
               {exportOpen && (
                 <div className="absolute bg-white flex flex-col" style={{ top: 'calc(100% + 4px)', right: 0, zIndex: 30, width: 270, padding: 5, borderRadius: 9, border: '1px solid #E8EBF2', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)' }}>
-                  {narrationVersion === '1' && (
-                    <button onClick={() => { setExportOpen(false); setNarratedVideoOpen(true); }} className="flex items-center w-full cursor-pointer text-left" style={{ gap: 10, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none' }}
-                      onMouseEnter={e => { e.currentTarget.style.background = '#F5F7FA'; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-                      <div style={{ width: 28, height: 28, borderRadius: 7, background: '#DDD3FC', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <svg width="15" height="15" viewBox="0 0 20 20" fill="none">
-                          <path d="M6.5 5.5l7 4.5-7 4.5v-9z" fill="#fff" />
-                        </svg>
-                      </div>
-                      <div className="flex flex-col" style={{ gap: 1 }}>
-                        <span style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }}>Narrated Video</span>
-                        <span style={{ ...ns, fontSize: 11, color: '#9AA5B4' }}>Record a voiceover, export as video</span>
-                      </div>
-                    </button>
-                  )}
                   {([
-                    { label: 'PowerPoint', badgeBg: '#FBDCCD', icon: (
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" fill="#fff" stroke="#C43E1C" strokeWidth="1.4"/>
-                        <path d="M14 2v6h6" stroke="#C43E1C" strokeWidth="1.4" strokeLinecap="round"/>
-                        <text x="6" y="18" style={{ fontSize: '5.5px', fontFamily: 'sans-serif', fontWeight: 700 }} fill="#C43E1C">P</text>
+                    { label: 'Download PowerPoint', badgeBg: '#FBDCCD', icon: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C4551B" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="4" width="18" height="13" rx="2"/>
+                        <path d="M9.5 8.5v5l4.5-2.5-4.5-2.5z" fill="#C4551B" stroke="none"/>
+                        <path d="M8 20h8"/>
                       </svg>
                     ), onClick: () => { downloadPptx(); setExportOpen(false); } },
-                    { label: 'PDF', badgeBg: '#FBD0D0', icon: (
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" fill="#fff" stroke="#B91C1C" strokeWidth="1.4"/>
-                        <path d="M14 2v6h6" stroke="#B91C1C" strokeWidth="1.4" strokeLinecap="round"/>
-                        <text x="6" y="18" style={{ fontSize: '5.5px', fontFamily: 'sans-serif', fontWeight: 700 }} fill="#B91C1C">PDF</text>
+                    { label: 'Download PDF', badgeBg: '#FBD0D0', icon: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C22525" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/>
+                        <path d="M14 3v5h5"/>
+                        <path d="M9 13h6M9 16.5h4"/>
                       </svg>
                     ), onClick: () => { downloadPdf(); setExportOpen(false); } },
-                    { label: 'PNG images', badgeBg: '#C6DDFC', icon: (
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" fill="#fff" stroke="#1D4ED8" strokeWidth="1.4"/>
-                        <path d="M14 2v6h6" stroke="#1D4ED8" strokeWidth="1.4" strokeLinecap="round"/>
-                        <path d="M7 17l2.5-3.3 1.8 2.1 1.3-1.6 2.4 2.8" stroke="#1D4ED8" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                        <circle cx="8.5" cy="11.5" r="0.9" fill="#1D4ED8"/>
+                    { label: 'Download PNG images', badgeBg: '#C6DDFC', icon: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1D4ED8" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="4" width="18" height="16" rx="2"/>
+                        <circle cx="8.5" cy="9.5" r="1.4" fill="#1D4ED8" stroke="none"/>
+                        <path d="M21 15.5l-5.5-5.5a1 1 0 0 0-1.4 0L6 18"/>
                       </svg>
                     ), onClick: () => { downloadPngImages(); setExportOpen(false); } },
-                    { label: 'Link', badgeBg: '#B8F0D1', icon: (
+                    { label: 'Copy link', badgeBg: '#EAF2FF', icon: (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                        <path d="M15 7h2a5 5 0 1 1 0 10h-2" stroke="#065F46" strokeWidth="1.8" strokeLinecap="round"/>
-                        <path d="M9 17H7A5 5 0 0 1 7 7h2" stroke="#065F46" strokeWidth="1.8" strokeLinecap="round"/>
-                        <line x1="8" y1="12" x2="16" y2="12" stroke="#065F46" strokeWidth="1.8" strokeLinecap="round"/>
+                        <path d="M15 7h2a5 5 0 1 1 0 10h-2" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round"/>
+                        <path d="M9 17H7A5 5 0 0 1 7 7h2" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round"/>
+                        <line x1="8" y1="12" x2="16" y2="12" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round"/>
                       </svg>
                     ), onClick: () => { setExportOpen(false); setShareLinkOpen(true); } },
                   ] as { label: string; badgeBg: string; icon: React.ReactNode; onClick: () => void }[]).map(item => (
@@ -2191,6 +3420,43 @@ export function PresentationEditorView() {
                       <span style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }}>{item.label}</span>
                     </button>
                   ))}
+                  {narrationVersion === '1' && (
+                    <>
+                      <div style={{ borderTop: '1px solid #F0F2F5', margin: '3px 0' }}/>
+                      <button onClick={() => { setExportOpen(false); setNarratedVideoOpen(true); }} className="flex items-center w-full cursor-pointer text-left" style={{ gap: 10, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = '#F5F7FA'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 7, background: '#DDD3FC', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          <svg width="15" height="15" viewBox="0 0 20 20" fill="none">
+                            <path d="M6.5 5.5l7 4.5-7 4.5v-9z" fill="#7C5CFC" />
+                          </svg>
+                        </div>
+                        <div className="flex flex-col" style={{ gap: 1 }}>
+                          <span style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }}>Narrated Video</span>
+                          <span style={{ ...ns, fontSize: 11, color: '#9AA5B4' }}>Record a voiceover, export as video</span>
+                        </div>
+                      </button>
+                    </>
+                  )}
+                  {(narrationVersion === '2' || narrationVersion === '3' || narrationVersion === '4') && (
+                    <>
+                      <div style={{ borderTop: '1px solid #F0F2F5', margin: '3px 0' }}/>
+                      <button onClick={() => { setExportOpen(false); router.push(`/presentation/narration?v=${narrationVersion}`); }} className="flex items-center w-full cursor-pointer text-left" style={{ gap: 10, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = '#F5F7FA'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 7, background: '#DDD3FC', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                            <rect x="2" y="6" width="13" height="12" rx="2.5" fill="#7C5CFC"/>
+                            <path d="M15 9L21 6V18L15 15V9Z" fill="#7C5CFC"/>
+                          </svg>
+                        </div>
+                        <div className="flex flex-col" style={{ gap: 1 }}>
+                          <span style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }}>Create video</span>
+                          <span style={{ ...ns, fontSize: 11, color: '#9AA5B4' }}>Record a voiceover, export as video</span>
+                        </div>
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -2247,24 +3513,30 @@ export function PresentationEditorView() {
             </button>
           </Tooltip>
 
+          {/* A/B toggle — disabled for now, option A (right panel) only. textEditorMode defaults to
+              'panel' above. Restore this block (and its flanking dividers) to bring back the A/B
+              switch and floating-toolbar (option B) mode:
           <div style={{ width: 1, height: 18, background: '#E8EBF2', margin: '0 6px', flexShrink: 0 }}/>
-
-          {/* Text panel A/B toggle */}
-          <Tooltip label={textEditorMode === 'panel' ? 'Switch to floating bar (B)' : 'Switch to side panel (A)'} position="bottom">
-            <div className="flex items-center cursor-pointer" style={{ height: 26, borderRadius: 6, border: '1px solid #E3E6EC', background: '#F7F8FA', padding: '0 2px', gap: 1 }}
-              onClick={() => setTextEditorMode(m => m === 'panel' ? 'bar' : 'panel')}>
-              {(['panel', 'bar'] as const).map((mode, i) => {
-                const active = textEditorMode === mode;
-                return (
-                  <span key={mode} style={{ ...ns, fontSize: 11, fontWeight: active ? 700 : 500, color: active ? '#fff' : '#8E99AB', background: active ? '#006EFE' : 'none', borderRadius: 4, padding: '2px 7px', lineHeight: '18px', userSelect: 'none' }}>
-                    {i === 0 ? 'A' : 'B'}
-                  </span>
-                );
-              })}
-            </div>
-          </Tooltip>
-
+          <div className="flex items-center" style={{ gap: 1, height: 26, padding: 2, borderRadius: 8, background: '#F0F2F5', flexShrink: 0 }}>
+            {([['panel', 'A'], ['bar', 'B']] as const).map(([mode, label]) => {
+              const active = textEditorMode === mode;
+              return (
+                <Tooltip key={mode} label={mode === 'panel' ? 'Right panel' : 'Floating toolbar'} position="bottom">
+                  <button
+                    onClick={() => setTextEditorMode(mode)}
+                    className="cursor-pointer"
+                    style={{ ...ns, width: 24, height: 22, borderRadius: 6, border: 'none', fontSize: 11.5, fontWeight: 700,
+                      background: active ? '#fff' : 'transparent', color: active ? '#006EFE' : '#8C97A8',
+                      boxShadow: active ? '0px 1px 3px rgba(15,23,51,0.16)' : 'none', transition: 'all 0.15s' }}
+                  >
+                    {label}
+                  </button>
+                </Tooltip>
+              );
+            })}
+          </div>
           <div style={{ width: 1, height: 18, background: '#E8EBF2', margin: '0 6px', flexShrink: 0 }}/>
+          */}
 
           {/* Zoom picker */}
           <div ref={zoomRef} className="relative">
@@ -2334,7 +3606,9 @@ export function PresentationEditorView() {
                 icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg> },
               { id: 'media'    as const, label: 'Media',
                 icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg> },
-            ] as { id: 'media'|'templates'|'text'; label: string; icon: React.ReactNode }[]).map(item => {
+              { id: 'artworks' as const, label: 'Artworks',
+                icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3.5l2.8 5.7 6.2.9-4.5 4.4 1 6.2-5.5-2.9-5.5 2.9 1-6.2-4.5-4.4 6.2-.9L12 3.5z"/></svg> },
+            ] as { id: 'media'|'templates'|'text'|'artworks'; label: string; icon: React.ReactNode }[]).map(item => {
               const isActive = leftPanel === item.id;
               return (
                 <button
@@ -2375,7 +3649,7 @@ export function PresentationEditorView() {
         <AnimatePresence mode="wait">
           {leftPanel === 'slides' ? (
             <motion.div key="slides" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}
-              className="flex-shrink-0 h-full overflow-y-auto border-r border-border-light bg-[#F7F8FA]" style={{ width: aiPanelOpen ? 160 : FILMSTRIP_W, transition: 'width 0.22s cubic-bezier(0.2,0,0.2,1)' }}
+              className="flex-shrink-0 h-full overflow-y-auto border-r border-border-light bg-white" style={{ width: aiPanelOpen ? 160 : FILMSTRIP_W, transition: 'width 0.22s cubic-bezier(0.2,0,0.2,1)' }}
               onScroll={e => {
                 const y = (e.currentTarget as HTMLElement).scrollTop;
                 if (y > lastScrollYRef.current + 8) setNavBarVisible(false);
@@ -2442,7 +3716,7 @@ export function PresentationEditorView() {
                   );
                 })() : (
                   <span style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#15191F' }}>
-                    {leftPanel === 'templates' ? 'Templates' : leftPanel === 'media' ? 'Upload' : leftPanel === 'text' ? 'Text Presets' : 'Settings'}
+                    {leftPanel === 'templates' ? 'Templates' : leftPanel === 'media' ? 'Upload' : leftPanel === 'text' ? 'Text Presets' : leftPanel === 'artworks' ? 'Artworks' : 'Settings'}
                   </span>
                 )}
               </div>
@@ -2450,7 +3724,7 @@ export function PresentationEditorView() {
                 {/* Templates — list */}
                 {leftPanel === 'templates' && !templateDetailId && (
                   <div className="flex flex-col" style={{ gap: 10 }}>
-                    {MOCK_THEMES.map(t => (
+                    {MOCK_THEMES.filter(t => t.id !== 'blank').map(t => (
                       <button key={t.id} onClick={() => { setTemplateDetailId(t.id); setCheckedSlideIds([]); }} className="w-full cursor-pointer text-left" style={{ background: 'none', border: 'none', padding: 0 }}>
                         <div style={{ borderRadius: 10, border: '1px solid #E8EBF2', overflow: 'hidden', transition: 'border-color 0.15s, box-shadow 0.15s' }}
                           onMouseEnter={e => { e.currentTarget.style.borderColor = '#006EFE'; e.currentTarget.style.boxShadow = '0px 4px 12px rgba(0,110,254,0.12)'; }}
@@ -2501,11 +3775,16 @@ export function PresentationEditorView() {
                           })}
                         </div>
                       </div>
-                      <div className="flex-shrink-0" style={{ padding: '12px 16px', borderTop: '1px solid #F0F2F5' }}>
-                        <button onClick={handleAddTemplateSlides} className="w-full cursor-pointer" style={{ height: 38, borderRadius: 8, border: 'none', background: '#006EFE', ...ns, fontSize: 13, fontWeight: 600, color: '#fff', cursor: 'pointer', transition: 'background 0.15s' }}>
+                      <div className="flex-shrink-0 flex flex-col items-center" style={{ padding: '12px 16px', borderTop: '1px solid #F0F2F5', gap: 8 }}>
+                        <button onClick={() => handleAddTemplateSlides('add')} className="w-full cursor-pointer" style={{ height: 38, borderRadius: 8, border: 'none', background: '#006EFE', ...ns, fontSize: 13, fontWeight: 600, color: '#fff', cursor: 'pointer', transition: 'background 0.15s' }}>
                           {checkedSlideIds.length === 0 || checkedSlideIds.length === tmpl.slides.length
-                            ? 'Apply all'
-                            : `Apply ${checkedSlideIds.length} slide${checkedSlideIds.length !== 1 ? 's' : ''}`}
+                            ? 'Add all to deck'
+                            : `Add ${checkedSlideIds.length} slide${checkedSlideIds.length !== 1 ? 's' : ''} to deck`}
+                        </button>
+                        <button onClick={() => handleAddTemplateSlides('replace')} className="w-full cursor-pointer" style={{ height: 38, borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 600, color: '#52637A', cursor: 'pointer', transition: 'border-color 0.15s, background 0.15s' }}
+                          onMouseEnter={e => { e.currentTarget.style.borderColor = '#C8CDD9'; e.currentTarget.style.background = '#F7F8FA'; }}
+                          onMouseLeave={e => { e.currentTarget.style.borderColor = '#E0E5EB'; e.currentTarget.style.background = '#fff'; }}>
+                          Replace all slides instead
                         </button>
                       </div>
                     </>
@@ -2557,16 +3836,104 @@ export function PresentationEditorView() {
                       mediaFileRef={mediaFileRef}
                       onImageSelect={url => {
                         if (!activeSlide) return;
-                        updateSlidePartial(activeSlide.id, { slidePhoto: { url, x: 10, y: 10, w: 45, h: 60 } });
+                        const existing = activeSlide.slidePhotos?.length ?? 0;
+                        const offset = (existing % 6) * 4;
+                        addSlidePhoto(activeSlide.id, { id: genPhotoId(), url, x: Math.min(50, 10 + offset), y: Math.min(35, 10 + offset), w: 45, h: 60 });
                       }}
                     />
                   )}
 
-                  {/* Coming soon panels */}
+                  {/* Artworks panel */}
+                  {leftPanel === 'artworks' && (
+                    <ArtworksPanel
+                      onIconSelect={icon => {
+                        if (!activeSlide) return;
+                        const selected = activeSlide.slidePhotos?.find(p => p.id === selectedPhotoId);
+                        if (selected?.iconId) {
+                          // An icon is focused — swap its artwork in place, keeping position/size/color.
+                          const color = selected.iconColor ?? ARTWORK_ICON_DEFAULT_COLOR;
+                          updateSlidePhoto(activeSlide.id, selected.id, { url: artworkIconUri(recolorArtworkSvg(icon.svg, color)), iconId: icon.id, iconColor: color });
+                        } else {
+                          // Nothing focused — add a new icon, cascading position so repeated inserts don't stack exactly.
+                          const existing = activeSlide.slidePhotos?.length ?? 0;
+                          const offset = (existing % 6) * 4;
+                          const iconW = icon.defaultWidthPct ?? 16, iconH = squareIconHeightPct(iconW);
+                          addSlidePhoto(activeSlide.id, { id: genPhotoId(), url: artworkIconUri(icon.svg), iconId: icon.id, iconColor: ARTWORK_ICON_DEFAULT_COLOR, x: Math.min(79, 10 + offset), y: Math.min(67, 10 + offset), w: iconW, h: iconH });
+                        }
+                      }}
+                    />
+                  )}
+
+                  {/* Settings */}
                   {leftPanel === 'settings' && (
-                    <div className="flex flex-col items-center justify-center" style={{ paddingTop: 48, gap: 8 }}>
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#C5CDD9" strokeWidth="1.4" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r="0.5" fill="#C5CDD9"/></svg>
-                      <span style={{ ...ns, fontSize: 13, color: '#8E99AB', fontWeight: 500 }}>Coming soon</span>
+                    <div className="flex flex-col" style={{ gap: 28 }}>
+                      {/* Language */}
+                      <div>
+                        <div className="flex items-center" style={{ gap: 8, marginBottom: 10 }}>
+                          <SettingsGlobeIcon />
+                          <span style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#15191F' }}>Language</span>
+                        </div>
+                        <LanguageSelect value={settingsLanguage} onChange={setSettingsLanguage} />
+                        <SettingsSectionDivider />
+                        <p style={{ ...ns, fontSize: 12.5, color: '#8996AC', lineHeight: 1.5, margin: 0 }}>
+                          Sets the narration voice and text-to-speech pronunciation.
+                        </p>
+                      </div>
+
+                      {/* Transition */}
+                      <div>
+                        <div className="flex items-center" style={{ gap: 8, marginBottom: 10 }}>
+                          <SettingsTransitionIcon />
+                          <span style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#15191F' }}>Transition</span>
+                        </div>
+                        <div className="flex items-center" style={{ gap: 8 }}>
+                          <TransitionTypeSelect value={settingsTransitionType} onChange={setSettingsTransitionType} />
+                          <SettingsNumberField value={settingsTransitionMs} onChange={setSettingsTransitionMs} min={0} max={3000} width={64} />
+                          <span style={{ ...ns, fontSize: 13, color: '#52637A', flexShrink: 0 }}>ms</span>
+                        </div>
+                        <SettingsSectionDivider />
+                        <p style={{ ...ns, fontSize: 12.5, color: '#8996AC', lineHeight: 1.5, margin: 0 }}>
+                          Applied between slides during playback and video export.
+                        </p>
+                      </div>
+
+                      {/* Default slide duration */}
+                      <div>
+                        <div className="flex items-center" style={{ gap: 8, marginBottom: 10 }}>
+                          <SettingsClockIcon />
+                          <span style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#15191F' }}>Default slide duration</span>
+                        </div>
+                        <div className="flex items-center" style={{ gap: 8 }}>
+                          <SettingsNumberField value={settingsDefaultDuration} onChange={setSettingsDefaultDuration} min={1} max={60} width={72} />
+                          <span style={{ ...ns, fontSize: 13, color: '#52637A', flexShrink: 0 }}>s</span>
+                        </div>
+                        <SettingsSectionDivider />
+                        <p style={{ ...ns, fontSize: 12.5, color: '#8996AC', lineHeight: 1.5, margin: 0 }}>
+                          How long a slide without narration stays on screen.
+                        </p>
+                      </div>
+
+                      {/* Minimum slide duration */}
+                      <div>
+                        <div className="flex items-center" style={{ gap: 8, marginBottom: 10 }}>
+                          <SettingsClockHistoryIcon />
+                          <span style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#15191F' }}>Minimum slide duration</span>
+                        </div>
+                        <div className="flex items-center" style={{ gap: 8 }}>
+                          <SettingsNumberField
+                            value={settingsMinDuration}
+                            onChange={v => { setSettingsMinDuration(v); if (v > settingsDefaultDuration) setSettingsDefaultDuration(v); }}
+                            min={1}
+                            max={settingsDefaultDuration}
+                            width={72}
+                          />
+                          <span style={{ ...ns, fontSize: 13, color: '#52637A', flexShrink: 0 }}>s</span>
+                        </div>
+                        <SettingsSectionDivider />
+                        <p style={{ ...ns, fontSize: 12.5, color: '#8996AC', lineHeight: 1.5, margin: 0 }}>
+                          A slide never displays shorter than this, so it does not flash by.
+                        </p>
+                      </div>
                     </div>
                   )}
               </div>
@@ -2582,8 +3949,8 @@ export function PresentationEditorView() {
           {/* Header */}
           <div className="flex items-center justify-between flex-shrink-0" style={{ padding: '14px 16px', borderBottom: '1px solid #F0F2F5', minWidth: 300 }}>
             <div className="flex items-center" style={{ gap: 7 }}>
-              <SparkleIcon color="#7C5CFC"/>
-              <span style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#15191F' }}>AI Agent</span>
+              <AISparkleIcon size={16}/>
+              <span style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#15191F' }}>Wordgenie</span>
             </div>
             <button onClick={() => setAiPanelOpen(false)} className="flex items-center justify-center cursor-pointer" style={{ width: 26, height: 26, borderRadius: 7, background: '#F5F7FA', border: 'none' }}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="2.2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -2597,7 +3964,7 @@ export function PresentationEditorView() {
                   {msg.role === 'ai' && (
                     <div className="flex items-end flex-shrink-0" style={{ marginRight: 7, marginBottom: 2 }}>
                       <div className="flex items-center justify-center" style={{ width: 22, height: 22, borderRadius: '50%', background: '#F0EEFF' }}>
-                        <SparkleIcon color="#7C5CFC"/>
+                        <AISparkleIcon size={13}/>
                       </div>
                     </div>
                   )}
@@ -2636,7 +4003,7 @@ export function PresentationEditorView() {
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden" style={{ position: 'relative' }}>
 
             {/* Text format bar (mode B) — absolutely positioned so it floats without shifting layout */}
-            {textEditorMode === 'bar' && rightPanelMode === 'text' && activeSlide && (
+            {textEditorMode === 'bar' && rightPanelMode === 'text' && !isMultiSelect && activeSlide && (
               <div style={{ position: 'absolute', top: 10, left: 0, right: 0, display: 'flex', justifyContent: 'center', zIndex: 40, pointerEvents: 'none' }}>
                 <div style={{ pointerEvents: 'auto' }}>
                   <TextFormatBar
@@ -2654,11 +4021,27 @@ export function PresentationEditorView() {
               </div>
             )}
 
+            {/* Photo/icon format bar (mode B) — same floating slot as the text bar, so exactly one shows at a time */}
+            {textEditorMode === 'bar' && selectedPhoto && selectedPhoto.w > 0 && (
+              <div style={{ position: 'absolute', top: 10, left: 0, right: 0, display: 'flex', justifyContent: 'center', zIndex: 40, pointerEvents: 'none' }}>
+                <div data-photo-format-bar style={{ pointerEvents: 'auto' }}>
+                  <PhotoFormatBar
+                    photo={selectedPhoto}
+                    isIcon={!!selectedPhoto.iconId}
+                    onColorChange={selectedPhoto.iconId ? handlePhotoColorChange : undefined}
+                    onSetBackground={handlePhotoSetBackground}
+                    onResize={handlePhotoResize}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Canvas */}
             <div
+              ref={canvasScrollRef}
               className="flex-1 overflow-auto"
               style={{ background: '#EDEEF1' }}
-              onFocusCapture={e => { if ((e.target as HTMLElement).contentEditable === 'true') setRightPanelMode('text'); }}
+              onFocusCapture={e => { if ((e.target as HTMLElement).contentEditable === 'true') { setRightPanelMode('text'); setSelection([]); } }}
               onBlurCapture={e => {
                 const related = e.relatedTarget as HTMLElement | null;
                 // If focus moved outside this canvas area (e.g. to the formatting panel), stay in text mode
@@ -2682,38 +4065,120 @@ export function PresentationEditorView() {
               ) : activeSlide && (
                 <div className="flex flex-col items-center" style={{ gap: 14, width: zoom <= 100 ? `${zoom}%` : '100%', minWidth: 280, flexShrink: 0 }}>
                   {/* Padding-bottom trick: height = 56.25% of width = exact 16:9 */}
-                  <motion.div key={activeSlide.id} initial={{ opacity: 0, scale: 0.99 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.16 }}
+                  <motion.div ref={stageBoxRef} key={activeSlide.id} initial={{ opacity: 0, scale: 0.99 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.16 }}
                     style={{ width: '100%', paddingBottom: '56.25%', position: 'relative', flexShrink: 0, borderRadius: 14, boxShadow: '0px 8px 40px rgba(15,23,51,0.16)', overflow: 'clip' }}
                   >
-                    {/* stageRef renders at natural slide size then scales so text and layout scale with zoom */}
-                    <div ref={stageRef} style={{ position: 'absolute', top: 0, left: 0, width: `${10000/zoom}%`, height: `${10000/zoom}%`, transform: `scale(${zoom/100})`, transformOrigin: 'top left' }}>
+                    {/* stageRef renders at a fixed natural slide size (SLIDE_VIRTUAL_W) then scales
+                        by the box's actual measured width (containerScale) times the manual zoom
+                        control, so text/layout scale with both the panel layout and zoom. */}
+                    <div ref={stageRef} style={{ position: 'absolute', top: 0, left: 0, width: SLIDE_VIRTUAL_W, height: SLIDE_VIRTUAL_W * 9 / 16, transform: `scale(${containerScale * zoom / 100})`, transformOrigin: 'top left' }}>
                       {/* Clip inner content to slide bounds */}
-                      <div style={{ position: 'absolute', inset: 0, borderRadius: 14, overflow: 'hidden', background: activeSlide.bgImageUrl ? `url(${activeSlide.bgImageUrl}) center/cover` : (activeSlide.bgColor ?? (selectedThemeId ? theme.bg : '#FFFFFF')) }}>
+                      <div
+                        style={{ position: 'absolute', inset: 0, borderRadius: 14, overflow: 'hidden', background: activeSlide.bgImageUrl ? `url(${activeSlide.bgImageUrl}) center/cover` : (activeSlide.bgColor ?? (selectedThemeId ? theme.bg : '#FFFFFF')), outline: artworkDropActive ? '2.5px dashed #006EFE' : 'none', outlineOffset: -2 }}
+                        onDragOver={e => {
+                          if (e.dataTransfer.types.includes(ARTWORK_DND_TYPE)) {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'copy';
+                            setArtworkDropActive(true);
+                          }
+                        }}
+                        onDragLeave={() => setArtworkDropActive(false)}
+                        onPointerDownCapture={e => {
+                          // Dragging any one of several selected photos/icons moves the whole group.
+                          if (e.shiftKey || selection.length < 2) return;
+                          const el = (e.target as HTMLElement).closest('[data-select-key]') as HTMLElement | null;
+                          const key = el?.getAttribute('data-select-key');
+                          if (!key || !key.startsWith('photo:') || !selection.includes(key)) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          beginGroupDrag();
+                          const startX = e.clientX, startY = e.clientY;
+                          const onMove = (ev: PointerEvent) => applyGroupDragDelta(ev.clientX - startX, ev.clientY - startY);
+                          const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); groupDragStartRef.current = null; };
+                          window.addEventListener('pointermove', onMove);
+                          window.addEventListener('pointerup', onUp);
+                        }}
+                        onPointerDown={e => {
+                          // Marquee-select: drag from empty background to select everything inside the box.
+                          // A plain click (no drag) on empty background clears the current selection.
+                          if ((e.target as HTMLElement).closest('[data-select-key], button, [contenteditable="true"]')) return;
+                          const startX = e.clientX, startY = e.clientY;
+                          let moved = false;
+                          setMarquee({ x0: startX, y0: startY, x1: startX, y1: startY });
+                          const onMove = (ev: PointerEvent) => {
+                            if (!moved && (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)) moved = true;
+                            setMarquee({ x0: startX, y0: startY, x1: ev.clientX, y1: ev.clientY });
+                          };
+                          const onUp = (ev: PointerEvent) => {
+                            window.removeEventListener('pointermove', onMove);
+                            window.removeEventListener('pointerup', onUp);
+                            if (moved) {
+                              const left = Math.min(startX, ev.clientX), right = Math.max(startX, ev.clientX);
+                              const top = Math.min(startY, ev.clientY), bottom = Math.max(startY, ev.clientY);
+                              const matched: string[] = [];
+                              stageRef.current?.querySelectorAll('[data-select-key]').forEach(node => {
+                                const r = node.getBoundingClientRect();
+                                if (r.left < right && r.right > left && r.top < bottom && r.bottom > top) {
+                                  const k = node.getAttribute('data-select-key');
+                                  if (k) matched.push(k);
+                                }
+                              });
+                              setSelection(matched);
+                            } else {
+                              setSelection([]);
+                              setFocusedBlock(null);
+                              setRightPanelMode('slide');
+                              (document.activeElement as HTMLElement)?.blur?.();
+                            }
+                            setMarquee(null);
+                          };
+                          window.addEventListener('pointermove', onMove);
+                          window.addEventListener('pointerup', onUp);
+                        }}
+                        onDrop={e => {
+                          setArtworkDropActive(false);
+                          const iconId = e.dataTransfer.getData(ARTWORK_DND_TYPE);
+                          const icon = ARTWORK_ICONS.find(i => i.id === iconId);
+                          if (!icon) return;
+                          e.preventDefault();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const w = 16, h = squareIconHeightPct(w);
+                          const x = Math.max(0, Math.min(95 - w, (e.clientX - rect.left) / rect.width * 100 - w / 2));
+                          const y = Math.max(0, Math.min(95 - h, (e.clientY - rect.top) / rect.height * 100 - h / 2));
+                          addSlidePhoto(activeSlide.id, { id: genPhotoId(), url: artworkIconUri(icon.svg), iconId: icon.id, iconColor: ARTWORK_ICON_DEFAULT_COLOR, x, y, w, h });
+                        }}
+                      >
                       <SlideContent slide={activeSlide} theme={theme} editable onTitleChange={v=>updateTitle(activeSlide.id,v)} onPointChange={(idx,v)=>updatePoint(activeSlide.id,idx,v)} onPointDelete={idx=>removePoint(activeSlide.id,idx)} dragProps={dragProps} onImageClick={() => setLeftPanel('media')} onAiRewriteTitle={handleAiRewriteTitle} onAiRewritePoint={handleAiRewritePoint} aiRewritingTitle={aiRewritingTitle} aiRewritingPointIndex={aiRewritingPointIndex}/>
-                      {/* Floating photo layer */}
-                      {activeSlide.slidePhoto && activeSlide.slidePhoto.w > 0 && (
+                      {/* Floating photo layers — one per inserted photo/icon */}
+                      {(activeSlide.slidePhotos ?? []).filter(p => p.w > 0).map(p => (
                         <PhotoLayer
-                          photo={activeSlide.slidePhoto}
+                          key={p.id}
+                          photo={p}
                           editable
-                          onPhotoChange={p => updateSlidePartial(activeSlide.id, { slidePhoto: p.w === 0 ? undefined : p })}
-                          onSetBackground={() => {
-                            updateSlidePartial(activeSlide.id, {
-                              bgImageUrl: activeSlide.slidePhoto!.url,
-                              slidePhoto: undefined,
-                              textColorOverride: '#FFFFFF',
-                            });
+                          selected={isKeySelected(photoKey(p.id))}
+                          onSelectedChange={(v, shiftKey) => {
+                            if (!v) { setSelection([]); return; }
+                            if (shiftKey) {
+                              setSelection(prev => prev.includes(photoKey(p.id)) ? prev.filter(k => k !== photoKey(p.id)) : [...prev, photoKey(p.id)]);
+                              return;
+                            }
+                            setSelection([photoKey(p.id)]);
+                            setFocusedBlock(null);
+                            setRightPanelMode('slide');
+                            (document.activeElement as HTMLElement)?.blur?.();
                           }}
+                          onPhotoChange={np => np.w === 0 ? removeSlidePhoto(activeSlide.id, p.id) : updateSlidePhoto(activeSlide.id, p.id, np)}
+                          onGuideChange={setCenterGuides}
                         />
-                      )}
+                      ))}
                       {/* "Revert from background" overlay */}
                       {activeSlide.bgImageUrl && (
                         <div className="group/bgbadge absolute" style={{ bottom: 8, right: 8, zIndex: 20 }}>
                           <button
-                            onClick={() => updateSlidePartial(activeSlide.id, {
-                              slidePhoto: { url: activeSlide.bgImageUrl!, x: 10, y: 10, w: 45, h: 60 },
-                              bgImageUrl: undefined,
-                              textColorOverride: undefined,
-                            })}
+                            onClick={() => {
+                              addSlidePhoto(activeSlide.id, { id: genPhotoId(), url: activeSlide.bgImageUrl!, x: 10, y: 10, w: 45, h: 60 });
+                              updateSlidePartial(activeSlide.id, { bgImageUrl: undefined, textColorOverride: undefined });
+                            }}
                             className="flex items-center cursor-pointer opacity-0 group-hover/bgbadge:opacity-100 transition-opacity"
                             style={{ gap: 5, height: 24, padding: '0 10px', borderRadius: 6, border: 'none', background: 'rgba(15,25,47,0.65)', backdropFilter: 'blur(4px)', ...ns, fontSize: 11, fontWeight: 500, color: '#fff' }}
                           >
@@ -2722,12 +4187,20 @@ export function PresentationEditorView() {
                           </button>
                         </div>
                       )}
+
+                      {/* Center alignment guides */}
+                      {centerGuides.x && (
+                        <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 0, borderLeft: '1px dashed #FF3D8A', boxShadow: '0 0 4px rgba(255,61,138,0.6)', zIndex: 40, pointerEvents: 'none' }}/>
+                      )}
+                      {centerGuides.y && (
+                        <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 0, borderTop: '1px dashed #FF3D8A', boxShadow: '0 0 4px rgba(255,61,138,0.6)', zIndex: 40, pointerEvents: 'none' }}/>
+                      )}
                       </div>{/* end inner clip */}
                     </div>{/* end stageRef */}
                   </motion.div>
 
                   {/* Slide action bar — unified pill below slide */}
-                  <div className="flex items-center bg-white" style={{ borderRadius: 10, boxShadow: '0px 2px 12px rgba(15,23,51,0.1)', overflow: 'hidden', border: '1px solid #ECEEF2' }}>
+                  <div className="flex items-center bg-white" style={{ borderRadius: 10, boxShadow: '0px 2px 12px rgba(15,23,51,0.1)', overflow: 'hidden', border: '1px solid #ECEEF2', width: 'max-content', flexShrink: 0, whiteSpace: 'nowrap' }}>
                     <Tooltip label={isBlankSlide(activeSlide) ? 'Generate content' : 'Regenerate content'} position="top">
                       <button
                         onClick={() => openAiForSlide(activeSlide, isBlankSlide(activeSlide))}
@@ -2736,7 +4209,7 @@ export function PresentationEditorView() {
                         onMouseEnter={e => { e.currentTarget.style.background = '#F6F3FF'; }}
                         onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
                       >
-                        <SparkleIcon color="#7C5CFC"/>
+                        <AISparkleIcon size={13}/>
                         {isBlankSlide(activeSlide) ? 'Generate content' : 'Regenerate content'}
                       </button>
                     </Tooltip>
@@ -2831,7 +4304,7 @@ export function PresentationEditorView() {
                       <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" strokeWidth="2.5" strokeLinecap="round"><defs><linearGradient id="spinGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#006EFE"/><stop offset="100%" stopColor="#5326BD"/></linearGradient></defs><path d="M21 12a9 9 0 1 1-9-9" stroke="url(#spinGrad)"/></svg>
                       </motion.div>
-                    ) : <SparkleIcon color="#7C5CFC"/>}
+                    ) : <AISparkleIcon size={13}/>}
                     <span style={{ ...ns, fontSize: 12, fontWeight: 600, color: '#7C5CFC', whiteSpace: 'nowrap' }}>
                       {generatingNotes ? 'Generating…' : generatingAllNotes ? 'Generating all…' : 'Generate notes'}
                     </span>
@@ -2840,10 +4313,10 @@ export function PresentationEditorView() {
                   {notesGenMenuOpen && (
                     <div className="absolute bg-white flex flex-col" style={{ bottom: 'calc(100% + 6px)', right: 0, width: 168, borderRadius: 9, border: '1px solid #E8EBF2', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)', padding: 4, zIndex: 30 }}>
                       <button onClick={() => { generateNotes(); setNotesGenMenuOpen(false); }} className="flex items-center cursor-pointer text-left w-full" style={{ gap: 8, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none', ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }} onMouseEnter={e => { e.currentTarget.style.background = '#F5F0FF'; }} onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-                        <SparkleIcon color="#7C5CFC"/>This slide
+                        <AISparkleIcon size={13}/>This slide
                       </button>
                       <button onClick={() => { generateAllNotes(); setNotesGenMenuOpen(false); }} className="flex items-center cursor-pointer text-left w-full" style={{ gap: 8, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none', ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }} onMouseEnter={e => { e.currentTarget.style.background = '#F5F0FF'; }} onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-                        <SparkleIcon color="#7C5CFC"/>All slides
+                        <AISparkleIcon size={13}/>All slides
                       </button>
                     </div>
                   )}
@@ -2877,8 +4350,12 @@ export function PresentationEditorView() {
               ...(t === 'content' && noPoints ? { points: ['Add a point…'] } : {}),
             });
           }}
-          rightPanelMode={textEditorMode === 'bar' ? 'slide' : rightPanelMode}
+          rightPanelMode={(textEditorMode === 'bar' || isMultiSelect) ? 'slide' : rightPanelMode}
           focusedBlock={focusedBlock}
+          selectedPhotoId={textEditorMode === 'panel' ? selectedPhotoId : null}
+          onPhotoColorChange={handlePhotoColorChange}
+          onPhotoSetBackground={handlePhotoSetBackground}
+          onPhotoResize={handlePhotoResize}
           onFontSizeChange={handleFontSizeChange}
           onFontFamilyChange={family => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, focusedBlock === 'title' ? { titleFontFamily: family } : { contentFontFamily: family }); }}
           onFontWeightChange={weight => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, focusedBlock === 'title' ? { titleFontWeight: weight } : { contentFontWeight: weight }); }}
@@ -2902,11 +4379,8 @@ export function PresentationEditorView() {
           }}
           onBgToSlidePhoto={activeSlide?.bgImageUrl ? () => {
             if (!activeSlide) return;
-            updateSlidePartial(activeSlide.id, {
-              slidePhoto: { url: activeSlide.bgImageUrl!, x: 10, y: 10, w: 45, h: 60 },
-              bgImageUrl: undefined,
-              textColorOverride: undefined,
-            });
+            addSlidePhoto(activeSlide.id, { id: genPhotoId(), url: activeSlide.bgImageUrl!, x: 10, y: 10, w: 45, h: 60 });
+            updateSlidePartial(activeSlide.id, { bgImageUrl: undefined, textColorOverride: undefined });
           } : undefined}
           onContentAlignChange={align => activeSlide && updateSlidePartial(activeSlide.id, { contentAlign: align })}
         />
@@ -2922,10 +4396,21 @@ export function PresentationEditorView() {
         url="https://designrr.io/present/klimiashvilinn_568/casper-weldings-overview"
       />
 
+      {/* Marquee-select rectangle — fixed to the viewport so it stays correct regardless
+          of the canvas's zoom/scale transforms. */}
+      {marquee && (
+        <div style={{
+          position: 'fixed', zIndex: 999, pointerEvents: 'none',
+          left: Math.min(marquee.x0, marquee.x1), top: Math.min(marquee.y0, marquee.y1),
+          width: Math.abs(marquee.x1 - marquee.x0), height: Math.abs(marquee.y1 - marquee.y0),
+          border: '1.5px solid #006EFE', background: 'rgba(0,110,254,0.08)', borderRadius: 2,
+        }}/>
+      )}
+
       {/* Prototype-only: flip voiceover flow version */}
       <div style={{ position: 'fixed', bottom: 18, right: 18, zIndex: 100, display: 'flex', alignItems: 'center', gap: 2,
         background: '#0D1433', borderRadius: 999, padding: 4, boxShadow: '0 8px 28px rgba(15,23,51,0.35)' }}>
-        {([['1', 'V1 · current'], ['2', 'V2 · concept']] as const).map(([v, label]) => (
+        {([['1', 'V1 · current'], ['2', 'V2 · concept'], ['3', 'V3 · studio'], ['4', 'V4 · refined']] as const).map(([v, label]) => (
           <button key={v} onClick={() => setNarrationVersion(v)}
             style={{ ...ns, height: 28, padding: '0 13px', borderRadius: 999, border: 'none', cursor: 'pointer',
               fontSize: 11.5, fontWeight: 700, transition: 'all 0.15s',

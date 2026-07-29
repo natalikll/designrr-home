@@ -20,8 +20,8 @@ const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 type SourceKind = 'ai' | 'record' | 'upload';
 const SOURCE_COLORS: Record<SourceKind, string> = { record: '#E5484D', ai: '#7C3AED', upload: '#0FA47C' };
 type AudioStatus = 'empty' | 'generating' | 'recording' | 'ready' | 'stale';
-type Step = 'clone' | 'sync' | 'workspace' | 'review' | 'export';
-type CaptureScope = 'single' | 'multi';
+type Step = 'clone' | 'workspace' | 'review' | 'export';
+type CaptureScope = 'single' | 'multi' | 'all';
 
 interface SlideAudio {
   source: SourceKind;
@@ -81,6 +81,35 @@ function formatTime(sec: number) {
   const m = Math.floor(sec / 60).toString().padStart(2, '0');
   const s = Math.round(sec % 60).toString().padStart(2, '0');
   return `${m}:${s}`;
+}
+function hexLuminance(hex: string): number {
+  const h = hex.replace('#', '');
+  if (h.length < 6) return 1;
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+  const lin = (c: number) => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+function isDarkBg(hex: string): boolean { return hexLuminance(hex) < 0.35; }
+function WordgenieIcon({ size = 13 }: { size?: number }) {
+  // The official Wordgenie mark — same source as public/assets/wordgenie-icon.svg.
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+      <path d="M16 4L13.4507 11.7507C13.3202 12.1473 13.0984 12.5078 12.8031 12.8031C12.5078 13.0984 12.1473 13.3202 11.7507 13.4507L4 16L11.7507 18.5493C12.1473 18.6798 12.5078 18.9016 12.8031 19.1969C13.0984 19.4922 13.3202 19.8527 13.4507 20.2493L16 28L18.5493 20.2493C18.6798 19.8527 18.9016 19.4922 19.1969 19.1969C19.4922 18.9016 19.8527 18.6798 20.2493 18.5493L28 16L20.2493 13.4507C19.8527 13.3202 19.4922 13.0984 19.1969 12.8031C18.9016 12.5078 18.6798 12.1473 18.5493 11.7507L16 4Z" fill="url(#nvWgGradA)" stroke="url(#nvWgGradA)" strokeWidth="1.125" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M6 2L5.15022 4.58356C5.10673 4.71578 5.0328 4.83595 4.93437 4.93437C4.83595 5.0328 4.71578 5.10673 4.58356 5.15022L2 6L4.58356 6.84978C4.71578 6.89327 4.83595 6.9672 4.93437 7.06563C5.0328 7.16405 5.10673 7.28422 5.15022 7.41644L6 10L6.84978 7.41644C6.89327 7.28422 6.9672 7.16405 7.06563 7.06563C7.16405 6.9672 7.28422 6.89327 7.41644 6.84978L10 6L7.41644 5.15022C7.28422 5.10673 7.16405 5.0328 7.06563 4.93437C6.9672 4.83595 6.89327 4.71578 6.84978 4.58356L6 2Z" fill="url(#nvWgGradB)" stroke="url(#nvWgGradB)" strokeWidth="0.375" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M26 22L25.1502 24.5836C25.1067 24.7158 25.0328 24.8359 24.9344 24.9344C24.8359 25.0328 24.7158 25.1067 24.5836 25.1502L22 26L24.5836 26.8498C24.7158 26.8933 24.8359 26.9672 24.9344 27.0656C25.0328 27.1641 25.1067 27.2842 25.1502 27.4164L26 30L26.8498 27.4164C26.8933 27.2842 26.9672 27.1641 27.0656 27.0656C27.1641 26.9672 27.2842 26.8933 27.4164 26.8498L30 26L27.4164 25.1502C27.2842 25.1067 27.1641 25.0328 27.0656 24.9344C26.9672 24.8359 26.8933 24.7158 26.8498 24.5836L26 22Z" fill="url(#nvWgGradC)" stroke="url(#nvWgGradC)" strokeWidth="0.375" strokeLinecap="round" strokeLinejoin="round"/>
+      <defs>
+        <linearGradient id="nvWgGradA" x1="28.3864" y1="2.78745" x2="-0.682789" y2="8.38556" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#006EFE"/><stop offset="1" stopColor="#5326BD"/>
+        </linearGradient>
+        <linearGradient id="nvWgGradB" x1="10.1288" y1="1.59582" x2="0.43907" y2="3.46185" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#006EFE"/><stop offset="1" stopColor="#5326BD"/>
+        </linearGradient>
+        <linearGradient id="nvWgGradC" x1="30.1288" y1="21.5958" x2="20.4391" y2="23.4619" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#006EFE"/><stop offset="1" stopColor="#5326BD"/>
+        </linearGradient>
+      </defs>
+    </svg>
+  );
 }
 function readAudioDuration(file: File, fallback: number): Promise<number> {
   return new Promise(resolve => {
@@ -225,199 +254,10 @@ function CloneScreen({ onDone, onBack }: { onDone: (name: string) => void; onBac
 }
 
 /* ════════════════════════════════════════════════════════════════
-   Full-upload sync screen
-   ════════════════════════════════════════════════════════════════ */
-const SEG_COLORS  = ['#E7F0FF', '#F3EDFF', '#E9F9F3', '#FFF3E8', '#FDEBF1', '#EDF6FF'];
-const SEG_ACCENTS = ['#006EFE', '#7C3AED', '#0FA47C', '#E86A2B', '#D6336C', '#2E90FA'];
-
-function SyncScreen({ slides, theme, scripts, seedDurations, onApply, onBack }: {
-  slides: PresentationSlide[]; theme: MockTheme; scripts: string[]; seedDurations?: number[];
-  onApply: (segments: { start: number; end: number }[]) => void; onBack: () => void;
-}) {
-  const estimates = useMemo(() =>
-    (seedDurations ?? slides.map((_, i) => estimateSecs(scripts[i] ?? ''))).map(d => Math.max(1, d)),
-  [slides, scripts, seedDurations]);
-  const total = useMemo(() => estimates.reduce((a, b) => a + b, 0), [estimates]);
-  const [bounds, setBounds] = useState<number[]>(() => {
-    const acc: number[] = []; let run = 0;
-    for (let i = 0; i < estimates.length - 1; i++) { run += estimates[i]; acc.push(run / total); }
-    return acc;
-  });
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [analyzing, setAnalyzing] = useState(true);
-  const trackRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { const t = setTimeout(() => setAnalyzing(false), 1800); return () => clearTimeout(t); }, []);
-
-  const [playing, setPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const playRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => {
-    if (playing) {
-      playRef.current = setInterval(() => {
-        setCurrentTime(t => {
-          if (t >= total - 1) { setPlaying(false); return total; }
-          return t + 1;
-        });
-      }, 1000);
-    } else {
-      clearInterval(playRef.current!);
-    }
-    return () => clearInterval(playRef.current!);
-  }, [playing, total]);
-
-  const togglePlay = () => {
-    if (analyzing) return;
-    if (currentTime >= total) setCurrentTime(0);
-    setPlaying(v => !v);
-  };
-  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (analyzing || (e.target as HTMLElement).closest('.seg-marker')) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    setCurrentTime(Math.round(ratio * total));
-    setPlaying(false);
-  };
-
-  useEffect(() => {
-    if (dragIdx === null) return;
-    const move = (e: PointerEvent) => {
-      const rect = trackRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const f = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-      setBounds(prev => {
-        const next = [...prev];
-        const lo = (dragIdx === 0 ? 0 : next[dragIdx - 1]) + 0.03;
-        const hi = (dragIdx === next.length - 1 ? 1 : next[dragIdx + 1]) - 0.03;
-        next[dragIdx] = Math.min(hi, Math.max(lo, f));
-        return next;
-      });
-    };
-    const up = () => setDragIdx(null);
-    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
-    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
-  }, [dragIdx]);
-
-  const fracs = useMemo(() => {
-    const edges = [0, ...bounds, 1];
-    return slides.map((_, i) => ({ start: edges[i], end: edges[i + 1] }));
-  }, [bounds, slides]);
-
-  const globalBars = useMemo(() => Array.from({ length: 160 }, (_, i) =>
-    0.18 + ((Math.sin(i * 0.83) + Math.sin(i * 0.31 + 2) + 2) / 4) * 0.82), []);
-
-  return (
-    <div className="h-full flex flex-col" style={{ background: '#F8F9FC' }}>
-      <div className="flex-shrink-0 flex items-center justify-between"
-        style={{ height: 54, padding: '0 20px', borderBottom: '1px solid #E8EBF2', background: '#fff' }}>
-        <button onClick={onBack} className="flex items-center cursor-pointer"
-          style={{ gap: 6, height: 34, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#52637A' }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-          Back
-        </button>
-        <span style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#0D1433' }}>Review your recording</span>
-        <button onClick={() => onApply(fracs.map(f => ({ start: f.start * total, end: f.end * total })))}
-          disabled={analyzing} className="cursor-pointer"
-          style={{ height: 36, padding: '0 18px', borderRadius: 9, border: 'none',
-            background: analyzing ? '#B9CDF2' : '#006EFE', ...ns, fontSize: 13, fontWeight: 600, color: '#fff' }}>
-          Looks good — apply
-        </button>
-      </div>
-      <div className="flex-1 flex flex-col items-center justify-center" style={{ padding: '24px 40px', gap: 22 }}>
-        <div className="flex flex-col items-center" style={{ gap: 12 }}>
-          <div className="flex items-center"
-            style={{ gap: 10, background: '#fff', border: '1px solid #E8EBF2', borderRadius: 10, padding: '8px 14px' }}>
-            <button onClick={togglePlay} disabled={analyzing} className="flex items-center justify-center flex-shrink-0"
-              style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', outline: 'none',
-                background: '#E5484D', opacity: analyzing ? 0.4 : 1,
-                cursor: analyzing ? 'default' : 'pointer' }}>
-              {playing
-                ? <svg width="10" height="10" viewBox="0 0 24 24" fill="white"><rect x="5" y="4" width="5" height="16" rx="1"/><rect x="14" y="4" width="5" height="16" rx="1"/></svg>
-                : <svg width="11" height="11" viewBox="0 0 24 24" fill="white" style={{ marginLeft: 1 }}><path d="M6 4l14 8-14 8z"/></svg>}
-            </button>
-            <span style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#0D1433' }}>Your recording</span>
-            <span style={{ ...ns, fontSize: 12, color: '#8596AD', fontVariantNumeric: 'tabular-nums' }}>{formatTime(currentTime)} / {formatTime(total)}</span>
-          </div>
-          <AnimatePresence mode="wait">
-            {analyzing ? (
-              <motion.div key="an" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                className="flex items-center" style={{ gap: 8 }}>
-                <div style={{ width: 14, height: 14, border: '2px solid #E8EBF2', borderTopColor: '#006EFE', borderRadius: '50%', animation: 'v2spin 0.8s linear infinite' }} />
-                <span style={{ ...ns, fontSize: 12.5, color: '#52637A' }}>Reviewing where you switched slides…</span>
-              </motion.div>
-            ) : (
-              <motion.div key="done" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
-                className="flex items-center"
-                style={{ gap: 8, background: '#EDFBF6', border: '1px solid #C6F0E2', borderRadius: 9, padding: '7px 14px' }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0FA47C" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-                <span style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: '#0B7C5E' }}>
-                  Boundaries set from when you advanced slides · drag a marker if one feels off
-                </span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        <div style={{ width: '100%', maxWidth: 1040 }}>
-          <div ref={trackRef} style={{ position: 'relative', width: '100%', userSelect: 'none' }}>
-            <div style={{ display: 'flex', width: '100%', marginBottom: 8 }}>
-              {fracs.map((f, i) => (
-                <div key={i} style={{ width: `${(f.end - f.start) * 100}%`, display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 0, padding: '0 4px' }}>
-                  <SlideThumb slide={slides[i]} theme={theme} width={Math.max(64, Math.min(120, (f.end - f.start) * 1040 - 16))} />
-                  <span style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#52637A', marginTop: 5 }}>
-                    Slide {i + 1} · {formatTime((f.end - f.start) * total)}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div onClick={seek} style={{ position: 'relative', height: 74, borderRadius: 12, overflow: 'hidden',
-              border: '1px solid #E0E5EB', background: '#fff', opacity: analyzing ? 0.45 : 1, transition: 'opacity 0.3s',
-              cursor: analyzing ? 'default' : 'pointer' }}>
-              {fracs.map((f, i) => (
-                <div key={i} style={{ position: 'absolute', top: 0, bottom: 0, left: `${f.start * 100}%`,
-                  width: `${(f.end - f.start) * 100}%`, background: SEG_COLORS[i % SEG_COLORS.length] }} />
-              ))}
-              <div style={{ position: 'absolute', inset: '10px 6px', display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                {globalBars.map((b, i) => {
-                  const pos = i / globalBars.length;
-                  const segIdx = fracs.findIndex(f => pos >= f.start && pos < f.end);
-                  return <div key={i} style={{ flex: 1, height: `${b * 100}%`, borderRadius: 1.5, background: SEG_ACCENTS[Math.max(0, segIdx) % SEG_ACCENTS.length], opacity: 0.65 }} />;
-                })}
-              </div>
-              {!analyzing && (
-                <div style={{ position: 'absolute', top: 0, bottom: 0, left: `${(currentTime / total) * 100}%`,
-                  width: 2, marginLeft: -1, background: '#0D1433', zIndex: 6, pointerEvents: 'none' }} />
-              )}
-              {bounds.map((b, i) => (
-                <div key={i} className="seg-marker" onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setDragIdx(i); }}
-                  style={{ position: 'absolute', top: 0, bottom: 0, left: `${b * 100}%`, width: 18, marginLeft: -9, cursor: 'col-resize', zIndex: 5, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <div style={{ width: 3, borderRadius: 2, position: 'absolute', top: 0, bottom: 0, background: dragIdx === i ? '#0D1433' : '#52637A' }} />
-                  <div style={{ width: 14, height: 22, borderRadius: 5, background: dragIdx === i ? '#0D1433' : '#fff',
-                    border: '1.5px solid #52637A', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1.5 }}>
-                    <div style={{ width: 1.5, height: 9, background: dragIdx === i ? '#fff' : '#8596AD', borderRadius: 1 }} />
-                    <div style={{ width: 1.5, height: 9, background: dragIdx === i ? '#fff' : '#8596AD', borderRadius: 1 }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-between" style={{ marginTop: 6 }}>
-              <span style={{ ...ns, fontSize: 10.5, color: '#8596AD' }}>0:00</span>
-              <span style={{ ...ns, fontSize: 10.5, color: '#8596AD' }}>{formatTime(total)}</span>
-            </div>
-          </div>
-        </div>
-        <p style={{ ...ns, fontSize: 12, color: '#8596AD', maxWidth: 560, textAlign: 'center', lineHeight: 1.6 }}>
-          Each colored section plays over one slide. If auto-sync got a boundary wrong, drag its marker.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════
    Record mode — full-screen dark takeover
    ════════════════════════════════════════════════════════════════ */
-function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, onCancel }: {
-  slides: PresentationSlide[]; theme: MockTheme; scripts: string[];
+function RecordMode({ slides, theme, scripts, onScriptChange, startIdx, locked = false, onStop, onCancel }: {
+  slides: PresentationSlide[]; theme: MockTheme; scripts: string[]; onScriptChange: (idx: number, value: string) => void;
   startIdx: number; locked?: boolean; onStop: (durations: Record<number, number>) => void; onCancel: () => void;
 }) {
   const [idx, setIdx] = useState(startIdx);
@@ -426,6 +266,10 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
   // preview: capture ended (Stop) — review the take before committing (Done) or starting over (Re-record).
   const [phase, setPhase] = useState<'idle' | 'recording' | 'paused' | 'preview'>('idle');
   const [durations, setDurations] = useState<Record<number, number>>({});
+  const [scriptFontSize, setScriptFontSize] = useState<'sm' | 'lg'>('lg');
+  const [editingScript, setEditingScript] = useState(false);
+  const [scriptHeight, setScriptHeight] = useState(180);
+  const resizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const [previewTime, setPreviewTime] = useState(0);
   // Script is a recording aid — once you're reviewing a take it's no longer the point of focus, so tuck it away by default.
@@ -455,6 +299,22 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
     return () => { if (previewTimerRef.current) clearInterval(previewTimerRef.current); };
   }, [previewPlaying, elapsed]);
 
+  const startScriptResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    resizeRef.current = { startY: e.clientY, startHeight: scriptHeight };
+  };
+  useEffect(() => {
+    const move = (e: PointerEvent) => {
+      if (!resizeRef.current) return;
+      const delta = resizeRef.current.startY - e.clientY;
+      setScriptHeight(Math.min(500, Math.max(100, resizeRef.current.startHeight + delta)));
+    };
+    const up = () => { resizeRef.current = null; };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+  }, []);
+
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (confirmDiscard) {
@@ -480,12 +340,12 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
   };
   const stopTimer = () => { if (timerRef.current) clearInterval(timerRef.current); };
 
-  const handleStart = () => { setPhase('recording'); startTimer(); };
+  const handleStart = () => { setEditingScript(false); setPhase('recording'); startTimer(); };
   const handlePauseResume = () => {
     if (phase === 'recording') { setPhase('paused'); stopTimer(); }
-    else if (phase === 'paused') { setPhase('recording'); startTimer(); }
+    else if (phase === 'paused') { setEditingScript(false); setPhase('recording'); startTimer(); }
   };
-  const handleStop = () => { stopTimer(); setPhase('preview'); setScriptCollapsed(true); };
+  const handleStop = () => { stopTimer(); setPhase('preview'); };
   const handleRerecord = () => {
     stopTimer();
     setPreviewPlaying(false);
@@ -494,7 +354,6 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
     setDurations({});
     setIdx(startIdx);
     setPhase('idle');
-    setScriptCollapsed(false);
   };
   const handleDone = () => { stopTimer(); onStop(durations); };
   const handleCancel = () => {
@@ -534,8 +393,97 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
             {formatTime(elapsed)}
           </span>
         </div>
+        <button onClick={requestCancel} className="cursor-pointer flex items-center justify-center flex-shrink-0"
+          style={{ width: 36, height: 36, borderRadius: 10, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.05)', outline: 'none' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 40px', minHeight: 0, overflow: 'hidden', gap: 20 }}>
+        <AnimatePresence mode="wait">
+          <motion.div key={idx} initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }}
+            transition={{ duration: 0.18 }}
+            style={{ height: '100%', width: 'auto', maxWidth: 680, aspectRatio: '16/9', borderRadius: 14, overflow: 'hidden', background: bg, position: 'relative', boxShadow: '0 32px 80px rgba(0,0,0,0.7)', flexShrink: 1, containerType: 'inline-size' } as React.CSSProperties}>
+            <div style={{ position: 'absolute', inset: 0, padding: '7% 8%', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              {slide.title && <h2 style={{ ...ns, fontSize: 'clamp(14px,4.5cqw,30px)', fontWeight: 700, color: slide.textColorOverride ?? theme.titleColor, margin: 0, lineHeight: 1.2 }}>{slide.title}</h2>}
+              {slide.points.length > 0 && (
+                <div style={{ marginTop: '4%', display: 'flex', flexDirection: 'column', gap: '2%' }}>
+                  {slide.points.map((pt, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                      <div style={{ width: 6, height: 6, borderRadius: '50%', background: theme.accentColor, marginTop: 6, flexShrink: 0 }} />
+                      <p style={{ ...ns, fontSize: 'clamp(10px,2.6cqw,18px)', color: slide.textColorOverride ?? theme.titleColor, opacity: 0.85, margin: 0, lineHeight: 1.45 }}>{pt}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        </AnimatePresence>
+        {!locked && phase !== 'preview' && nextSlide && nextBg && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+            <span style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: 'rgba(255,255,255,0.4)', letterSpacing: 0.5, textTransform: 'uppercase' }}>Next</span>
+            <div style={{ width: 300, aspectRatio: '16/9', borderRadius: 10, overflow: 'hidden', background: nextBg, border: '1px solid rgba(255,255,255,0.14)', position: 'relative', opacity: 0.7 }}>
+              <div style={{ position: 'absolute', inset: 0, padding: '7% 8%', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                {nextSlide.title && <p style={{ ...ns, fontSize: 13, fontWeight: 700, color: nextSlide.textColorOverride ?? theme.titleColor, margin: 0, lineHeight: 1.25, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{nextSlide.title}</p>}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ flexShrink: 0, margin: phase === 'preview' ? '10px 40px 0' : '16px 40px 0', position: 'relative' }}>
+          <div onPointerDown={startScriptResize} className="cursor-ns-resize"
+            style={{ position: 'absolute', top: -6, left: '50%', transform: 'translateX(-50%)', width: 48, height: 12,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2 }}>
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.18)' }} />
+          </div>
+          <div style={{ borderRadius: 14, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+            padding: '10px 20px 14px', height: scriptHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div className="flex items-center justify-between" style={{ flexShrink: 0, marginBottom: 6 }}>
+              <div className="flex items-center" style={{ gap: 4 }}>
+                <button onClick={() => setScriptFontSize('sm')} className="cursor-pointer flex items-center justify-center"
+                  style={{ width: 26, height: 26, borderRadius: 6, border: 'none', outline: 'none',
+                    background: scriptFontSize === 'sm' ? 'rgba(255,255,255,0.14)' : 'transparent',
+                    ...ns, fontSize: 11, fontWeight: 700, color: scriptFontSize === 'sm' ? '#fff' : 'rgba(255,255,255,0.4)' }}>
+                  A
+                </button>
+                <button onClick={() => setScriptFontSize('lg')} className="cursor-pointer flex items-center justify-center"
+                  style={{ width: 26, height: 26, borderRadius: 6, border: 'none', outline: 'none',
+                    background: scriptFontSize === 'lg' ? 'rgba(255,255,255,0.14)' : 'transparent',
+                    ...ns, fontSize: 15, fontWeight: 700, color: scriptFontSize === 'lg' ? '#fff' : 'rgba(255,255,255,0.4)' }}>
+                  A
+                </button>
+              </div>
+              <button onClick={() => setEditingScript(v => !v)} disabled={phase === 'recording'}
+                className="flex items-center cursor-pointer"
+                style={{ gap: 6, height: 26, padding: '0 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.14)',
+                  background: editingScript ? 'rgba(255,255,255,0.14)' : 'transparent', outline: 'none',
+                  opacity: phase === 'recording' ? 0.35 : 1,
+                  cursor: phase === 'recording' ? 'default' : 'pointer',
+                  ...ns, fontSize: 11.5, fontWeight: 600, color: '#fff' }}>
+                {editingScript ? 'Done' : 'Edit'}
+              </button>
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', alignItems: editingScript ? 'stretch' : 'flex-start', justifyContent: 'center' }}>
+              {editingScript ? (
+                <textarea value={scripts[idx]} onChange={e => onScriptChange(idx, e.target.value)} autoFocus
+                  style={{ ...ns, width: '100%', height: '100%', resize: 'none', background: 'transparent', border: 'none', outline: 'none',
+                    fontSize: scriptFontSize === 'sm' ? 14 : 18, color: 'rgba(255,255,255,0.9)', lineHeight: 1.75, textAlign: 'center' }} />
+              ) : (
+                <AnimatePresence mode="wait">
+                  <motion.p key={idx} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                    style={{ ...ns, fontSize: scriptFontSize === 'sm' ? 14 : 18, color: 'rgba(255,255,255,0.9)', lineHeight: 1.75, margin: 0, textAlign: 'center' }}>
+                    {scripts[idx] || <span style={{ color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' }}>No script for this slide</span>}
+                  </motion.p>
+                </AnimatePresence>
+              )}
+            </div>
+          </div>
+      </div>
+
+      <div style={{ flexShrink: 0, position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '16px 28px 32px', gap: 14 }}>
         {!locked && phase !== 'preview' && (
-          <div className="flex items-center" style={{ gap: 8, marginTop: 6 }}>
+          <div className="flex items-center" style={{ position: 'absolute', right: 40, top: '50%', transform: 'translateY(-50%)', gap: 8, zIndex: 5 }}>
             <button onClick={() => setIdx(i => Math.max(0, i - 1))} disabled={idx === 0}
               className="cursor-pointer flex items-center justify-center"
               style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', opacity: idx === 0 ? 0.3 : 1 }}>
@@ -614,24 +562,22 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
       <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '16px 28px 32px', gap: 14 }}>
         {phase === 'preview' ? (
           <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'rgba(255,255,255,0.06)',
-              border: '1px solid rgba(255,255,255,0.12)', borderRadius: 12, padding: '10px 16px', width: '100%', maxWidth: 460 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '14px 22px', width: '100%', maxWidth: 700 }}>
               <button onClick={togglePreviewPlay} className="cursor-pointer flex items-center justify-center flex-shrink-0"
-                style={{ width: 36, height: 36, borderRadius: '50%', border: 'none', outline: 'none', background: '#006EFE' }}>
+                style={{ width: 20, height: 20, border: 'none', outline: 'none', background: 'transparent', padding: 0 }}>
                 {previewPlaying
-                  ? <svg width="11" height="11" viewBox="0 0 24 24" fill="white"><rect x="5" y="4" width="5" height="16" rx="1"/><rect x="14" y="4" width="5" height="16" rx="1"/></svg>
-                  : <svg width="12" height="12" viewBox="0 0 24 24" fill="white" style={{ marginLeft: 1 }}><path d="M6 4l14 8-14 8z"/></svg>}
+                  ? <svg width="15" height="15" viewBox="0 0 24 24" fill="white"><rect x="5" y="4" width="5" height="16" rx="1"/><rect x="14" y="4" width="5" height="16" rx="1"/></svg>
+                  : <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M6 4l14 8-14 8z"/></svg>}
               </button>
               <div onClick={seekPreview} style={{ position: 'relative', flex: 1, height: 20, display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-                <div style={{ position: 'relative', width: '100%', height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.18)' }}>
-                  <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 2, background: '#006EFE',
-                    width: `${elapsed > 0 ? (previewTime / elapsed) * 100 : 0}%`, transition: previewPlaying ? 'width 1s linear' : 'none' }} />
+                <div style={{ position: 'relative', width: '100%', height: 2, borderRadius: 1, background: 'rgba(255,255,255,0.2)' }}>
                   <div style={{ position: 'absolute', top: '50%', left: `${elapsed > 0 ? (previewTime / elapsed) * 100 : 0}%`,
-                    transform: 'translate(-50%, -50%)', width: 12, height: 12, borderRadius: '50%', background: '#006EFE',
-                    boxShadow: '0 1px 4px rgba(0,0,0,0.4)', transition: previewPlaying ? 'left 1s linear' : 'none' }} />
+                    transform: 'translate(-50%, -50%)', width: 10, height: 10, borderRadius: '50%', background: '#fff',
+                    transition: previewPlaying ? 'left 1s linear' : 'none' }} />
                 </div>
               </div>
-              <span style={{ ...ns, fontSize: 12.5, color: 'rgba(255,255,255,0.6)', fontWeight: 600, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ ...ns, fontSize: 13, color: 'rgba(255,255,255,0.5)', fontWeight: 500, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
                 {formatTime(previewTime)} / {formatTime(elapsed)}
               </span>
             </div>
@@ -642,14 +588,27 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
               </button>
               <button onClick={handleDone} className="cursor-pointer"
                 style={{ height: 42, padding: '0 26px', borderRadius: 10, border: 'none', background: '#fff', ...ns, fontSize: 13, fontWeight: 700, color: '#0D1433', cursor: 'pointer', outline: 'none' }}>
-                Done
+                Save
               </button>
             </div>
           </>
         ) : (
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
-              <button onClick={phase === 'idle' ? handleStart : handlePauseResume} className="cursor-pointer flex items-center justify-center"
+              <AnimatePresence>
+                {phase !== 'idle' && (
+                  <motion.button key="redo" onClick={handleRerecord} title="Redo take"
+                    initial={{ opacity: 0, scale: 0.2, x: 60 }} animate={{ opacity: 1, scale: 1, x: 0 }} exit={{ opacity: 0, scale: 0.2, x: 60 }}
+                    transition={{ type: 'spring', stiffness: 480, damping: 24 }}
+                    className="cursor-pointer flex items-center justify-center flex-shrink-0"
+                    style={{ width: 42, height: 42, borderRadius: 10, border: 'none', outline: 'none', background: 'rgba(255,255,255,0.12)', cursor: 'pointer' }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/>
+                    </svg>
+                  </motion.button>
+                )}
+              </AnimatePresence>
+              <button onClick={phase === 'idle' ? handleStart : handlePauseResume} className="cursor-pointer flex items-center justify-center flex-shrink-0"
                 style={{ width: 64, height: 64, borderRadius: '50%', border: 'none', outline: 'none',
                   background: phase === 'recording' ? '#E5484D' : '#fff',
                   boxShadow: phase === 'recording' ? '0 0 0 8px rgba(229,72,77,0.22)' : '0 0 0 6px rgba(255,255,255,0.1)',
@@ -660,18 +619,18 @@ function RecordMode({ slides, theme, scripts, startIdx, locked = false, onStop, 
                     ? <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16" rx="1.5"/><rect x="14" y="4" width="4" height="16" rx="1.5"/></svg>
                     : <svg width="14" height="14" viewBox="0 0 24 24" fill="#E5484D" style={{ marginLeft: 2 }}><path d="M6 4l14 8-14 8z"/></svg>}
               </button>
-              {phase !== 'idle' && (
-                <button onClick={handleStop} className="cursor-pointer flex items-center justify-center"
-                  style={{ width: 42, height: 42, borderRadius: 10, border: 'none', outline: 'none', background: '#fff', cursor: 'pointer' }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="#0D1433"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
-                </button>
-              )}
+              <AnimatePresence>
+                {phase !== 'idle' && (
+                  <motion.button key="stop" onClick={handleStop}
+                    initial={{ opacity: 0, scale: 0.2, x: -60 }} animate={{ opacity: 1, scale: 1, x: 0 }} exit={{ opacity: 0, scale: 0.2, x: -60 }}
+                    transition={{ type: 'spring', stiffness: 480, damping: 24 }}
+                    className="cursor-pointer flex items-center justify-center flex-shrink-0"
+                    style={{ width: 42, height: 42, borderRadius: 10, border: 'none', outline: 'none', background: 'rgba(255,255,255,0.12)', cursor: 'pointer' }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+                  </motion.button>
+                )}
+              </AnimatePresence>
             </div>
-            <span style={{ ...ns, fontSize: 11.5, color: 'rgba(255,255,255,0.35)', fontWeight: 500 }}>
-              {phase === 'idle'
-                ? (locked ? 'Tap to start recording this slide' : 'Tap to start recording')
-                : phase === 'recording' ? 'Tap to pause · stop when finished' : 'Paused · tap to resume · stop when finished'}
-            </span>
           </>
         )}
       </div>
@@ -1035,9 +994,9 @@ function AudioControls({ idx, audio, script, cloneName, onAudioChange, onClone, 
 /* ════════════════════════════════════════════════════════════════
    Review screen — real play/pause + scrubber across slides
    ════════════════════════════════════════════════════════════════ */
-function ReviewScreen({ slides, theme, audios, onContinue, onBack }: {
+function ReviewScreen({ slides, theme, audios, onContinue, onBack, sidebarOpen, onToggleSidebar }: {
   slides: PresentationSlide[]; theme: MockTheme; audios: SlideAudio[];
-  onContinue: () => void; onBack: () => void;
+  onContinue: () => void; onBack: () => void; sidebarOpen: boolean; onToggleSidebar: () => void;
 }) {
   const slideDurations = useMemo(() => slides.map((_, i) => Math.max(1, audios[i]?.duration || 4)), [slides, audios]);
   const totalDuration = useMemo(() => slideDurations.reduce((a, b) => a + b, 0), [slideDurations]);
@@ -1081,17 +1040,28 @@ function ReviewScreen({ slides, theme, audios, onContinue, onBack }: {
 
   const slide = slides[clampedIdx];
   const slideBg = slide.bgImageUrl ? `url(${slide.bgImageUrl}) center/cover` : (slide.bgColor ?? theme.bg);
+  // Backgrounds can be gradients, not just hex, so we can't reliably compute luminance from
+  // slide.bgColor/theme.bg directly. The theme/slide author already solved this contrast
+  // problem when picking titleColor — reuse that instead of re-deriving it from raw CSS.
+  const bgIsDark = slide.bgImageUrl ? true : !isDarkBg(slide.textColorOverride ?? theme.titleColor);
   const progress = totalDuration > 0 ? currentTime / totalDuration : 0;
 
   return (
     <div className="h-full flex flex-col" style={{ background: '#EBEDF2' }}>
       <div className="flex-shrink-0 flex items-center justify-between"
         style={{ height: 54, padding: '0 20px', borderBottom: '1px solid #E8EBF2', background: '#fff' }}>
-        <button onClick={onBack} className="flex items-center cursor-pointer"
-          style={{ gap: 6, height: 34, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#52637A' }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-          Back to narration
-        </button>
+        <div className="flex items-center" style={{ gap: 4 }}>
+          <button onClick={onToggleSidebar}
+            className="flex-shrink-0 rounded-lg hover:bg-[#F6F7F9] transition-colors cursor-pointer flex items-center justify-center"
+            style={{ width: 40, height: 40 }}>
+            <SideMenuIcon active={sidebarOpen} />
+          </button>
+          <button onClick={onBack} className="flex items-center cursor-pointer"
+            style={{ gap: 6, height: 34, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#52637A' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+            Video editor
+          </button>
+        </div>
         <span style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#0D1433' }}>Preview</span>
         <button onClick={onContinue}
           style={{ height: 36, padding: '0 18px', borderRadius: 9, border: 'none', background: '#006EFE', ...ns, fontSize: 13, fontWeight: 600, color: '#fff', cursor: 'pointer' }}>
@@ -1123,30 +1093,32 @@ function ReviewScreen({ slides, theme, audios, onContinue, onBack }: {
           </div>
 
           <div style={{ position: 'absolute', inset: 0, zIndex: 10, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
-            background: playing ? 'linear-gradient(to top, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.12) 18%, transparent 30%)' : 'none',
+            background: bgIsDark
+              ? 'linear-gradient(to top, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.18) 22%, transparent 38%)'
+              : 'linear-gradient(to top, rgba(255,255,255,0.8) 0%, rgba(255,255,255,0.3) 22%, transparent 38%)',
             opacity: !playing || playerHovered ? 1 : 0, transition: 'opacity 0.25s', pointerEvents: !playing || playerHovered ? 'auto' : 'none' }}>
             <div style={{ padding: '0 16px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div onClick={seek} style={{ width: '100%', height: 3, borderRadius: 2, background: playing ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.12)', cursor: 'pointer', position: 'relative' }}>
+              <div onClick={seek} style={{ width: '100%', height: 3, borderRadius: 2, background: bgIsDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.15)', cursor: 'pointer', position: 'relative' }}>
                 {slideStarts.slice(1).map((s, i) => (
-                  <div key={i} style={{ position: 'absolute', left: `${(s / totalDuration) * 100}%`, top: -1, width: 1, height: 5, background: playing ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.2)', transform: 'translateX(-50%)' }} />
+                  <div key={i} style={{ position: 'absolute', left: `${(s / totalDuration) * 100}%`, top: -1, width: 1, height: 5, background: bgIsDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.25)', transform: 'translateX(-50%)' }} />
                 ))}
-                <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${progress * 100}%`, background: playing ? '#fff' : '#15191F', borderRadius: 2, transition: 'width 0.5s linear' }} />
-                <div style={{ position: 'absolute', top: '50%', left: `${progress * 100}%`, transform: 'translate(-50%, -50%)', width: 11, height: 11, borderRadius: '50%', background: playing ? '#fff' : '#15191F', boxShadow: '0 1px 3px rgba(0,0,0,0.3)', transition: 'left 0.5s linear' }} />
+                <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${progress * 100}%`, background: bgIsDark ? '#fff' : '#15191F', borderRadius: 2, transition: 'width 0.5s linear' }} />
+                <div style={{ position: 'absolute', top: '50%', left: `${progress * 100}%`, transform: 'translate(-50%, -50%)', width: 11, height: 11, borderRadius: '50%', background: bgIsDark ? '#fff' : '#15191F', boxShadow: '0 1px 3px rgba(0,0,0,0.3)', transition: 'left 0.5s linear' }} />
               </div>
               <div className="flex items-center" style={{ gap: 10 }}>
                 <button onClick={() => { if (currentTime >= totalDuration) setCurrentTime(0); setPlaying(v => !v); }}
-                  style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', outline: 'none', background: playing ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.07)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', outline: 'none', background: bgIsDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.08)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                   {playing
-                    ? <svg width="9" height="9" viewBox="0 0 24 24" fill="white"><rect x="5" y="4" width="4" height="16" rx="1.5"/><rect x="15" y="4" width="4" height="16" rx="1.5"/></svg>
-                    : <svg width="9" height="9" viewBox="0 0 24 24" fill="#15191F"><path d="M6 4l14 8-14 8V4z"/></svg>}
+                    ? <svg width="9" height="9" viewBox="0 0 24 24" fill={bgIsDark ? 'white' : '#15191F'}><rect x="5" y="4" width="4" height="16" rx="1.5"/><rect x="15" y="4" width="4" height="16" rx="1.5"/></svg>
+                    : <svg width="9" height="9" viewBox="0 0 24 24" fill={bgIsDark ? 'white' : '#15191F'}><path d="M6 4l14 8-14 8V4z"/></svg>}
                 </button>
-                <span style={{ ...ns, fontSize: 11, color: playing ? 'rgba(255,255,255,0.8)' : '#52637A', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                <span style={{ ...ns, fontSize: 11, color: bgIsDark ? 'rgba(255,255,255,0.85)' : '#52637A', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
                   {formatTime(currentTime)} / {formatTime(totalDuration)}
                 </span>
                 <div style={{ flex: 1 }} />
                 <button onClick={toggleFullscreen}
                   style={{ width: 28, height: 28, borderRadius: 6, border: 'none', outline: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={playing ? 'rgba(255,255,255,0.7)' : '#8596AD'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={bgIsDark ? 'rgba(255,255,255,0.8)' : '#8596AD'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
                 </button>
               </div>
             </div>
@@ -1160,7 +1132,9 @@ function ReviewScreen({ slides, theme, audios, onContinue, onBack }: {
 /* ════════════════════════════════════════════════════════════════
    Export screen
    ════════════════════════════════════════════════════════════════ */
-function ExportScreen({ slides, theme, totalSecs, onBack }: { slides: PresentationSlide[]; theme: MockTheme; totalSecs: number; onBack: () => void }) {
+function ExportScreen({ slides, theme, totalSecs, onBack, sidebarOpen, onToggleSidebar }: {
+  slides: PresentationSlide[]; theme: MockTheme; totalSecs: number; onBack: () => void; sidebarOpen: boolean; onToggleSidebar: () => void;
+}) {
   const [progress, setProgress] = useState(0);
   useEffect(() => {
     const iv = setInterval(() => setProgress(p => Math.min(100, p + 4 + Math.random() * 6)), 120);
@@ -1223,11 +1197,18 @@ function ExportScreen({ slides, theme, totalSecs, onBack }: { slides: Presentati
     <div className="h-full flex flex-col" style={{ background: '#fff' }}>
       {/* Header */}
       <div className="flex-shrink-0 flex items-center justify-between" style={{ height: 54, padding: '0 20px', borderBottom: '1px solid #E8EBF2' }}>
-        <button onClick={onBack} className="flex items-center cursor-pointer"
-          style={{ gap: 6, height: 34, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#52637A' }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-          Back to preview
-        </button>
+        <div className="flex items-center" style={{ gap: 4 }}>
+          <button onClick={onToggleSidebar}
+            className="flex-shrink-0 rounded-lg hover:bg-[#F6F7F9] transition-colors cursor-pointer flex items-center justify-center"
+            style={{ width: 40, height: 40 }}>
+            <SideMenuIcon active={sidebarOpen} />
+          </button>
+          <button onClick={onBack} className="flex items-center cursor-pointer"
+            style={{ gap: 6, height: 34, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#52637A' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+            Video editor
+          </button>
+        </div>
         <div ref={formatMenuRef} style={{ position: 'relative' }}>
           <button onClick={() => !downloading && setFormatMenuOpen(v => !v)} disabled={downloading}
             style={{ height: 36, padding: '0 16px', borderRadius: 9, border: 'none',
@@ -1449,45 +1430,61 @@ function MethodPicker({ onPick }: { onPick: (source: SourceKind) => void }) {
 }
 
 /* Scope picker — shown after a method is chosen, before capture starts.
-   Same choice for all three methods: this slide only, or the rest of the deck too. */
-function ScopeChoice({ onPick }: { onPick: (scope: CaptureScope) => void }) {
+   "Cover remaining slides" only shows once something's already recorded — with an empty
+   deck it'd be identical to "All slides", so we skip the redundant option. */
+function ScopeChoice({ onPick, anyRecorded }: { onPick: (scope: CaptureScope) => void; anyRecorded: boolean }) {
   const opts: { id: CaptureScope; icon: React.ReactNode; label: string; desc: string }[] = [
     {
       id: 'single',
       icon: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect x="3" y="5" width="18" height="14" rx="2" />
         </svg>
       ),
       label: 'Just this slide', desc: 'Covers only the slide currently open',
     },
-    {
-      id: 'multi',
+    ...(anyRecorded ? [{
+      id: 'multi' as CaptureScope,
       icon: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0FA47C" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#0FA47C" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect x="2" y="6" width="14" height="12" rx="2" />
           <rect x="8" y="3" width="14" height="12" rx="2" />
         </svg>
       ),
-      label: 'Cover remaining slides', desc: 'Keep going through the rest of the deck',
+      label: 'Cover remaining slides', desc: 'Fills in empty and AI-voiced slides — leaves existing recordings alone',
+    }] : []),
+    {
+      id: 'all',
+      icon: (
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#E86A2B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </svg>
+      ),
+      label: 'All slides', desc: 'Replaces every slide’s audio, including ones already recorded',
     },
   ];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {opts.map(o => (
         <button key={o.id} onClick={() => onPick(o.id)}
-          style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 11,
-            border: '1px solid #E8EBF2', background: '#fff',
-            cursor: 'pointer', textAlign: 'left', transition: 'border-color 0.13s' }}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = '#C8CDD9'; }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = '#E8EBF2'; }}>
-          <div style={{ width: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 12,
+            border: '1px solid #E8EBF2', background: '#fff', cursor: 'pointer', textAlign: 'left',
+            transition: 'border-color 0.15s, box-shadow 0.15s, transform 0.1s' }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = '#C8CDD9'; e.currentTarget.style.boxShadow = '0 3px 10px rgba(15,23,51,0.07)'; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = '#E8EBF2'; e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.transform = 'scale(1)'; }}
+          onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.985)'; }}
+          onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)'; }}>
+          <div style={{ width: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, alignSelf: 'flex-start', marginTop: 1 }}>
             {o.icon}
           </div>
-          <div>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ ...ns, fontSize: 13.5, fontWeight: 700, color: '#0D1433' }}>{o.label}</div>
-            <div style={{ ...ns, fontSize: 11.5, color: '#8596AD', marginTop: 1 }}>{o.desc}</div>
+            <div style={{ ...ns, fontSize: 11.5, color: '#8596AD', marginTop: 2, lineHeight: 1.4 }}>{o.desc}</div>
           </div>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#C8CDD9" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <path d="M9 18l6-6-6-6" />
+          </svg>
         </button>
       ))}
     </div>
@@ -1507,8 +1504,9 @@ function GenerateScriptMenu({ onThisSlide, onAllSlides }: { onThisSlide: () => v
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button onClick={() => setOpen(o => !o)} className="cursor-pointer flex items-center"
-        style={{ gap: 3, border: 'none', background: 'transparent', padding: 0, ...ns, fontSize: 11, fontWeight: 500, color: '#7C3AED', cursor: 'pointer' }}>
-        ✦ Generate
+        style={{ gap: 5, border: 'none', background: 'transparent', padding: 0, ...ns, fontSize: 11, fontWeight: 500, color: '#7C3AED', cursor: 'pointer' }}>
+        <WordgenieIcon size={12} />
+        Generate script
         <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#7C3AED" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9l6 6 6-6"/></svg>
       </button>
       <AnimatePresence>
@@ -1536,9 +1534,9 @@ function GenerateScriptMenu({ onThisSlide, onAllSlides }: { onThisSlide: () => v
 }
 
 /* Right panel — script + audio section for the active slide */
-function StudioPanel({ idx, script, audio, cloneName, isGeneratingScript, onScriptChange, onAudioChange, onMethodPick, onScopePick, onClone, onStartRecord, onGenerateAudioAll, onGenerateScript, onGenerateAllScripts }: {
+function StudioPanel({ idx, script, audio, cloneName, isGeneratingScript, anyRecorded, onScriptChange, onAudioChange, onMethodPick, onScopePick, onClone, onStartRecord, onGenerateAudioAll, onGenerateScript, onGenerateAllScripts }: {
   idx: number; script: string; audio: SlideAudio; cloneName: string | null;
-  isGeneratingScript: boolean;
+  isGeneratingScript: boolean; anyRecorded: boolean;
   onScriptChange: (v: string) => void;
   onAudioChange: (patch: Partial<SlideAudio>) => void;
   onMethodPick: (source: SourceKind) => void;
@@ -1552,10 +1550,10 @@ function StudioPanel({ idx, script, audio, cloneName, isGeneratingScript, onScri
   const est = estimateSecs(script);
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Script section */}
-      <div style={{ padding: '22px 20px 18px', borderBottom: '1px solid #EEF1F6' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '22px 20px 18px', borderBottom: '1px solid #EEF1F6' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexShrink: 0 }}>
           <span style={{ ...ns, fontSize: 10, fontWeight: 700, color: '#B0BACB', letterSpacing: 0.7, textTransform: 'uppercase' }}>Script</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {isGeneratingScript ? (
@@ -1575,14 +1573,14 @@ function StudioPanel({ idx, script, audio, cloneName, isGeneratingScript, onScri
             if (ready || stale) onAudioChange({ status: 'stale' });
           }}
           style={{ ...ns, fontSize: 13.5, color: '#1A2332', lineHeight: 1.65, border: 'none', resize: 'none',
-            background: 'transparent', outline: 'none', width: '100%', minHeight: 220, padding: 0 }}
+            background: 'transparent', outline: 'none', width: '100%', flex: 1, minHeight: 120, padding: 0 }}
           placeholder="Write what you'll say over this slide…" />
       </div>
 
       {/* Audio section */}
-      <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12, flex: 1 }}>
+      <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12, flexShrink: 0, overflowY: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ ...ns, fontSize: 10, fontWeight: 700, color: '#B0BACB', letterSpacing: 0.7, textTransform: 'uppercase' }}>Audio</span>
+          <span style={{ ...ns, fontSize: 10, fontWeight: 700, color: '#B0BACB', letterSpacing: 0.7, textTransform: 'uppercase' }}>Add audio</span>
           {audio.methodSet && (
             <ChangeSourceMenu current={audio.source}
               onSwitch={s => onAudioChange({ source: s, methodSet: true, scopeSet: s === 'upload', scope: 'single', status: 'empty', duration: 0, fileName: undefined, segStart: undefined, segEnd: undefined })} />
@@ -1592,7 +1590,7 @@ function StudioPanel({ idx, script, audio, cloneName, isGeneratingScript, onScri
         {!audio.methodSet ? (
           <MethodPicker onPick={onMethodPick} />
         ) : !audio.scopeSet ? (
-          <ScopeChoice onPick={onScopePick} />
+          <ScopeChoice onPick={onScopePick} anyRecorded={anyRecorded} />
         ) : (
           <AudioControls idx={idx} audio={audio} script={script} cloneName={cloneName}
             onAudioChange={onAudioChange} onClone={onClone} onStartRecord={onStartRecord}
@@ -1642,8 +1640,7 @@ export default function NarrationViewV2() {
   const [cloneName, setCloneName] = useState<string | null>(saved?.cloneName ?? null);
   const [activeIdx, setActiveIdx] = useState(0);
   const [recordIdx, setRecordIdx] = useState<number | null>(null);
-  const [recordLocked, setRecordLocked] = useState(false);
-  const [syncSeedDurations, setSyncSeedDurations] = useState<number[] | undefined>(undefined);
+  const [recordScope, setRecordScope] = useState<CaptureScope>('single');
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const filmstripRef = useRef<HTMLDivElement>(null);
@@ -1709,7 +1706,7 @@ export default function NarrationViewV2() {
   const handleScopePick = (i: number, scope: CaptureScope) => {
     patchAudio(i, { scopeSet: true, scope });
     if (audios[i].source === 'record') {
-      beginRecord(i, scope === 'single');
+      beginRecord(i, scope);
     }
   };
 
@@ -1731,31 +1728,21 @@ export default function NarrationViewV2() {
     showToast('Generating audio for slides without narration…');
   }, [slides, scripts, showToast]);
 
-  const applySync = (segments: { start: number; end: number }[]) => {
-    setAudios(slides.map((_, i) => ({
-      source: 'record', methodSet: true, scopeSet: true, scope: 'multi', voiceId: defaultVoice, status: 'ready',
-      duration: segments[i].end - segments[i].start,
-      segStart: segments[i].start, segEnd: segments[i].end,
-    })));
-    setStep('export');
-    showToast('Recording split across slides');
-  };
-
-  const beginRecord = async (i: number, locked: boolean) => {
+  const beginRecord = async (i: number, scope: CaptureScope) => {
     try {
       // Real getUserMedia call — triggers the browser's own native mic-permission prompt.
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(t => t.stop());
-      enterRecord(i, locked);
+      enterRecord(i, scope);
     } catch {
       showToast('Microphone access is required to record');
     }
   };
 
-  const enterRecord = (i: number, locked: boolean) => {
+  const enterRecord = (i: number, scope: CaptureScope) => {
     setActiveIdx(i);
     setRecordIdx(i);
-    setRecordLocked(locked);
+    setRecordScope(scope);
   };
 
   const handleRecordCancel = () => {
@@ -1764,19 +1751,39 @@ export default function NarrationViewV2() {
 
   const exitRecord = (durations: Record<number, number>) => {
     const startedIdx = recordIdx;
-    const locked = recordLocked;
+    const scope = recordScope;
     setRecordIdx(null);
-    if (locked && startedIdx !== null) {
+    if (scope === 'single' && startedIdx !== null) {
       const dur = durations[startedIdx] ?? 0;
-      setAudios(prev => prev.map((a, i) => i === startedIdx ? { ...a, status: 'ready', duration: dur } : a));
-      if (dur > 0) {
-        router.push('/presentation/editor');
+      const nextAudios = audios.map((a, i) => i === startedIdx ? { ...a, status: 'ready' as const, duration: dur } : a);
+      setAudios(nextAudios);
+      if (dur > 0 && nextAudios.every(a => a.status === 'ready')) {
+        setStep('export');
       }
       return;
     }
-    const seed = slides.map((_, i) => durations[i] ?? 0);
-    setSyncSeedDurations(seed);
-    setStep('sync');
+    let cursor = 0;
+    const segments = slides.map((_, i) => {
+      const d = durations[i] ?? 0;
+      const seg = { start: cursor, end: cursor + d };
+      cursor += d;
+      return seg;
+    });
+    // "Remaining" covers the started slide and everything after it — slides before that
+    // are left alone entirely, and among the covered ones, an existing recorded take is
+    // also left untouched (AI voice and empty slides get filled in).
+    // "All slides" is the explicit override — it replaces everything, no exceptions.
+    setAudios(slides.map((_, i) => {
+      if (scope === 'multi' && startedIdx !== null && i < startedIdx) return audios[i];
+      const alreadyRecorded = scope === 'multi' && audios[i].source === 'record' && (audios[i].status === 'ready' || audios[i].status === 'stale');
+      if (alreadyRecorded) return audios[i];
+      return {
+        source: 'record', methodSet: true, scopeSet: true, scope: 'multi', voiceId: defaultVoice, status: 'ready',
+        duration: segments[i].end - segments[i].start,
+        segStart: segments[i].start, segEnd: segments[i].end,
+      };
+    }));
+    showToast('Recording split across slides');
   };
 
   const readyCount = audios.filter(a => a.status === 'ready').length;
@@ -1796,10 +1803,12 @@ export default function NarrationViewV2() {
       onBack={() => setStep('workspace')} />
   );
   if (step === 'review') return (
-    <ReviewScreen slides={slides} theme={theme} audios={audios} onContinue={() => setStep('export')} onBack={() => setStep('workspace')} />
+    <ReviewScreen slides={slides} theme={theme} audios={audios} onContinue={() => setStep('export')} onBack={() => setStep('workspace')}
+      sidebarOpen={sidebarOpen} onToggleSidebar={() => setSidebarOpen(!sidebarOpen)} />
   );
   if (step === 'export') return (
-    <ExportScreen slides={slides} theme={theme} totalSecs={totalSecs} onBack={() => setStep('review')} />
+    <ExportScreen slides={slides} theme={theme} totalSecs={totalSecs} onBack={() => setStep('workspace')}
+      sidebarOpen={sidebarOpen} onToggleSidebar={() => setSidebarOpen(!sidebarOpen)} />
   );
 
   // Active slide data
@@ -1812,7 +1821,8 @@ export default function NarrationViewV2() {
       <AnimatePresence>
         {recordIdx !== null && (
           <RecordMode slides={slides} theme={theme} scripts={scripts}
-            startIdx={recordIdx} locked={recordLocked} onStop={exitRecord} onCancel={handleRecordCancel} />
+            onScriptChange={(i, v) => setScripts(prev => prev.map((s, j) => j === i ? v : s))}
+            startIdx={recordIdx} locked={recordScope === 'single'} onStop={exitRecord} onCancel={handleRecordCancel} />
         )}
       </AnimatePresence>
 
@@ -1828,7 +1838,7 @@ export default function NarrationViewV2() {
           <button onClick={() => router.push('/presentation/editor')} className="flex items-center cursor-pointer"
             style={{ gap: 6, height: 34, padding: '0 13px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#52637A' }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-            Editor
+            Presentation editor
           </button>
         </div>
 
@@ -1840,7 +1850,7 @@ export default function NarrationViewV2() {
             <span style={{ ...ns, fontSize: 12, color: '#8596AD' }}>slides ready</span>
             {totalSecs > 0 && <span style={{ ...ns, fontSize: 12, color: '#B0BACB' }}>· {formatTime(totalSecs)}</span>}
           </div>
-          <div className="flex items-center" style={{ gap: 10 }}>
+          <div className="flex items-center" style={{ gap: 8 }}>
             <button onClick={() => readyCount > 0 && setStep('review')}
               title={readyCount === 0 ? 'Add audio to at least one slide first' : missing > 0 ? `${missing} slide${missing > 1 ? 's' : ''} still need audio` : undefined}
               style={{ height: 36, padding: '0 16px', borderRadius: 9, border: '1px solid #E0E5EB',
@@ -1872,13 +1882,6 @@ export default function NarrationViewV2() {
           ))}
         </div>
 
-        {step === 'sync' ? (
-          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            <SyncScreen slides={slides} theme={theme} scripts={scripts} seedDurations={syncSeedDurations}
-              onApply={applySync} onBack={() => setStep('workspace')} />
-          </div>
-        ) : (
-        <>
         {/* Canvas area — center */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           position: 'relative', padding: '24px 20px', minWidth: 0 }}>
@@ -1925,6 +1928,7 @@ export default function NarrationViewV2() {
                 audio={audios[activeIdx]}
                 cloneName={cloneName}
                 isGeneratingScript={scriptGenerating[activeIdx] ?? false}
+                anyRecorded={audios.some(a => a.status === 'ready' || a.status === 'stale')}
                 onScriptChange={v => setScripts(prev => prev.map((s, j) => j === activeIdx ? v : s))}
                 onAudioChange={patch => patchAudio(activeIdx, patch)}
                 onMethodPick={source => handleMethodPick(activeIdx, source)}
@@ -1932,8 +1936,8 @@ export default function NarrationViewV2() {
                 onClone={() => setStep('clone')}
                 onStartRecord={() => {
                   const a = audios[activeIdx];
-                  const locked = !(a.scope === 'multi' && a.status === 'empty');
-                  beginRecord(activeIdx, locked);
+                  const scope: CaptureScope = (a.scope !== 'single' && a.status === 'empty') ? a.scope : 'single';
+                  beginRecord(activeIdx, scope);
                 }}
                 onGenerateAudioAll={generateAllAudio}
                 onGenerateScript={() => generateScript(activeIdx)}
@@ -1942,8 +1946,6 @@ export default function NarrationViewV2() {
             </motion.div>
           </AnimatePresence>
         </div>
-        </>
-        )}
       </div>
 
       {/* Toast */}

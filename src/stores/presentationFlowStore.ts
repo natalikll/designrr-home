@@ -16,7 +16,7 @@ interface PresentationFlowState {
   selectedThemeId: string;
   slides: PresentationSlide[];
   activeSlideId: string | null;
-  narrationVersion: '1' | '2';
+  narrationVersion: '1' | '2' | '3' | '4';
 }
 
 interface PresentationFlowActions {
@@ -29,7 +29,7 @@ interface PresentationFlowActions {
   setSlides: (slides: PresentationSlide[]) => void;
   updateSlideTitle: (id: string, title: string) => void;
   setActiveSlideId: (id: string | null) => void;
-  setNarrationVersion: (v: '1' | '2') => void;
+  setNarrationVersion: (v: '1' | '2' | '3' | '4') => void;
   resetPresentationFlow: () => void;
 }
 

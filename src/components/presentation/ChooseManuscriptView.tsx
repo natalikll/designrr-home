@@ -20,6 +20,19 @@ function SearchIcon() {
   );
 }
 
+function EmptyStateIcon() {
+  return (
+    <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+      <rect x="10" y="6" width="30" height="40" rx="4" fill="#F2F4F7" />
+      <rect x="16" y="16" width="18" height="3" rx="1.5" fill="#C8CDD8" />
+      <rect x="16" y="23" width="18" height="3" rx="1.5" fill="#E2E5EC" />
+      <rect x="16" y="30" width="12" height="3" rx="1.5" fill="#E2E5EC" />
+      <circle cx="40" cy="40" r="12" fill="#fff" stroke="#C8CDD8" strokeWidth="2" />
+      <line x1="48.5" y1="48.5" x2="54" y2="54" stroke="#C8CDD8" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function ManuscriptThumb() {
   return (
     <div className="flex items-center justify-center flex-shrink-0" style={{ width: '100%', height: 158, background: '#F2F4F7', borderRadius: 10 }}>
@@ -97,33 +110,80 @@ export function ChooseManuscriptView() {
             </div>
           </div>
 
-          <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 20 }}>
-            {filtered.map((m) => {
-              const isSelected = selectedManuscriptId === m.id;
-              return (
-                <motion.button
-                  key={m.id}
-                  type="button"
-                  whileHover={{ y: -2 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => setSelectedManuscriptId(m.id)}
-                  onDoubleClick={() => { setSelectedManuscriptId(m.id); router.push('/presentation/sections'); }}
-                  className="flex flex-col text-left cursor-pointer"
+          {MOCK_MANUSCRIPTS.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center" style={{ padding: '80px 24px' }}>
+              <EmptyStateIcon />
+              <p style={{ ...ns, fontSize: 16, fontWeight: 600, color: '#15191F', marginTop: 20 }}>No manuscripts yet</p>
+              <p style={{ ...ns, fontSize: 14, color: '#8E99AB', marginTop: 6, maxWidth: 320 }}>
+                Build a presentation now, or write a manuscript first if you&apos;d rather turn a book into slides.
+              </p>
+              <div className="flex items-center" style={{ gap: 10, marginTop: 20 }}>
+                <button
+                  onClick={() => router.push('/presentation/theme')}
                   style={{
-                    gap: 12, borderRadius: 12, padding: 14, background: '#fff',
-                    border: `1.5px solid ${isSelected ? '#006EFE' : 'transparent'}`,
-                    boxShadow: isSelected ? '0 0 0 1px #006EFE' : 'none',
+                    ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE',
+                    border: 'none', borderRadius: 8, padding: '10px 20px', cursor: 'pointer',
                   }}
                 >
-                  <ManuscriptThumb />
-                  <div>
-                    <p className="line-clamp-2" style={{ ...ns, fontSize: 15, fontWeight: 600, color: '#15191F', lineHeight: 1.3 }}>{m.title}</p>
-                    <p style={{ ...ns, fontSize: 13, color: '#8E99AB', marginTop: 4 }}>Edited {m.editedAt}</p>
-                  </div>
-                </motion.button>
-              );
-            })}
-          </div>
+                  Start from scratch
+                </button>
+                <button
+                  onClick={() => router.push('/')}
+                  style={{
+                    ...ns, fontSize: 14, fontWeight: 600, color: '#15191F', background: '#fff',
+                    border: '1px solid #E0E5EB', borderRadius: 8, padding: '10px 20px', cursor: 'pointer',
+                  }}
+                >
+                  Create a manuscript
+                </button>
+              </div>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center" style={{ padding: '80px 24px' }}>
+              <EmptyStateIcon />
+              <p style={{ ...ns, fontSize: 16, fontWeight: 600, color: '#15191F', marginTop: 20 }}>No manuscripts found</p>
+              <p style={{ ...ns, fontSize: 14, color: '#8E99AB', marginTop: 6, maxWidth: 320 }}>
+                No results for &ldquo;{query}&rdquo;. Try a different search term.
+              </p>
+              <button
+                onClick={() => setQuery('')}
+                style={{
+                  ...ns, fontSize: 14, fontWeight: 600, color: '#006EFE', background: 'none',
+                  border: '1px solid #E0E5EB', borderRadius: 8, padding: '10px 20px', marginTop: 20, cursor: 'pointer',
+                }}
+              >
+                Clear search
+              </button>
+            </div>
+          ) : (
+            <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 20 }}>
+              {filtered.map((m) => {
+                const isSelected = selectedManuscriptId === m.id;
+                return (
+                  <motion.button
+                    key={m.id}
+                    type="button"
+                    whileHover={{ y: -2 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => setSelectedManuscriptId(m.id)}
+                    onDoubleClick={() => { setSelectedManuscriptId(m.id); router.push('/presentation/sections'); }}
+                    className="flex flex-col text-left cursor-pointer"
+                    style={{
+                      gap: 12, borderRadius: 12, padding: 14, background: '#fff',
+                      border: `1.5px solid ${isSelected ? '#006EFE' : 'transparent'}`,
+                      boxShadow: isSelected ? '0 0 0 1px #006EFE' : 'none',
+                    }}
+                  >
+                    <ManuscriptThumb />
+                    <div>
+                      <p className="line-clamp-2" style={{ ...ns, fontSize: 15, fontWeight: 600, color: '#15191F', lineHeight: 1.3 }}>{m.title}</p>
+                      <p style={{ ...ns, fontSize: 13, color: '#8E99AB', marginTop: 4 }}>Edited {m.editedAt}</p>
+                    </div>
+                  </motion.button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -1,5 +1,9 @@
 {
   "permissions": {
-    "allow": ["Bash"]
+    "allow": [
+      "Bash",
+      "Bash(curl * http://localhost:*)",
+      "Bash(npx tsc --noEmit *)"
+    ]
   }
 }
