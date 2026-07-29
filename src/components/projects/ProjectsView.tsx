@@ -44,6 +44,7 @@ const PROJECTS: Project[] = [
   { id: '14', title: 'Brand Playbook',                                     date: 'April 10, 2026', type: 'cover',       cover: '/assets/cover4.jpg' },
   { id: '15', title: 'Book Trailer: The Confidence Blueprint',             date: 'July 12, 2026', type: 'video',       cover: '/assets/cover1.jpg' },
   { id: '16', title: 'Author Voiceover Intro',                             date: 'July 09, 2026', type: 'video',       cover: '/assets/cover3.jpg' },
+  { id: '17', title: 'Q2 Roadmap — Narrated',                              date: 'July 20, 2026', type: 'video',       cover: '/assets/cover2.jpg' },
 ];
 
 const TABS: { id: ProjectType | 'all'; label: string }[] = [
@@ -419,6 +420,7 @@ export function ProjectsView() {
   const setPresentationTitle = usePresentationFlowStore(s => s.setPresentationTitle);
   const setPresentationThemeId = usePresentationFlowStore(s => s.setSelectedThemeId);
   const setPresentationSlides = usePresentationFlowStore(s => s.setSlides);
+  const setPresentationId = usePresentationFlowStore(s => s.setPresentationId);
   const [activeTab, setActiveTab] = useState<ProjectType>('ebook');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [search, setSearch] = useState('');
@@ -432,6 +434,7 @@ export function ProjectsView() {
       setPresentationTitle(saved.title);
       setPresentationThemeId(saved.themeId);
       setPresentationSlides(saved.slides);
+      setPresentationId(project.id);
       router.push('/presentation/editor');
       return;
     }
@@ -441,8 +444,9 @@ export function ProjectsView() {
       setPresentationTitle(saved.title);
       setPresentationThemeId(saved.themeId);
       setPresentationSlides(saved.slides);
+      setPresentationId(saved.sourcePresentationId ?? null);
       useVideoFlowStore.getState().loadSavedNarration(saved.narration);
-      router.push('/presentation/narration?v=2');
+      router.push('/presentation/narration?v=4');
       return;
     }
   };

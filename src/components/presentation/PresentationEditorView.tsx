@@ -7,6 +7,9 @@ import { useFlowStore } from '@/stores/flowStore';
 import { usePresentationFlowStore, type PresentationSlide, type SlideLayout, type SlideType, type TextOffset } from '@/stores/presentationFlowStore';
 import { MOCK_THEMES, type MockTheme } from '@/lib/presentationMocks';
 import { NarratedVideoModal } from './NarratedVideoModal';
+import { ExistingVideoModal } from './ExistingVideoModal';
+import { findVideoForPresentation } from '@/lib/videoMocks';
+import { useVideoFlowStore } from '@/stores/videoFlowStore';
 import ShareLinkModal from './ShareLinkModal';
 import { Tooltip } from '../ui/Tooltip';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
@@ -2721,6 +2724,33 @@ export function PresentationEditorView() {
   const [shareLinkOpen, setShareLinkOpen] = useState(false);
   const narrationVersion = usePresentationFlowStore(s => s.narrationVersion);
   const setNarrationVersion = usePresentationFlowStore(s => s.setNarrationVersion);
+  const presentationId = usePresentationFlowStore(s => s.presentationId);
+  const [existingVideoPrompt, setExistingVideoPrompt] = useState<ReturnType<typeof findVideoForPresentation>>(null);
+
+  // "Create video" on a deck that already has a saved narrated video should offer to resume it
+  // rather than silently starting a second, disconnected one.
+  const handleCreateVideoClick = useCallback(() => {
+    const existing = findVideoForPresentation(presentationId);
+    if (existing) {
+      setExistingVideoPrompt(existing);
+      return;
+    }
+    useVideoFlowStore.getState().clearSavedNarration();
+    router.push(`/presentation/narration?v=${narrationVersion}`);
+  }, [presentationId, narrationVersion, router]);
+
+  const handleContinueExistingVideo = useCallback(() => {
+    if (!existingVideoPrompt) return;
+    useVideoFlowStore.getState().loadSavedNarration(existingVideoPrompt.narration);
+    setExistingVideoPrompt(null);
+    router.push(`/presentation/narration?v=${narrationVersion}`);
+  }, [existingVideoPrompt, narrationVersion, router]);
+
+  const handleStartNewVideo = useCallback(() => {
+    useVideoFlowStore.getState().clearSavedNarration();
+    setExistingVideoPrompt(null);
+    router.push(`/presentation/narration?v=${narrationVersion}`);
+  }, [narrationVersion, router]);
   const [activeSlideId, setActiveSlideId] = useState<string | null>(slides[0]?.id ?? null);
   const [presentIndex, setPresentIndex]   = useState<number | null>(null);
   const [presentMode, setPresentMode]     = useState<'present' | 'presenter'>('present');
@@ -3441,7 +3471,7 @@ export function PresentationEditorView() {
                   {(narrationVersion === '2' || narrationVersion === '3' || narrationVersion === '4') && (
                     <>
                       <div style={{ borderTop: '1px solid #F0F2F5', margin: '3px 0' }}/>
-                      <button onClick={() => { setExportOpen(false); router.push(`/presentation/narration?v=${narrationVersion}`); }} className="flex items-center w-full cursor-pointer text-left" style={{ gap: 10, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none' }}
+                      <button onClick={() => { setExportOpen(false); handleCreateVideoClick(); }} className="flex items-center w-full cursor-pointer text-left" style={{ gap: 10, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none' }}
                         onMouseEnter={e => { e.currentTarget.style.background = '#F5F7FA'; }}
                         onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
                         <div style={{ width: 28, height: 28, borderRadius: 7, background: '#DDD3FC', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -4388,6 +4418,15 @@ export function PresentationEditorView() {
 
       {narratedVideoOpen && (
         <NarratedVideoModal onClose={() => setNarratedVideoOpen(false)} />
+      )}
+
+      {existingVideoPrompt && (
+        <ExistingVideoModal
+          videoTitle={existingVideoPrompt.title}
+          onContinue={handleContinueExistingVideo}
+          onStartNew={handleStartNewVideo}
+          onClose={() => setExistingVideoPrompt(null)}
+        />
       )}
 
       <ShareLinkModal

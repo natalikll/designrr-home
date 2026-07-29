@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { usePresentationFlowStore, type PresentationSlide } from '@/stores/presentationFlowStore';
 import { MOCK_THEMES, type MockTheme } from '@/lib/presentationMocks';
 import { useFlowStore } from '@/stores/flowStore';
+import { useVideoFlowStore } from '@/stores/videoFlowStore';
 import { SideMenuIcon } from '@/components/sidebar/AppSidebar';
 
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
@@ -2641,13 +2642,25 @@ export default function NarrationViewV4() {
     ? (MOCK_THEMES.find(t => t.id === selectedThemeId) ?? MOCK_THEMES[0])
     : (storeSlides.length > 0 ? NEUTRAL_THEME : MOCK_THEMES[0]);
 
+  // Reopening a saved video (from /projects) should restore exactly how it was left,
+  // not re-derive fresh scripts/audio from the slides. Captured once at mount, then
+  // cleared so a fresh "Create video" flow doesn't inherit stale narration.
+  const savedNarrationRef = useRef(useVideoFlowStore.getState().savedNarration);
+  useEffect(() => { useVideoFlowStore.getState().clearSavedNarration(); }, []);
+  const saved = savedNarrationRef.current;
+  const savedMatchesSlides = !!saved && saved.scripts.length === slides.length && saved.audios.length === slides.length;
+
   const [step, setStep] = useState<Step>('workspace');
-  const [scripts, setScripts] = useState<string[]>(() => slides.map(s => s.notes ?? scriptFromSlide(s)));
-  const [audios, setAudios] = useState<SlideAudio[]>(() =>
-    slides.map(() => freshAudio(AI_VOICES[0].id))
+  const [scripts, setScripts] = useState<string[]>(() =>
+    savedMatchesSlides ? saved!.scripts : slides.map(s => s.notes ?? scriptFromSlide(s))
   );
-  const [defaultVoice, setDefaultVoice] = useState(AI_VOICES[0].id);
-  const [cloneName, setCloneName] = useState<string | null>(null);
+  const [audios, setAudios] = useState<SlideAudio[]>(() =>
+    savedMatchesSlides
+      ? saved!.audios.map(a => ({ ...a, captureMode: 'audio' as CaptureMode, cameraLayout: 'bubble' as CameraLayout }))
+      : slides.map(() => freshAudio(AI_VOICES[0].id))
+  );
+  const [defaultVoice, setDefaultVoice] = useState(saved?.defaultVoice ?? AI_VOICES[0].id);
+  const [cloneName, setCloneName] = useState<string | null>(saved?.cloneName ?? null);
   const [activeIdx, setActiveIdx] = useState(0);
   // Studio mode dominates for any slide with no method chosen yet — the whole workspace
   // becomes the studio instead of an editor with a studio panel bolted to the side.
@@ -2947,7 +2960,7 @@ export default function NarrationViewV4() {
               onAudioChange={patch => patchAudio(activeIdx, patch)}
               onClone={() => setStep('clone')}
               onRecordDone={handleRecordDone}
-              onRecordingStart={() => setFilmstripPeek(false)}
+              onRecordingStart={() => { setFilmstripPeek(false); setSidebarOpen(false); }}
               onTakeInProgressChange={setTakeInProgress}
               showToast={showToast}
               scriptVisible={scriptVisible} onScriptVisibleChange={setScriptVisible} />

@@ -26,6 +26,9 @@ export interface SavedVideo {
   themeId: string;
   slides: MockSlide[];
   narration: SavedVideoNarration;
+  // Which saved presentation (Projects entry id) this video was narrated from, if any — lets
+  // "Create video" from that deck detect an existing video instead of silently starting a new one.
+  sourcePresentationId?: string;
 }
 
 export const SAVED_VIDEOS: Record<string, SavedVideo> = {
@@ -86,4 +89,43 @@ export const SAVED_VIDEOS: Record<string, SavedVideo> = {
       cloneName: 'Your voice',
     },
   },
+  '17': {
+    title: 'Q2 Roadmap — Narrated',
+    themeId: 'corporate',
+    sourcePresentationId: '13',
+    slides: [
+      { id: 'q2v-1', type: 'headline', title: 'Q2 Roadmap', points: [], layout: 'centered' },
+      { id: 'q2v-2', type: 'content', title: 'Where We Left Off', points: ['Q1 shipped the redesigned onboarding flow', 'Activation rate up 18% quarter over quarter'], layout: 'standard' },
+      { id: 'q2v-3', type: 'content', title: 'Priorities This Quarter', points: ['Ship the new billing system', 'Launch mobile app beta', 'Reduce churn in the enterprise tier'], layout: 'standard' },
+      { id: 'q2v-4', type: 'content', title: 'Key Risks', points: ['Mobile beta depends on the payments API landing on time', 'Enterprise churn work needs a dedicated support hire'], layout: 'standard' },
+      { id: 'q2v-5', type: 'content', title: 'Thank You', points: ['Questions & discussion'], layout: 'centered' },
+    ],
+    narration: {
+      scripts: [
+        'Q2 roadmap.',
+        "Quick recap — in Q1 we shipped the redesigned onboarding flow, and activation rate is up 18% quarter over quarter.",
+        'This quarter our priorities are shipping the new billing system, launching the mobile app beta, and reducing churn in the enterprise tier.',
+        'A couple of key risks to flag — the mobile beta depends on the payments API landing on time, and the enterprise churn work needs a dedicated support hire.',
+        "That's it from me — happy to take questions.",
+      ],
+      audios: [
+        { source: 'record', methodSet: true, scopeSet: true, scope: 'single', voiceId: 'your-voice', status: 'ready', duration: 3.4 },
+        { source: 'record', methodSet: true, scopeSet: true, scope: 'single', voiceId: 'your-voice', status: 'ready', duration: 8.1 },
+        { source: 'record', methodSet: true, scopeSet: true, scope: 'single', voiceId: 'your-voice', status: 'ready', duration: 9.6 },
+        { source: 'record', methodSet: true, scopeSet: true, scope: 'single', voiceId: 'your-voice', status: 'ready', duration: 10.3 },
+        { source: 'record', methodSet: true, scopeSet: true, scope: 'single', voiceId: 'your-voice', status: 'ready', duration: 4.0 },
+      ],
+      defaultVoice: 'aria',
+      cloneName: 'Your voice',
+    },
+  },
 };
+
+/** Looks up an already-saved video narrated from the given presentation (Projects entry id), if any. */
+export function findVideoForPresentation(presentationId: string | null): (SavedVideo & { id: string }) | null {
+  if (!presentationId) return null;
+  for (const [id, video] of Object.entries(SAVED_VIDEOS)) {
+    if (video.sourcePresentationId === presentationId) return { id, ...video };
+  }
+  return null;
+}
