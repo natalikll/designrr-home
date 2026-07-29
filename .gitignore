@@ -1,5 +1,7 @@
 .vercel
 .next/
+# Stray nested clone of this same repo — was accidentally tracked as a broken submodule reference
+designrr-home/
 node_modules/
 .DS_Store
 .env*
