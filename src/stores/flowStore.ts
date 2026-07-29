@@ -44,6 +44,11 @@ interface FlowActions {
   resetFlow: () => void;
   homeKey: number;
   bumpHomeKey: () => void;
+  // Last route the sidebar saw itself mounted on — lets a freshly-mounted AppSidebar (after a
+  // full route change away from '/') detect that the user just left the home page, since a new
+  // mount has no memory of the previous route otherwise.
+  lastPathname: string | null;
+  setLastPathname: (path: string) => void;
 }
 
 type FlowStore = FlowState & FlowActions;
@@ -83,6 +88,8 @@ const initialState: FlowState = {
 export const useFlowStore = create<FlowStore>((set) => ({
   ...initialState,
   homeKey: 0,
+  lastPathname: null,
+  setLastPathname: (path) => set({ lastPathname: path }),
 
   addMessage: (message) =>
     set((state) => ({

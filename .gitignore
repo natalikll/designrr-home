@@ -5,3 +5,11 @@ node_modules/
 .env*
 *.env.local
 *.tsbuildinfo
+
+# Retired design variants — kept locally, not pushed to GitHub (only the active version ships)
+src/components/home/HomePageV2.tsx
+src/components/home/HomePageV3.tsx
+src/components/home/HomePageV4.tsx
+src/components/home/HomePageV4B.tsx
+src/components/presentation/NarrationViewV2.tsx
+src/components/presentation/NarrationViewV3.tsx

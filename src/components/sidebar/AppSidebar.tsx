@@ -336,8 +336,29 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
   const setShowAccount = useFlowStore((s) => s.setShowAccount);
   const showAccount = useFlowStore((s) => s.showAccount);
   const profilePhoto = useFlowStore((s) => s.profilePhoto);
+  const currentStep = useFlowStore((s) => s.currentStep);
+  const lastPathname = useFlowStore((s) => s.lastPathname);
+  const setLastPathname = useFlowStore((s) => s.setLastPathname);
+  const setSidebarOpen = useFlowStore((s) => s.setSidebarOpen);
   const router = useRouter();
   const pathname = usePathname();
+
+  // Auto-collapse once the user leaves the home page — either by navigating to a different
+  // route (caught here, since a freshly-mounted AppSidebar only knows the previous route via
+  // the store) or by starting the AI create flow while staying on '/' (caught via currentStep,
+  // since AppSidebar stays mounted across that transition).
+  useEffect(() => {
+    if (lastPathname === '/' && pathname !== '/') setSidebarOpen(false);
+    if (pathname !== lastPathname) setLastPathname(pathname ?? '/');
+  }, [pathname, lastPathname, setLastPathname, setSidebarOpen]);
+
+  const prevStepRef = useRef(currentStep);
+  useEffect(() => {
+    if (pathname === '/' && prevStepRef.current === 0 && currentStep !== 0) {
+      setSidebarOpen(false);
+    }
+    prevStepRef.current = currentStep;
+  }, [currentStep, pathname, setSidebarOpen]);
 
   // 'home' when on main app, 'account' when My Account is open, 'manuscripts' on /docs, 'presentations' on /presentation*, 'projects' on /projects
   const activeNav = showAccount

@@ -979,7 +979,7 @@ const PLANS = [
   },
 ];
 
-function UpgradePlanModal({ onClose }: { onClose: () => void }) {
+export function UpgradePlanModal({ onClose }: { onClose: () => void }) {
   const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 
   const modal = (
