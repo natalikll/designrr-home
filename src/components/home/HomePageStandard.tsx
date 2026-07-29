@@ -104,24 +104,24 @@ function HubChipLocked({ label, icon, onClick }: { label: string; icon: ReactNod
         style={{
           display: 'flex', alignItems: 'center', gap: 6,
           padding: '7px 8px 7px 15px', borderRadius: 999,
-          background: hovered ? '#F6F7F9' : 'rgba(255,255,255,0.5)',
-          border: `1px dashed ${hovered ? '#C5CDD9' : '#DDE2EA'}`,
+          background: '#F9FAFB',
+          border: '1px solid #E2E5EA',
           fontFamily: "'Nunito Sans', sans-serif",
           fontSize: 13.5, fontWeight: 500,
-          color: '#A0AABA',
+          color: '#8D97A5',
           cursor: 'pointer',
-          transition: 'all 0.15s ease',
+          opacity: hovered ? 0.85 : 1,
+          transition: 'opacity 0.15s ease',
         }}
       >
-        <span style={{ display: 'flex', color: '#C5CDD9' }}>{icon}</span>
+        <span style={{ display: 'flex', color: '#ABB2BD' }}>{icon}</span>
         {label}
         <span style={{
           display: 'flex', alignItems: 'center', gap: 2,
           marginLeft: 2, padding: '2px 6px', borderRadius: 999,
-          background: hovered ? '#EEF3FF' : '#F0F2F5',
-          color: hovered ? '#006EFE' : '#8596AD',
+          background: '#DCE6F7',
+          color: '#3D6FD9',
           fontSize: 10, fontWeight: 700, letterSpacing: '0.02em',
-          transition: 'all 0.15s ease',
         }}>
           {LOCK_ICON}
           PRO
@@ -161,7 +161,7 @@ export default function HomePageStandard() {
     <div className="h-full relative overflow-hidden">
 
       <AnimatePresence>
-        {showUpgrade && <UpgradePlanModal onClose={() => setShowUpgrade(false)} />}
+        {showUpgrade && <UpgradePlanModal onClose={() => setShowUpgrade(false)} currentPlanId="standard" />}
       </AnimatePresence>
 
       {/* Sidebar toggle */}

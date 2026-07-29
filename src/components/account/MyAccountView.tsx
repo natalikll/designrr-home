@@ -928,7 +928,6 @@ const PLANS = [
     name: 'Standard',
     price: '$27',
     period: 'lifetime access',
-    downgrade: true,
     icon: (
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="#006EFE" />
@@ -941,7 +940,6 @@ const PLANS = [
     name: 'PRO',
     price: '$97',
     period: '/year',
-    downgrade: true,
     icon: (
       <svg width="24" height="24" viewBox="0 0 24 24" fill="#006EFE">
         <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
@@ -954,7 +952,6 @@ const PLANS = [
     name: 'Premium',
     price: '$297',
     period: '/year',
-    current: true,
     icon: (
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
         <path d="M2 20h20M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12" stroke="#006EFE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -979,8 +976,11 @@ const PLANS = [
   },
 ];
 
-export function UpgradePlanModal({ onClose }: { onClose: () => void }) {
+const PLAN_ORDER = PLANS.map((p) => p.id);
+
+export function UpgradePlanModal({ onClose, currentPlanId = 'premium' }: { onClose: () => void; currentPlanId?: string }) {
   const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
+  const currentRank = PLAN_ORDER.indexOf(currentPlanId);
 
   const modal = (
     <div
@@ -1011,18 +1011,20 @@ export function UpgradePlanModal({ onClose }: { onClose: () => void }) {
         {/* Header */}
         <div style={{ marginBottom: 24 }}>
           <p style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#001633', lineHeight: '26px' }}>Upgrade your account</p>
-          <p style={{ ...ns, fontSize: 14, fontWeight: 400, color: '#52637A', lineHeight: '20px', marginTop: 4 }}>Your current plan is: Premium</p>
         </div>
 
         {/* Plan cards */}
         <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-          {PLANS.map((plan) => (
+          {PLANS.map((plan) => {
+            const isCurrent = plan.id === currentPlanId;
+            const isDowngrade = !isCurrent && PLAN_ORDER.indexOf(plan.id) < currentRank;
+            return (
             <div
               key={plan.id}
               style={{
                 borderRadius: 12,
-                border: plan.current ? '1.5px solid #B8D4FF' : '1px solid #E0E5EB',
-                background: plan.current ? '#EEF5FF' : '#fff',
+                border: isCurrent ? '1.5px solid #B8D4FF' : '1px solid #E0E5EB',
+                background: isCurrent ? '#EEF5FF' : '#fff',
                 padding: '20px 16px 16px',
                 display: 'flex',
                 flexDirection: 'column',
@@ -1031,7 +1033,7 @@ export function UpgradePlanModal({ onClose }: { onClose: () => void }) {
               }}
             >
               {/* Your plan badge */}
-              {plan.current && (
+              {isCurrent && (
                 <div style={{
                   position: 'absolute', top: 16, right: 12,
                   background: '#E0E5EB', borderRadius: 6,
@@ -1073,11 +1075,11 @@ export function UpgradePlanModal({ onClose }: { onClose: () => void }) {
 
               {/* CTA button */}
               <div style={{ marginTop: 20 }}>
-                {plan.current ? (
+                {isCurrent ? (
                   <div style={{ height: 40, borderRadius: 8, background: '#C8DEFF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <span style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#6FA8FF', lineHeight: '18px' }}>Your plan</span>
                   </div>
-                ) : (plan as { downgrade?: boolean }).downgrade ? (
+                ) : isDowngrade ? (
                   <button style={{ width: '100%', height: 40, borderRadius: 8, border: '1.5px solid #006EFE', background: '#fff', cursor: 'pointer', ...ns, fontSize: 14, fontWeight: 600, color: '#006EFE', lineHeight: '18px' }}>
                     Change Plan
                   </button>
@@ -1088,7 +1090,8 @@ export function UpgradePlanModal({ onClose }: { onClose: () => void }) {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Compare plans link */}
