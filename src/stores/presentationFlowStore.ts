@@ -48,7 +48,7 @@ const initialState: PresentationFlowState = {
   selectedThemeId: MOCK_THEMES[0].id,
   slides: [],
   activeSlideId: null,
-  narrationVersion: '1',
+  narrationVersion: '4',
 };
 
 export const usePresentationFlowStore = create<PresentationFlowStore>((set, get) => ({

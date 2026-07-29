@@ -2723,7 +2723,6 @@ export function PresentationEditorView() {
   const [narratedVideoOpen, setNarratedVideoOpen] = useState(false);
   const [shareLinkOpen, setShareLinkOpen] = useState(false);
   const narrationVersion = usePresentationFlowStore(s => s.narrationVersion);
-  const setNarrationVersion = usePresentationFlowStore(s => s.setNarrationVersion);
   const presentationId = usePresentationFlowStore(s => s.presentationId);
   const [existingVideoPrompt, setExistingVideoPrompt] = useState<ReturnType<typeof findVideoForPresentation>>(null);
 
@@ -4445,20 +4444,6 @@ export function PresentationEditorView() {
           border: '1.5px solid #006EFE', background: 'rgba(0,110,254,0.08)', borderRadius: 2,
         }}/>
       )}
-
-      {/* Prototype-only: flip voiceover flow version */}
-      <div style={{ position: 'fixed', bottom: 18, right: 18, zIndex: 100, display: 'flex', alignItems: 'center', gap: 2,
-        background: '#0D1433', borderRadius: 999, padding: 4, boxShadow: '0 8px 28px rgba(15,23,51,0.35)' }}>
-        {([['1', 'V1 · current'], ['2', 'V2 · concept'], ['3', 'V3 · studio'], ['4', 'V4 · refined']] as const).map(([v, label]) => (
-          <button key={v} onClick={() => setNarrationVersion(v)}
-            style={{ ...ns, height: 28, padding: '0 13px', borderRadius: 999, border: 'none', cursor: 'pointer',
-              fontSize: 11.5, fontWeight: 700, transition: 'all 0.15s',
-              background: narrationVersion === v ? '#fff' : 'transparent',
-              color: narrationVersion === v ? '#0D1433' : 'rgba(255,255,255,0.65)' }}>
-            {label}
-          </button>
-        ))}
-      </div>
 
       <AnimatePresence>
         {presentIndex !== null && <PresentOverlay slides={slides} theme={theme} startIndex={presentIndex} mode={presentMode} onClose={() => setPresentIndex(null)}/>}
