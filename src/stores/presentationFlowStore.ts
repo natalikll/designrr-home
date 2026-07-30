@@ -11,6 +11,7 @@ export type PresentationSlide = MockSlide;
 
 interface PresentationFlowState {
   presentationTitle: string;
+  presentationSubtitle: string;
   // Identifies which saved Projects entry this deck was opened from, if any — null for a
   // freshly generated deck that was never opened from /projects. Lets downstream flows (like
   // "Create video") detect whether this exact deck already has a narrated video saved for it.
@@ -25,6 +26,7 @@ interface PresentationFlowState {
 
 interface PresentationFlowActions {
   setPresentationTitle: (title: string) => void;
+  setPresentationSubtitle: (subtitle: string) => void;
   setPresentationId: (id: string | null) => void;
   setSelectedManuscriptId: (id: string | null) => void;
   toggleSection: (id: string) => void;
@@ -42,6 +44,7 @@ type PresentationFlowStore = PresentationFlowState & PresentationFlowActions;
 
 const initialState: PresentationFlowState = {
   presentationTitle: 'Untitled presentation',
+  presentationSubtitle: '',
   presentationId: null,
   selectedManuscriptId: null,
   selectedSectionIds: [],
@@ -55,6 +58,8 @@ export const usePresentationFlowStore = create<PresentationFlowStore>((set, get)
   ...initialState,
 
   setPresentationTitle: (title) => set({ presentationTitle: title }),
+
+  setPresentationSubtitle: (subtitle) => set({ presentationSubtitle: subtitle }),
 
   setPresentationId: (id) => set({ presentationId: id }),
 

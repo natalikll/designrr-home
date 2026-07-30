@@ -2796,7 +2796,6 @@ export function PresentationEditorView() {
   const [settingsMinDuration, setSettingsMinDuration] = useState(3);
   const [templateDetailId, setTemplateDetailId] = useState<string | null>(null);
   const [checkedSlideIds, setCheckedSlideIds] = useState<string[]>([]);
-  const [activeFont, setActiveFont] = useState<string>("'Nunito Sans', sans-serif");
   const [uploadedImages, setUploadedImages] = useState<string[]>([]);
   const [mediaTab, setMediaTab] = useState<'upload' | 'search'>('upload');
   const [imageSearchQuery, setImageSearchQuery] = useState('');
@@ -3828,7 +3827,14 @@ export function PresentationEditorView() {
                         { label: 'Add a subheading', style: { fontSize: 16, fontWeight: 600, color: '#15191F' }, text: 'Add a subheading…' },
                         { label: 'Add body text', style: { fontSize: 13, fontWeight: 400, color: '#52637A' }, text: 'Add a point…' },
                       ].map(preset => (
-                        <button key={preset.label} onClick={() => { if (activeSlide) { updateSlidePartial(activeSlide.id, { points: [...activeSlide.points, preset.text] }); setLeftPanel('slides'); } }} className="w-full cursor-pointer text-left" style={{ padding: '14px 16px', borderRadius: 10, border: '1px solid #E8EBF2', background: '#fff' }}
+                        <button key={preset.label} onClick={() => {
+                          if (!activeSlide) return;
+                          // Headline-type slides never render `points` (every layout branch guards
+                          // on slide.type !== 'headline'), so adding text here would silently vanish
+                          // unless the slide becomes a content slide first.
+                          updateSlidePartial(activeSlide.id, { type: 'content', points: [...activeSlide.points, preset.text] });
+                          setLeftPanel('slides');
+                        }} className="w-full cursor-pointer text-left" style={{ padding: '14px 16px', borderRadius: 10, border: '1px solid #E8EBF2', background: '#fff' }}
                           onMouseEnter={e => { e.currentTarget.style.borderColor = '#006EFE'; e.currentTarget.style.background = '#F8FBFF'; }}
                           onMouseLeave={e => { e.currentTarget.style.borderColor = '#E8EBF2'; e.currentTarget.style.background = '#fff'; }}>
                           <span style={{ ...ns, ...preset.style }}>{preset.label}</span>
@@ -3842,9 +3848,9 @@ export function PresentationEditorView() {
                           { name: 'Mono', sample: 'Aa', font: "'Courier New', monospace", weight: 600 },
                           { name: 'Display', sample: 'Aa', font: 'Impact, sans-serif', weight: 700 },
                         ].map(f => {
-                          const isActive = activeFont === f.font;
+                          const isActive = (activeSlide?.titleFontFamily ?? "'Nunito Sans', sans-serif") === f.font;
                           return (
-                          <button key={f.name} onClick={() => setActiveFont(f.font)} className="cursor-pointer flex flex-col items-center" style={{ padding: '14px 10px 10px', borderRadius: 10, border: isActive ? '1.5px solid #006EFE' : '1px solid #E8EBF2', background: isActive ? '#F0F6FF' : '#fff', gap: 6 }}
+                          <button key={f.name} onClick={() => { if (activeSlide) updateSlidePartial(activeSlide.id, { titleFontFamily: f.font, contentFontFamily: f.font }); }} className="cursor-pointer flex flex-col items-center" style={{ padding: '14px 10px 10px', borderRadius: 10, border: isActive ? '1.5px solid #006EFE' : '1px solid #E8EBF2', background: isActive ? '#F0F6FF' : '#fff', gap: 6 }}
                             onMouseEnter={e => { if (!isActive) { e.currentTarget.style.borderColor = '#006EFE'; e.currentTarget.style.background = '#F8FBFF'; } }}
                             onMouseLeave={e => { if (!isActive) { e.currentTarget.style.borderColor = '#E8EBF2'; e.currentTarget.style.background = '#fff'; } }}>
                             <span style={{ fontFamily: f.font, fontSize: 26, fontWeight: f.weight, color: '#15191F', lineHeight: 1 }}>{f.sample}</span>
