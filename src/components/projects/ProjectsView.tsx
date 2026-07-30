@@ -260,7 +260,7 @@ function DropdownIcon({ type }: { type: string }) {
 }
 
 /* ── Project card ── */
-function ProjectCard({ project, onOpen }: { project: Project; onOpen: (project: Project) => void }) {
+function ProjectCard({ project, onOpen, onTurnIntoPresentation }: { project: Project; onOpen: (project: Project) => void; onTurnIntoPresentation: (project: Project) => void }) {
   const [hovered, setHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -322,7 +322,7 @@ function ProjectCard({ project, onOpen }: { project: Project; onOpen: (project: 
       <div style={{ height: 1, background: '#E8EBF2', margin: '4px 8px' }} />
       {project.type !== 'presentation' && project.type !== 'video' && (
         <button
-          onClick={() => setMenuOpen(false)}
+          onClick={() => { setMenuOpen(false); onTurnIntoPresentation(project); }}
           className="flex items-center gap-3 text-left cursor-pointer rounded-lg w-full"
           style={{ ...ns, fontSize: 15, fontWeight: 500, color: '#15191F', padding: '9px 12px', background: 'transparent', border: 'none' }}
           onMouseEnter={e => (e.currentTarget.style.background = '#F4F6F9')}
@@ -421,6 +421,7 @@ export function ProjectsView() {
   const setPresentationThemeId = usePresentationFlowStore(s => s.setSelectedThemeId);
   const setPresentationSlides = usePresentationFlowStore(s => s.setSlides);
   const setPresentationId = usePresentationFlowStore(s => s.setPresentationId);
+  const setSelectedManuscriptId = usePresentationFlowStore(s => s.setSelectedManuscriptId);
   const [activeTab, setActiveTab] = useState<ProjectType>('ebook');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [search, setSearch] = useState('');
@@ -449,6 +450,11 @@ export function ProjectsView() {
       router.push('/presentation/narration?v=4');
       return;
     }
+  };
+
+  const handleTurnIntoPresentation = (project: Project) => {
+    setSelectedManuscriptId(project.id);
+    router.push('/presentation/sections');
   };
 
   return (
@@ -561,7 +567,7 @@ export function ProjectsView() {
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: viewMode === 'grid' ? 'repeat(auto-fill, minmax(240px, 1fr))' : '1fr', gap: viewMode === 'grid' ? 24 : 12 }}>
               {filtered.map(project => (
-                <ProjectCard key={project.id} project={project} onOpen={handleOpenProject} />
+                <ProjectCard key={project.id} project={project} onOpen={handleOpenProject} onTurnIntoPresentation={handleTurnIntoPresentation} />
               ))}
             </div>
           )}

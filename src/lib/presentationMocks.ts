@@ -167,6 +167,80 @@ export const MOCK_MANUSCRIPTS: MockManuscript[] = [
       { id: 'm8-s4', title: 'Setting Up for Year Two', wordCount: 700 },
     ],
   },
+  // Below: manuscript entries for the actual eBook projects in /projects, keyed by that
+  // project's id — lets "Turn into Presentation" on an eBook jump straight into the
+  // manuscript→sections→outline→theme pipeline with the right book pre-selected, instead of
+  // landing back on the manuscript picker to choose (again) what the user just clicked.
+  {
+    id: '1',
+    title: 'AI Speaking Tier Overview',
+    editedAt: 'July 07, 2026',
+    sections: [
+      { id: 'eb1-s1', title: 'What the Speaking Tier Covers', wordCount: 640 },
+      { id: 'eb1-s2', title: 'Pricing and Plan Comparison', wordCount: 780 },
+      { id: 'eb1-s3', title: 'Getting the Most From It', wordCount: 700 },
+    ],
+  },
+  {
+    id: '2',
+    title: 'The Blueprint Builder: A Step-by-Step Guide to Your First Product',
+    editedAt: 'June 29, 2026',
+    sections: [
+      { id: 'eb2-s1', title: 'Starting With the Problem', wordCount: 810 },
+      { id: 'eb2-s2', title: 'Sketching the Blueprint', wordCount: 990 },
+      { id: 'eb2-s3', title: 'Testing With Real Users', wordCount: 860 },
+      { id: 'eb2-s4', title: 'Shipping v1', wordCount: 720 },
+    ],
+  },
+  {
+    id: '3',
+    title: 'nnn',
+    editedAt: 'June 12, 2026',
+    sections: [
+      { id: 'eb3-s1', title: 'Section One', wordCount: 500 },
+      { id: 'eb3-s2', title: 'Section Two', wordCount: 500 },
+    ],
+  },
+  {
+    id: '4',
+    title: 'Confessions of a Hyperpolyglot: The Obsession of Learning Languages',
+    editedAt: 'June 12, 2026',
+    sections: [
+      { id: 'eb4-s1', title: 'How It Started', wordCount: 730 },
+      { id: 'eb4-s2', title: 'The Method Behind the Madness', wordCount: 1080 },
+      { id: 'eb4-s3', title: 'Fluency Is the Wrong Goal', wordCount: 890 },
+    ],
+  },
+  {
+    id: '5',
+    title: 'Minimal & Current',
+    editedAt: 'June 12, 2026',
+    sections: [
+      { id: 'eb5-s1', title: 'Less, But Better', wordCount: 650 },
+      { id: 'eb5-s2', title: 'What to Keep', wordCount: 780 },
+      { id: 'eb5-s3', title: 'Staying Current Without the Noise', wordCount: 710 },
+    ],
+  },
+  {
+    id: '6',
+    title: 'Multilingual Adventures: Raising Globally Minded Kids',
+    editedAt: 'June 12, 2026',
+    sections: [
+      { id: 'eb6-s1', title: 'Why Multiple Languages Early', wordCount: 760 },
+      { id: 'eb6-s2', title: 'Everyday Immersion at Home', wordCount: 920 },
+      { id: 'eb6-s3', title: 'Handling the Setbacks', wordCount: 680 },
+    ],
+  },
+  {
+    id: '7',
+    title: 'Sample Project',
+    editedAt: 'June 10, 2026',
+    sections: [
+      { id: 'eb7-s1', title: 'Introduction', wordCount: 550 },
+      { id: 'eb7-s2', title: 'Main Content', wordCount: 900 },
+      { id: 'eb7-s3', title: 'Wrapping Up', wordCount: 500 },
+    ],
+  },
 ];
 
 function starterDeck(name: string): MockSlide[] {
@@ -355,26 +429,42 @@ export function getMockSlidesForManuscript(manuscriptId: string, sectionIds: str
   return slides;
 }
 
-/** Freeform-topic slide generator, used by the AI-chat "describe your presentation" flow */
-export function getMockSlidesForTopic(topic: string): MockSlide[] {
+export interface TopicSlideContext {
+  audience?: string;
+  goal?: string;
+  style?: string;
+}
+
+/** Freeform-topic slide generator, used by the AI-chat "describe your presentation" flow.
+ *  Bullets are written as "Label: detail" — the outline review UI bolds the label. */
+export function getMockSlidesForTopic(topic: string, ctx: TopicSlideContext = {}): MockSlide[] {
   const clean = topic.trim().replace(/\.$/, '') || 'Your presentation';
+  const audience = ctx.audience?.trim();
+  const goal = ctx.goal?.trim();
+  const style = ctx.style?.trim();
+
   return [
-    { id: 'topic-title', type: 'headline', title: clean, points: [], notes: 'Generated with AI', layout: 'centered' },
-    { id: 'topic-1', type: 'content', title: 'Why this matters', points: [
-      `Context and background on ${clean.toLowerCase()}`,
-      'Who this is relevant for',
-      'What the audience will walk away with',
+    { id: 'topic-title', type: 'headline', title: clean, points: [
+      `Subtitle: ${style ? `A ${style.toLowerCase()} take on ${clean.toLowerCase()}` : `A closer look at ${clean.toLowerCase()}`}`,
+      'Presenter: Name, role, and credibility line',
+    ], notes: 'Generated with AI', layout: 'centered' },
+    { id: 'topic-1', type: 'content', title: 'Why This Matters', points: [
+      `The context: Background on ${clean.toLowerCase()}`,
+      `Who it's for: ${audience || 'Your intended audience'}`,
+      `What they'll walk away with: ${goal || 'A clear, actionable takeaway'}`,
     ], layout: 'standard' },
-    { id: 'topic-2', type: 'content', title: 'The core idea', points: [`"${clean}" — distilled into one clear message.`], layout: 'big-title' },
-    { id: 'topic-3', type: 'content', title: 'Key points', points: [
-      'First supporting point',
-      'Second supporting point',
-      'Third supporting point',
+    { id: 'topic-2', type: 'content', title: 'The Core Idea', points: [`Core message: "${clean}" — distilled into one clear statement.`], layout: 'big-title' },
+    { id: 'topic-3', type: 'content', title: 'Key Points', points: [
+      'First point: A supporting idea that backs up the core message',
+      'Second point: Another supporting idea, backed by an example',
+      'Third point: A final point that reinforces the takeaway',
     ], layout: 'standard' },
-    { id: 'topic-4', type: 'content', title: 'A closer look', points: [
-      'Detail worth visualizing',
-      'A statistic or example',
+    { id: 'topic-4', type: 'content', title: 'A Closer Look', points: [
+      'Detail: A statistic, example, or case worth visualizing',
     ], layout: 'image-left' },
-    { id: 'topic-closing', type: 'headline', title: 'Thank you', points: ['Questions & discussion'], layout: 'centered' },
+    { id: 'topic-closing', type: 'headline', title: 'Thank You', points: [
+      'Recap: The one thing to remember',
+      'CTA: Contact info and next step',
+    ], layout: 'centered' },
   ];
 }
