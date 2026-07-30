@@ -62,7 +62,7 @@ export function AiOutlineReviewView() {
 
       <div className="flex-1 overflow-y-auto">
         <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px 40px' }}>
-          <SettingsPillRow />
+          <SettingsPillRow exclude={['tone', 'density']} />
 
           <h1 style={{ ...ns, fontSize: 32, fontWeight: 800, color: '#15191F', marginTop: 20, lineHeight: 1.25 }}>
             {presentationTitle}
