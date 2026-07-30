@@ -1,35 +1,28 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Reorder } from 'framer-motion';
+import { useFlowStore } from '@/stores/flowStore';
 import { usePresentationFlowStore } from '@/stores/presentationFlowStore';
-import { MOCK_MANUSCRIPTS } from '@/lib/presentationMocks';
-import { PresentationStepHeader } from './PresentationStepHeader';
+import { SettingsPillRow } from './SettingsPillRow';
+import { SideMenuIcon } from '../sidebar/AppSidebar';
+import { Tooltip } from '../ui/Tooltip';
 import { PlusIcon, AiSparkleIcon, SlideCard, createBlankSlide, createAiGeneratedSlide } from './OutlineSlideEditor';
 
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 
-export function OutlineReviewView() {
+export function AiOutlineReviewView() {
   const router = useRouter();
+  const sidebarOpen = useFlowStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useFlowStore((s) => s.setSidebarOpen);
+
   const slides = usePresentationFlowStore((s) => s.slides);
   const setSlides = usePresentationFlowStore((s) => s.setSlides);
-  const selectedManuscriptId = usePresentationFlowStore((s) => s.selectedManuscriptId);
-  const setSelectedManuscriptId = usePresentationFlowStore((s) => s.setSelectedManuscriptId);
-  const setSelectedSectionIds = usePresentationFlowStore((s) => s.setSelectedSectionIds);
-  const generateSlides = usePresentationFlowStore((s) => s.generateSlides);
+  const presentationTitle = usePresentationFlowStore((s) => s.presentationTitle);
+  const presentationSubtitle = usePresentationFlowStore((s) => s.presentationSubtitle);
 
   const [addingWithAi, setAddingWithAi] = useState(false);
-
-  useEffect(() => {
-    if (slides.length === 0) {
-      const manuscript = MOCK_MANUSCRIPTS.find((m) => m.id === selectedManuscriptId) ?? MOCK_MANUSCRIPTS[0];
-      if (!selectedManuscriptId) setSelectedManuscriptId(manuscript.id);
-      setSelectedSectionIds(manuscript.sections.map((s) => s.id));
-      generateSlides();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const removeSlide = (id: string) => setSlides(slides.filter((s) => s.id !== id));
 
@@ -50,18 +43,35 @@ export function OutlineReviewView() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-white">
-      <PresentationStepHeader
-        activeIndex={2}
-        primaryAction={{ label: 'Choose a template', onClick: () => router.push('/presentation/theme') }}
-      />
+    <div className="h-full flex flex-col bg-white relative">
+      <div className="flex-shrink-0 relative z-10 px-4 py-3 flex items-center justify-between bg-white border-b border-border-light">
+        <Tooltip label={sidebarOpen ? 'Close sidebar menu' : 'Show sidebar menu'} position="right">
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="w-10 h-10 rounded-lg hover:bg-[#F6F7F9] transition-colors cursor-pointer">
+            <SideMenuIcon active={sidebarOpen} />
+          </button>
+        </Tooltip>
+        <span style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#15191F' }}>Presentation outline</span>
+        <button
+          onClick={() => router.push('/presentation/theme')}
+          className="flex-shrink-0 flex items-center cursor-pointer"
+          style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '8px 18px' }}
+        >
+          Select Template
+        </button>
+      </div>
 
       <div className="flex-1 overflow-y-auto">
         <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px 40px' }}>
-          <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#0D1433', marginBottom: 8 }}>Review your outline</h1>
-          <p style={{ ...ns, fontSize: 14, color: '#52637A', marginBottom: 24 }}>
-            {slides.length} slides generated — edit any title before picking a template.
-          </p>
+          <SettingsPillRow />
+
+          <h1 style={{ ...ns, fontSize: 32, fontWeight: 800, color: '#15191F', marginTop: 20, lineHeight: 1.25 }}>
+            {presentationTitle}
+          </h1>
+          {presentationSubtitle && (
+            <p style={{ ...ns, fontSize: 14.5, color: '#667C98', marginTop: 8, marginBottom: 24 }}>
+              {presentationSubtitle}
+            </p>
+          )}
 
           <Reorder.Group
             as="div"

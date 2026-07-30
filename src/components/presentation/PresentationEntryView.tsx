@@ -104,7 +104,7 @@ const START_CARDS: StartCardDef[] = [
   {
     key: 'blank',
     title: 'Start from scratch',
-    subtitle: 'Start with a theme or blank',
+    subtitle: 'Start with a template or blank',
     icon: <BlankPreviewIcon />,
   },
 ];

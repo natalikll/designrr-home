@@ -32,11 +32,17 @@ export function ChooseSectionsView() {
 
   return (
     <div className="h-full flex flex-col bg-white">
-      <PresentationStepHeader activeIndex={1} onBack={() => router.push('/presentation/manuscript')} />
+      <PresentationStepHeader
+        activeIndex={1}
+        primaryAction={{ label: 'Generate outline', onClick: handleContinue, disabled: selectedSectionIds.length === 0 }}
+      />
 
       <div className="flex-1 overflow-y-auto">
         <div style={{ maxWidth: 680, margin: '0 auto', padding: '48px 24px 100px' }}>
-          <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#0D1433', marginBottom: 8 }}>Pick which sections to include</h1>
+          <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+            <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#0D1433' }}>Pick which sections to include</h1>
+            <span style={{ ...ns, fontSize: 13, color: '#8596AD', flexShrink: 0 }}>{selectedSectionIds.length} of {manuscript.sections.length} selected</span>
+          </div>
           <p style={{ ...ns, fontSize: 14, color: '#52637A', marginBottom: 24 }}>
             From <strong>{manuscript.title}</strong> — each selected section becomes one or more slides.
           </p>
@@ -50,11 +56,11 @@ export function ChooseSectionsView() {
                   type="button"
                   onClick={() => toggleSection(section.id)}
                   className="flex items-center cursor-pointer text-left w-full"
-                  style={{ gap: 12, padding: '14px 16px', borderRadius: 12, border: `1px solid ${checked ? '#5326BD' : '#E8EBF2'}`, background: checked ? '#FAF8FF' : '#fff' }}
+                  style={{ gap: 12, padding: '14px 16px', borderRadius: 12, border: `1px solid ${checked ? '#006EFE' : '#E8EBF2'}`, background: checked ? '#F0F6FF' : '#fff' }}
                 >
                   <div
                     className="flex items-center justify-center flex-shrink-0"
-                    style={{ width: 20, height: 20, borderRadius: 5, border: `1.5px solid ${checked ? '#5326BD' : '#D0D5DE'}`, background: checked ? '#5326BD' : '#fff' }}
+                    style={{ width: 20, height: 20, borderRadius: 5, border: `1.5px solid ${checked ? '#006EFE' : '#D0D5DE'}`, background: checked ? '#006EFE' : '#fff' }}
                   >
                     {checked && (
                       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -71,17 +77,6 @@ export function ChooseSectionsView() {
             })}
           </div>
         </div>
-      </div>
-
-      <div className="flex-shrink-0 flex items-center justify-between border-t border-border-light" style={{ padding: '14px 32px' }}>
-        <span style={{ ...ns, fontSize: 13, color: '#8596AD' }}>{selectedSectionIds.length} of {manuscript.sections.length} selected</span>
-        <button
-          onClick={handleContinue}
-          disabled={selectedSectionIds.length === 0}
-          style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: selectedSectionIds.length ? '#5326BD' : '#D8CBEF', border: 'none', borderRadius: 8, padding: '10px 22px', cursor: selectedSectionIds.length ? 'pointer' : 'not-allowed' }}
-        >
-          Generate outline →
-        </button>
       </div>
     </div>
   );
