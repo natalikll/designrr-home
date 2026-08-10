@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { usePresentationFlowStore, type PresentationSlide } from '@/stores/presentationFlowStore';
 import { MOCK_THEMES, type MockTheme } from '@/lib/presentationMocks';
@@ -1919,6 +1919,18 @@ function ExportScreen({ slides, theme, totalSecs, onBack, sidebarOpen, onToggleS
   }, []);
   const done = progress >= 100;
 
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2600);
+  }, []);
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  useEffect(() => {
+    if (done) showToast('Video ready — rendering complete');
+  }, [done, showToast]);
+
   const [title, setTitle] = useState(slides[0]?.title || 'Untitled presentation');
   const [description, setDescription] = useState('');
   const [saveToProjects, setSaveToProjects] = useState(true);
@@ -2090,6 +2102,27 @@ function ExportScreen({ slides, theme, totalSecs, onBack, sidebarOpen, onToggleS
           </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {toast && (
+          // Horizontal centering lives on this static wrapper — Framer Motion owns the `transform`
+          // CSS property outright on any element it animates x/y on, so a manual translateX(-50%)
+          // on the same motion.div gets silently overwritten the moment the slide-in animation runs.
+          // absolute (not fixed) so centering resolves against the studio's own content area — the
+          // page's relatively-positioned wrapper (src/app/presentation/narration/page.tsx) already
+          // excludes the app sidebar's width, so this stays centered on what's actually visible
+          // whether or not the sidebar happens to be open.
+          <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 60 }}>
+            <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8,
+                background: '#0D1433', color: '#fff', borderRadius: 10, padding: '10px 18px',
+                ...ns, fontSize: 13, fontWeight: 600, boxShadow: '0 10px 30px rgba(15,23,51,0.28)' }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4 12.5l5 5L20 7" stroke="#4ADE80" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              {toast}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -2104,14 +2137,10 @@ function FilmstripItem({ slide, theme, audio, script, idx, isActive, onClick }: 
   idx: number; isActive: boolean; onClick: () => void;
 }) {
   const sourceColor = SOURCE_COLORS[audio.source];
-  const dotColor =
-    !audio.methodSet ? null :
-    audio.status === 'stale'      ? '#F4B740' :
-    audio.status === 'ready'      ? sourceColor :
-    audio.status === 'generating' ? sourceColor :
-    '#C8CDD9';
   const noTranscript = !script.trim();
   const hasTake = audio.status === 'ready' || audio.status === 'stale';
+  const isStale = audio.status === 'stale';
+  const isGenerating = audio.status === 'generating';
 
   const thumbWidth = 148;
 
@@ -2124,13 +2153,6 @@ function FilmstripItem({ slide, theme, audio, script, idx, isActive, onClick }: 
           onMouseEnter={e => { if (!isActive) e.currentTarget.style.boxShadow = '0 0 0 2px rgba(255,255,255,0.35)'; }}
           onMouseLeave={e => { if (!isActive) e.currentTarget.style.boxShadow = '0 0 0 0 transparent'; }}>
           <SlideThumb slide={slide} theme={theme} width={thumbWidth} />
-        </div>
-        <div style={{ position: 'absolute', top: 4, right: 4 }}>
-          {audio.status === 'generating' ? (
-            <div style={{ width: 11, height: 11, borderRadius: '50%', border: '2px solid #E0E8FF', borderTopColor: sourceColor, animation: 'v2spin 0.8s linear infinite', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.25)' }} />
-          ) : dotColor ? (
-            <div style={{ width: 10, height: 10, borderRadius: '50%', background: dotColor, border: '2px solid #fff', boxShadow: '0 1px 3px rgba(0,0,0,0.25)' }} />
-          ) : null}
         </div>
         {audio.methodSet && audio.source === 'record' && audio.captureMode === 'video' && (
           <div style={{ position: 'absolute', bottom: 4, left: 4, width: 16, height: 16, borderRadius: 5,
@@ -2152,9 +2174,26 @@ function FilmstripItem({ slide, theme, audio, script, idx, isActive, onClick }: 
           color: isActive ? '#006EFE' : '#8596AD' }}>
           {idx + 1}
         </span>
-        {noTranscript && (
-          <span style={{ ...ns, fontSize: 9, fontWeight: 600, color: '#D68A1B' }}>No transcript</span>
-        )}
+        {/* Status sits opposite the slide number, same row — a real label instead of a small
+            corner dot on the image, so "no audio" reads as clearly as "recorded" does, not just
+            whichever one you happen to notice. */}
+        <div className="flex items-center" style={{ gap: 4 }}>
+          {isGenerating ? (
+            <span style={{ width: 7, height: 7, borderRadius: '50%', border: '1.5px solid #E0E8FF', borderTopColor: sourceColor, animation: 'v2spin 0.8s linear infinite', flexShrink: 0 }} />
+          ) : (
+            <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+              background: hasTake ? (isStale ? '#F4B740' : '#006EFE') : '#fff',
+              border: hasTake ? 'none' : '1.5px dashed #B8C2D6' }} />
+          )}
+          <span style={{ ...ns, fontSize: 9.5, fontWeight: 700,
+            // Orange is reserved for things that actively need attention (a stale take, a missing
+            // script) — "no audio yet" is just an unstarted default, not a warning, so it gets a
+            // plain darker neutral instead: still bolder than "Has audio" so it stands out, but not
+            // color-coded as an error. The complete state (dot + label) uses brand blue throughout.
+            color: isGenerating ? sourceColor : noTranscript ? '#D68A1B' : hasTake ? (isStale ? '#D68A1B' : '#006EFE') : '#52637A' }}>
+            {isGenerating ? 'Generating…' : noTranscript ? 'No script' : hasTake ? (isStale ? 'Needs refresh' : 'Audio added') : 'No audio'}
+          </span>
+        </div>
       </div>
     </button>
   );
@@ -2184,13 +2223,19 @@ function FilmstripRail({ slides, theme, audios, activeIdx, onSelect, onExpand }:
         const fillColor = audio.status === 'stale' ? '#F4B740' : sourceColor;
         const isActive = i === activeIdx;
         const ringColor = isActive ? '#006EFE' : filled ? fillColor : null;
+        const title = `Slide ${i + 1}${s.title ? `: ${s.title}` : ''} — ${filled ? 'recorded' : 'no audio yet'}`;
         return (
-          <button key={s.id} onClick={() => onSelect(i)} title={s.title ? `Slide ${i + 1}: ${s.title}` : `Slide ${i + 1}`}
+          <button key={s.id} onClick={() => onSelect(i)} title={title}
             className="cursor-pointer flex-shrink-0" style={{ padding: 0, border: 'none', background: 'transparent' }}>
-            <div className="transition-shadow" style={{ width: 30, height: 16.9, borderRadius: 4, background: 'rgba(216,220,227,0.7)',
-              boxShadow: ringColor ? `0 0 0 2px ${ringColor}` : '0 0 0 1.5px rgba(255,255,255,0.25)' }}
+            {/* Solid fill = has audio (or generating). Dashed, unfilled = nothing recorded yet —
+                same filled-vs-hollow language as the expanded filmstrip's corner badge, so the
+                gap is visible even collapsed down to a 30px rail during an active recording. */}
+            <div className="transition-shadow" style={{ width: 30, height: 16.9, borderRadius: 4,
+              background: filled ? 'rgba(216,220,227,0.7)' : 'transparent',
+              border: filled ? '1.5px solid transparent' : '1.5px dashed rgba(255,255,255,0.3)',
+              boxShadow: ringColor ? `0 0 0 2px ${ringColor}` : '0 0 0 0 transparent' }}
               onMouseEnter={e => { if (!isActive) e.currentTarget.style.boxShadow = `0 0 0 1.5px ${filled ? fillColor : 'rgba(255,255,255,0.5)'}`; }}
-              onMouseLeave={e => { e.currentTarget.style.boxShadow = ringColor ? `0 0 0 2px ${ringColor}` : '0 0 0 1.5px rgba(255,255,255,0.25)'; }} />
+              onMouseLeave={e => { e.currentTarget.style.boxShadow = ringColor ? `0 0 0 2px ${ringColor}` : '0 0 0 0 transparent'; }} />
             <div style={{ ...ns, fontSize: 8.5, fontWeight: 700, marginTop: 3, color: isActive ? '#006EFE' : 'rgba(255,255,255,0.4)' }}>
               {i + 1}
             </div>
@@ -2628,6 +2673,11 @@ function StudioPanel({ idx, script, audio, cloneName, isGeneratingScript, onScri
    ════════════════════════════════════════════════════════════════ */
 export default function NarrationViewV4() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Only show a way back to the presentation editor when that's actually where the user came
+  // from (presentation -> "Create video"). Videos are standalone artifacts — opening one directly
+  // from Projects shouldn't imply it's a mode of some presentation editor.
+  const cameFromEditor = searchParams.get('from') === 'editor';
   const storeSlides = usePresentationFlowStore(s => s.slides);
   const selectedThemeId = usePresentationFlowStore(s => s.selectedThemeId);
   const sidebarOpen = useFlowStore(s => s.sidebarOpen);
@@ -2873,6 +2923,7 @@ export default function NarrationViewV4() {
               filter: studioMode ? 'invert(1) grayscale(1) brightness(1.7)' : undefined }}>
             <SideMenuIcon active={sidebarOpen} />
           </button>
+          {cameFromEditor && (
           <button onClick={() => router.push('/presentation/editor')} className="flex items-center cursor-pointer"
             style={{ gap: 6, height: 34, padding: '0 13px', borderRadius: 8,
               border: studioMode ? '1px solid rgba(255,255,255,0.14)' : '1px solid #E0E5EB',
@@ -2881,6 +2932,7 @@ export default function NarrationViewV4() {
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
             Presentation editor
           </button>
+          )}
         </div>
 
         <div className="flex items-center" style={{ gap: 14 }}>
@@ -3032,12 +3084,15 @@ export default function NarrationViewV4() {
       {/* Toast */}
       <AnimatePresence>
         {toast && (
-          <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
-            style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 60,
-              background: '#0D1433', color: '#fff', borderRadius: 10, padding: '10px 18px',
-              ...ns, fontSize: 13, fontWeight: 600, boxShadow: '0 10px 30px rgba(15,23,51,0.28)' }}>
-            {toast}
-          </motion.div>
+          // See the other toast instance above for why centering lives on a static wrapper, and
+          // why it's absolute (not fixed) — resolves against the content area, excluding the sidebar.
+          <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 60 }}>
+            <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
+              style={{ background: '#0D1433', color: '#fff', borderRadius: 10, padding: '10px 18px',
+                ...ns, fontSize: 13, fontWeight: 600, boxShadow: '0 10px 30px rgba(15,23,51,0.28)' }}>
+              {toast}
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 

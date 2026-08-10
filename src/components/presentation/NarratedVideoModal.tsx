@@ -58,7 +58,7 @@ export function NarratedVideoModal({ onClose }: { onClose: () => void }) {
 
   const handleSelect = (mode: NarrationMode) => {
     onClose();
-    router.push(`/presentation/narration?mode=${mode}`);
+    router.push(`/presentation/narration?mode=${mode}&from=editor`);
   };
 
   return (

@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { useFlowStore } from '@/stores/flowStore';
+import { usePresentationFlowStore } from '@/stores/presentationFlowStore';
+import { useVideoFlowStore } from '@/stores/videoFlowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
 import Logo from '../home/Logo';
@@ -147,6 +149,12 @@ export function PresentationStartCards() {
   const [showPptxModal, setShowPptxModal] = useState(false);
 
   const handleClick = (key: string) => {
+    // Starting a new presentation must not carry over a prior deck's slides/id or
+    // its saved narration — otherwise the new deck can inherit an old video (see
+    // findVideoForPresentation in PresentationEditorView / videoMocks.ts).
+    usePresentationFlowStore.getState().resetPresentationFlow();
+    useVideoFlowStore.getState().clearSavedNarration();
+
     if (key === 'blank') router.push('/presentation/theme');
     else if (key === 'manuscript') router.push('/presentation/manuscript');
     else if (key === 'pptx') setShowPptxModal(true);

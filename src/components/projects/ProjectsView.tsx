@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
@@ -81,29 +81,6 @@ function ChevronDown() {
   );
 }
 
-function GridViewIcon({ active }: { active: boolean }) {
-  const c = active ? '#006EFE' : '#8E99AB';
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-      <rect x="2" y="2" width="6" height="6" rx="1.5" fill={c} />
-      <rect x="10" y="2" width="6" height="6" rx="1.5" fill={c} />
-      <rect x="2" y="10" width="6" height="6" rx="1.5" fill={c} />
-      <rect x="10" y="10" width="6" height="6" rx="1.5" fill={c} />
-    </svg>
-  );
-}
-
-function ListViewIcon({ active }: { active: boolean }) {
-  const c = active ? '#006EFE' : '#8E99AB';
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-      <rect x="2" y="3" width="14" height="2.5" rx="1" fill={c} />
-      <rect x="2" y="7.75" width="14" height="2.5" rx="1" fill={c} />
-      <rect x="2" y="12.5" width="14" height="2.5" rx="1" fill={c} />
-    </svg>
-  );
-}
-
 function PlusIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -153,6 +130,163 @@ function SortDropdown() {
               {opt}
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Tab bar with priority-nav overflow ── */
+type TabDef = { id: ProjectType | 'all'; label: string };
+const MORE_BUTTON_WIDTH = 90;
+
+function TabButton({ tab, active, onClick }: { tab: TabDef; active: boolean; onClick: () => void }) {
+  const count = tabCount(tab.id as ProjectType);
+  return (
+    <button
+      onClick={onClick}
+      className="relative flex items-center cursor-pointer h-full flex-shrink-0"
+      style={{ ...ns, fontSize: 15, fontWeight: active ? 600 : 400, color: active ? '#006EFE' : '#52637A', background: 'none', border: 'none', padding: '0 20px 0 0', marginRight: 8, gap: 5, whiteSpace: 'nowrap' }}
+    >
+      {tab.label}
+      {count !== null && (
+        <span style={{ fontSize: 13, fontWeight: 500, color: active ? '#006EFE' : '#8E99AB' }}>({count})</span>
+      )}
+      {active && (
+        <motion.div
+          layoutId="proj-tab-underline"
+          className="absolute bottom-0 left-0"
+          style={{ right: 20, height: 2, background: '#006EFE', borderRadius: 1 }}
+          transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+        />
+      )}
+    </button>
+  );
+}
+
+function MoreButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center cursor-pointer h-full flex-shrink-0"
+      style={{ ...ns, fontSize: 15, fontWeight: active ? 600 : 400, color: active ? '#006EFE' : '#52637A', background: 'none', border: 'none', padding: '0 20px 0 0', marginRight: 8, gap: 4, whiteSpace: 'nowrap' }}
+    >
+      More
+      <ChevronDown />
+    </button>
+  );
+}
+
+function TabsWithOverflow({ activeTab, onSelect }: { activeTab: ProjectType; onSelect: (t: ProjectType) => void }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLDivElement>(null);
+  const moreButtonRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState<TabDef[]>(TABS);
+  const [overflow, setOverflow] = useState<TabDef[]>([]);
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  const recompute = useCallback(() => {
+    const container = containerRef.current;
+    const measure = measureRef.current;
+    if (!container || !measure) return;
+    const available = container.clientWidth;
+    const widths = Array.from(measure.children).map(el => (el as HTMLElement).offsetWidth);
+    const total = widths.reduce((a, b) => a + b, 0);
+
+    if (total <= available) {
+      setVisible(TABS);
+      setOverflow([]);
+      return;
+    }
+
+    const budget = available - MORE_BUTTON_WIDTH;
+    let cum = 0;
+    const included: number[] = [];
+    for (let i = 0; i < TABS.length; i++) {
+      if (cum + widths[i] <= budget) { included.push(i); cum += widths[i]; } else break;
+    }
+
+    const activeIndex = TABS.findIndex(t => t.id === activeTab);
+    if (activeIndex >= 0 && !included.includes(activeIndex)) {
+      while (included.length && cum + widths[activeIndex] > budget) {
+        const last = included.pop()!;
+        cum -= widths[last];
+      }
+      included.push(activeIndex);
+      cum += widths[activeIndex];
+    }
+
+    const includedSet = new Set(included);
+    setVisible(TABS.filter((_, i) => includedSet.has(i)));
+    setOverflow(TABS.filter((_, i) => !includedSet.has(i)));
+  }, [activeTab]);
+
+  useLayoutEffect(() => {
+    // Measures real DOM widths before paint, so this can't be computed during render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    recompute();
+  }, [recompute]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => recompute());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [recompute]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const handler = (e: MouseEvent) => { if (!moreButtonRef.current?.contains(e.target as Node)) setMoreOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [moreOpen]);
+
+  const activeInOverflow = overflow.some(t => t.id === activeTab);
+
+  return (
+    <div ref={containerRef} className="flex items-end h-full relative" style={{ flex: 1, minWidth: 0, gap: 0 }}>
+      {/* Hidden measurement row — widths only, worst-case (bold) font weight */}
+      <div ref={measureRef} style={{ position: 'absolute', visibility: 'hidden', pointerEvents: 'none', top: -9999, left: 0, display: 'flex', whiteSpace: 'nowrap' }} aria-hidden>
+        {TABS.map(tab => {
+          const count = tabCount(tab.id as ProjectType);
+          return (
+            <div key={tab.id} style={{ ...ns, fontSize: 15, fontWeight: 600, padding: '0 20px 0 0', marginRight: 8, display: 'flex', gap: 5 }}>
+              <span>{tab.label}</span>
+              {count !== null && <span style={{ fontSize: 13 }}>({count})</span>}
+            </div>
+          );
+        })}
+      </div>
+
+      {visible.map(tab => (
+        <TabButton key={tab.id} tab={tab} active={tab.id === activeTab} onClick={() => onSelect(tab.id as ProjectType)} />
+      ))}
+
+      {overflow.length > 0 && (
+        <div className="relative flex-shrink-0 h-full" ref={moreButtonRef}>
+          <MoreButton active={activeInOverflow} onClick={() => setMoreOpen(v => !v)} />
+          {moreOpen && (
+            <div className="absolute bg-white flex flex-col" style={{ top: 'calc(100% + 4px)', left: 0, minWidth: 180, borderRadius: 8, padding: 5, boxShadow: '0px 4px 20px rgba(0,0,0,0.1)', zIndex: 20 }}>
+              {overflow.map(tab => {
+                const active = tab.id === activeTab;
+                const count = tabCount(tab.id as ProjectType);
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => { onSelect(tab.id as ProjectType); setMoreOpen(false); }}
+                    className="flex items-center justify-between text-left cursor-pointer rounded-md"
+                    style={{ ...ns, fontSize: 13.5, color: active ? '#006EFE' : '#15191F', padding: '7px 10px', fontWeight: active ? 600 : 400, background: active ? '#F0F6FF' : 'transparent', border: 'none', gap: 12 }}
+                    onMouseEnter={e => { if (!active) e.currentTarget.style.background = '#F4F6F9'; }}
+                    onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <span>{tab.label}</span>
+                    {count !== null && <span style={{ fontSize: 13, fontWeight: 500, color: active ? '#006EFE' : '#8E99AB' }}>({count})</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -423,7 +557,6 @@ export function ProjectsView() {
   const setPresentationId = usePresentationFlowStore(s => s.setPresentationId);
   const setSelectedManuscriptId = usePresentationFlowStore(s => s.setSelectedManuscriptId);
   const [activeTab, setActiveTab] = useState<ProjectType>('ebook');
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [search, setSearch] = useState('');
 
   const filtered = PROJECTS.filter(p => p.type === activeTab && (!search || p.title.toLowerCase().includes(search.toLowerCase())));
@@ -508,55 +641,13 @@ export function ProjectsView() {
         </div>
 
         {/* ── Tabs + controls ── */}
-        <div className="flex items-center" style={{ margin: '20px 0 0', padding: '0 32px', height: 52, gap: 0 }}>
+        <div className="flex items-center" style={{ margin: '20px 0 0', padding: '0 32px', height: 52, gap: 24 }}>
           {/* Tabs */}
-          <div className="flex items-end h-full" style={{ flex: 1, gap: 0, overflowX: 'auto' }}>
-            {TABS.map(tab => {
-              const active = activeTab === tab.id;
-              const count = tabCount(tab.id as ProjectType);
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id as ProjectType)}
-                  className="relative flex items-center cursor-pointer h-full flex-shrink-0"
-                  style={{ ...ns, fontSize: 15, fontWeight: active ? 600 : 400, color: active ? '#006EFE' : '#52637A', background: 'none', border: 'none', padding: '0 20px 0 0', marginRight: 8, gap: 5, whiteSpace: 'nowrap' }}
-                >
-                  {tab.label}
-                  {count !== null && (
-                    <span style={{ fontSize: 13, fontWeight: 500, color: active ? '#006EFE' : '#8E99AB' }}>({count})</span>
-                  )}
-                  {active && (
-                    <motion.div
-                      layoutId="proj-tab-underline"
-                      className="absolute bottom-0 left-0"
-                      style={{ right: 20, height: 2, background: '#006EFE', borderRadius: 1 }}
-                      transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
+          <TabsWithOverflow activeTab={activeTab} onSelect={setActiveTab} />
 
           {/* Controls */}
-          <div className="flex items-center flex-shrink-0" style={{ gap: 8 }}>
+          <div className="flex-shrink-0">
             <SortDropdown />
-            <div className="flex items-center" style={{ gap: 2, padding: '3px', borderRadius: 8, border: '1px solid #E0E5EB' }}>
-              <button
-                onClick={() => setViewMode('list')}
-                className="flex items-center justify-center cursor-pointer rounded-md"
-                style={{ width: 32, height: 32, border: 'none', background: viewMode === 'list' ? '#F0F6FF' : 'transparent', transition: 'background 0.12s' }}
-              >
-                <ListViewIcon active={viewMode === 'list'} />
-              </button>
-              <button
-                onClick={() => setViewMode('grid')}
-                className="flex items-center justify-center cursor-pointer rounded-md"
-                style={{ width: 32, height: 32, border: 'none', background: viewMode === 'grid' ? '#F0F6FF' : 'transparent', transition: 'background 0.12s' }}
-              >
-                <GridViewIcon active={viewMode === 'grid'} />
-              </button>
-            </div>
           </div>
         </div>
 
@@ -565,7 +656,7 @@ export function ProjectsView() {
           {filtered.length === 0 ? (
             <p style={{ ...ns, fontSize: 14, color: '#8E99AB', textAlign: 'center', marginTop: 60 }}>No projects found.</p>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: viewMode === 'grid' ? 'repeat(auto-fill, minmax(240px, 1fr))' : '1fr', gap: viewMode === 'grid' ? 24 : 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 24 }}>
               {filtered.map(project => (
                 <ProjectCard key={project.id} project={project} onOpen={handleOpenProject} onTurnIntoPresentation={handleTurnIntoPresentation} />
               ))}

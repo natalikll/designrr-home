@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { motion, AnimatePresence, Reorder, useDragControls } from 'framer-motion';
+import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { useFlowStore } from '@/stores/flowStore';
 import { usePresentationFlowStore, type PresentationSlide, type SlideLayout, type SlideType, type TextOffset } from '@/stores/presentationFlowStore';
 import { MOCK_THEMES, type MockTheme } from '@/lib/presentationMocks';
@@ -13,8 +13,9 @@ import { useVideoFlowStore } from '@/stores/videoFlowStore';
 import ShareLinkModal from './ShareLinkModal';
 import { Tooltip } from '../ui/Tooltip';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
+import { FilmstripItem } from './FilmstripItem';
+import { ns, DuplicateIcon, TrashIcon, AISparkleIcon } from './presentationIcons';
 
-const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 const ZOOM_OPTIONS = [33, 50, 75, 90, 100, 125, 150, 175, 200];
 const ZOOM_MIN = 25;
 const ZOOM_MAX = 250;
@@ -90,17 +91,8 @@ const FIG_DEFAULT_POINTS: Record<string, string[]> = {
 
 /* ───────────────────────── Icons ───────────────────────── */
 
-function DuplicateIcon({ color = '#3D4A5C' }: { color?: string }) {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>;
-}
-function TrashIcon({ color = '#E54B4B' }: { color?: string }) {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10 6V4a2 2 0 0 1 4 0v2"/><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>;
-}
 function LayoutIcon({ color = '#3D4A5C' }: { color?: string }) {
   return <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="5.5" height="8" rx="1" stroke={color} strokeWidth="1.3"/><rect x="7.5" y="1" width="5.5" height="3.5" rx="1" stroke={color} strokeWidth="1.3"/><rect x="7.5" y="5.5" width="5.5" height="7.5" rx="1" stroke={color} strokeWidth="1.3"/></svg>;
-}
-function DotsIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="#52637A"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>;
 }
 function ChevronDown() {
   return <svg width="8" height="5" viewBox="0 0 8 5" fill="none"><path d="M1 1L4 4L7 1" stroke="#8C97A8" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
@@ -141,28 +133,6 @@ function FigCard({ children, style }: { children: React.ReactNode; style?: React
   return <div style={{ background: '#fff', border: '1px solid #E8EBF2', borderRadius: 10, boxShadow: '0px 4px 16px rgba(15,23,51,0.06)', ...style }}>{children}</div>;
 }
 
-function AISparkleIcon({ size = 18 }: { size?: number }) {
-  // The official Wordgenie mark — same source as public/assets/wordgenie-icon.svg (used in the "by New Wordgenie" lockup).
-  return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-      <path d="M16 4L13.4507 11.7507C13.3202 12.1473 13.0984 12.5078 12.8031 12.8031C12.5078 13.0984 12.1473 13.3202 11.7507 13.4507L4 16L11.7507 18.5493C12.1473 18.6798 12.5078 18.9016 12.8031 19.1969C13.0984 19.4922 13.3202 19.8527 13.4507 20.2493L16 28L18.5493 20.2493C18.6798 19.8527 18.9016 19.4922 19.1969 19.1969C19.4922 18.9016 19.8527 18.6798 20.2493 18.5493L28 16L20.2493 13.4507C19.8527 13.3202 19.4922 13.0984 19.1969 12.8031C18.9016 12.5078 18.6798 12.1473 18.5493 11.7507L16 4Z" fill="url(#wgIconGradA)" stroke="url(#wgIconGradA)" strokeWidth="1.125" strokeLinecap="round" strokeLinejoin="round"/>
-      <path d="M6 2L5.15022 4.58356C5.10673 4.71578 5.0328 4.83595 4.93437 4.93437C4.83595 5.0328 4.71578 5.10673 4.58356 5.15022L2 6L4.58356 6.84978C4.71578 6.89327 4.83595 6.9672 4.93437 7.06563C5.0328 7.16405 5.10673 7.28422 5.15022 7.41644L6 10L6.84978 7.41644C6.89327 7.28422 6.9672 7.16405 7.06563 7.06563C7.16405 6.9672 7.28422 6.89327 7.41644 6.84978L10 6L7.41644 5.15022C7.28422 5.10673 7.16405 5.0328 7.06563 4.93437C6.9672 4.83595 6.89327 4.71578 6.84978 4.58356L6 2Z" fill="url(#wgIconGradB)" stroke="url(#wgIconGradB)" strokeWidth="0.375" strokeLinecap="round" strokeLinejoin="round"/>
-      <path d="M26 22L25.1502 24.5836C25.1067 24.7158 25.0328 24.8359 24.9344 24.9344C24.8359 25.0328 24.7158 25.1067 24.5836 25.1502L22 26L24.5836 26.8498C24.7158 26.8933 24.8359 26.9672 24.9344 27.0656C25.0328 27.1641 25.1067 27.2842 25.1502 27.4164L26 30L26.8498 27.4164C26.8933 27.2842 26.9672 27.1641 27.0656 27.0656C27.1641 26.9672 27.2842 26.8933 27.4164 26.8498L30 26L27.4164 25.1502C27.2842 25.1067 27.1641 25.0328 27.0656 24.9344C26.9672 24.8359 26.8933 24.7158 26.8498 24.5836L26 22Z" fill="url(#wgIconGradC)" stroke="url(#wgIconGradC)" strokeWidth="0.375" strokeLinecap="round" strokeLinejoin="round"/>
-      <defs>
-        <linearGradient id="wgIconGradA" x1="28.3864" y1="2.78745" x2="-0.682789" y2="8.38556" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#006EFE"/><stop offset="1" stopColor="#5326BD"/>
-        </linearGradient>
-        <linearGradient id="wgIconGradB" x1="10.1288" y1="1.59582" x2="0.43907" y2="3.46185" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#006EFE"/><stop offset="1" stopColor="#5326BD"/>
-        </linearGradient>
-        <linearGradient id="wgIconGradC" x1="30.1288" y1="21.5958" x2="20.4391" y2="23.4619" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#006EFE"/><stop offset="1" stopColor="#5326BD"/>
-        </linearGradient>
-      </defs>
-    </svg>
-  );
-}
-
 function AIButton({ label, onClick, active, style }: { label: string; onClick: () => void; active?: boolean; style?: React.CSSProperties }) {
   // Matches the design system's "AI-outline" button (Figma node 8793:29409).
   return (
@@ -194,9 +164,6 @@ function SparkleIcon({ color = '#7C5CFC' }: { color?: string }) {
       <circle cx="12" cy="12" r="3" fill={color}/>
     </svg>
   );
-}
-function GripIcon() {
-  return <svg width="8" height="12" viewBox="0 0 8 12" fill="none">{[0,1,2].map(r => [0,1].map(c => <circle key={`${r}${c}`} cx={c*4+2} cy={r*4+2} r="1.3" fill="#A0AABA"/>))}</svg>;
 }
 function CheckMini() {
   return <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 6.5l2.8 2.5 5-5" stroke="#006EFE" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>;
@@ -1161,7 +1128,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
 
 /* ───────────────────────── Filmstrip thumbnail ───────────────────────── */
 
-function SlideThumbnail({ slide, theme, rounded = true }: { slide: PresentationSlide; theme: MockTheme; rounded?: boolean }) {
+export function SlideThumbnail({ slide, theme, rounded = true }: { slide: PresentationSlide; theme: MockTheme; rounded?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(176 / SLIDE_VIRTUAL_W);
 
@@ -1184,88 +1151,7 @@ function SlideThumbnail({ slide, theme, rounded = true }: { slide: PresentationS
   );
 }
 
-/* ───────────────────────── Filmstrip item ───────────────────────── */
-
-function FilmstripItem({ slide, theme, index, isActive, isBlank, loading, onClick, onGenerate, onDuplicate, onRemove, onAddAfter, onAddWithAI }: {
-  slide: PresentationSlide; theme: MockTheme; index: number; isActive: boolean; isBlank: boolean; loading?: boolean;
-  onClick: () => void; onGenerate: () => void; onDuplicate: () => void; onRemove: () => void; onAddAfter: () => void; onAddWithAI: () => void;
-}) {
-  const dragControls = useDragControls();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const h = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false); };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, [menuOpen]);
-
-  const mi = (label: string, icon: React.ReactNode, fn: () => void, danger = false) => (
-    <button onClick={fn} className="flex items-center w-full cursor-pointer" style={{ gap: 8, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none', ...ns, fontSize: 12.5, fontWeight: 500, color: danger ? '#E54B4B' : '#1F2532' }}
-      onMouseEnter={e => { e.currentTarget.style.background = danger ? '#FFF5F5' : '#F5F7FA'; }}
-      onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-      {icon}{label}
-    </button>
-  );
-
-  return (
-    <Reorder.Item value={slide} dragListener={false} dragControls={dragControls} as="div" className="group/fi" style={{ width: '100%' }}>
-      <div onClick={onClick} className="relative cursor-pointer" style={{ borderRadius: 7, outline: isActive ? '2.5px solid #006EFE' : '1.5px solid transparent', outlineOffset: 1 }}>
-        {loading ? (
-          <div className="relative w-full overflow-hidden rounded-[5px]" style={{ aspectRatio: '16/9', background: '#F4F5F7' }}>
-            <div className="absolute inset-0 flex flex-col items-center justify-center" style={{ gap: 7, padding: '0 14%' }}>
-              <div className="w-full animate-pulse" style={{ height: 8, borderRadius: 4, background: '#E0E3E9' }}/>
-              <div className="animate-pulse" style={{ height: 6, width: '72%', borderRadius: 4, background: '#EAECEF' }}/>
-              <div className="animate-pulse" style={{ height: 6, width: '55%', borderRadius: 4, background: '#EAECEF' }}/>
-            </div>
-          </div>
-        ) : (
-          <SlideThumbnail slide={slide} theme={theme}/>
-        )}
-        {/* Slide number — bottom left inside thumbnail */}
-        <div className="absolute flex items-center justify-center" style={{ bottom: 4, left: 5, minWidth: 16, height: 16, borderRadius: 4, background: 'rgba(15,23,51,0.45)', padding: '0 4px' }}>
-          <span style={{ ...ns, fontSize: 9, fontWeight: 700, color: '#fff' }}>{index + 1}</span>
-        </div>
-        {/* Drag grip — top left */}
-        <div onPointerDown={e => { e.preventDefault(); e.stopPropagation(); dragControls.start(e); }} onClick={e => e.stopPropagation()} className="absolute flex items-center justify-center opacity-0 group-hover/fi:opacity-100 transition-opacity cursor-grab" style={{ top: 4, left: 4, width: 18, height: 18, borderRadius: 4, background: 'rgba(15,23,51,0.55)', boxShadow: '0px 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)', touchAction: 'none' }}>
-          <GripIcon/>
-        </div>
-        {/* ⋯ menu — top right */}
-        <div ref={menuRef} className="absolute" style={{ top: 4, right: 4 }} onClick={e => e.stopPropagation()}>
-          <button onClick={e => { e.stopPropagation(); setMenuOpen(v => !v); }} className="flex items-center justify-center cursor-pointer opacity-0 group-hover/fi:opacity-100 transition-opacity" style={{ width: 20, height: 20, borderRadius: 4, background: menuOpen ? 'rgba(15,23,51,0.7)' : 'rgba(15,23,51,0.55)', boxShadow: '0px 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)', border: 'none' }}>
-            <DotsIcon/>
-          </button>
-          {menuOpen && (
-            <div className="absolute bg-white" style={{ top: 'calc(100% + 4px)', right: 0, width: 182, borderRadius: 9, border: '1px solid #E8EBF2', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)', padding: 4, zIndex: 40 }}>
-              {mi(isBlank ? 'Generate content' : 'Regenerate content', <AISparkleIcon size={13}/>, () => { onGenerate(); setMenuOpen(false); })}
-              {mi('Duplicate', <DuplicateIcon/>, () => { onDuplicate(); setMenuOpen(false); })}
-              <div style={{ borderTop: '1px solid #F0F2F5', margin: '3px 0' }}/>
-              {mi('Delete', <TrashIcon/>, () => { onRemove(); setMenuOpen(false); }, true)}
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="group/add w-full flex items-center justify-center" style={{ height: 22, padding: '4px 0' }}>
-        <div className="flex items-center opacity-0 group-hover/add:opacity-100 transition-opacity" style={{ background: '#fff', border: '1px solid #E0E5EB', borderRadius: 20, overflow: 'hidden' }}>
-          <Tooltip label="Add blank slide" position="top">
-            <button onClick={e => { e.stopPropagation(); onAddAfter(); }}
-              style={{ width: 32, height: 26, border: 'none', background: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <svg width="10" height="10" viewBox="0 0 10 10"><path d="M5 1v8M1 5h8" stroke="#52637A" strokeWidth="1.4" strokeLinecap="round"/></svg>
-            </button>
-          </Tooltip>
-          <div style={{ width: 1, height: 16, background: '#E0E5EB' }}/>
-          <Tooltip label="Add slide with AI" position="top">
-            <button onClick={e => { e.stopPropagation(); onAddWithAI(); }}
-              style={{ width: 32, height: 26, border: 'none', background: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7C5CFC" strokeWidth="2" strokeLinecap="round"><path d="M12 2 L13.5 9 L20 12 L13.5 15 L12 22 L10.5 15 L4 12 L10.5 9 Z"/><circle cx="12" cy="12" r="2" fill="#7C5CFC" stroke="none"/></svg>
-            </button>
-          </Tooltip>
-        </div>
-      </div>
-    </Reorder.Item>
-  );
-}
+/* Filmstrip item (number badge, drag handle, ⋯ menu) now lives in ./FilmstripItem.tsx */
 
 /* ───────────────────────── Media panel ───────────────────────── */
 
@@ -2735,20 +2621,20 @@ export function PresentationEditorView() {
       return;
     }
     useVideoFlowStore.getState().clearSavedNarration();
-    router.push(`/presentation/narration?v=${narrationVersion}`);
+    router.push(`/presentation/narration?v=${narrationVersion}&from=editor`);
   }, [presentationId, narrationVersion, router]);
 
   const handleContinueExistingVideo = useCallback(() => {
     if (!existingVideoPrompt) return;
     useVideoFlowStore.getState().loadSavedNarration(existingVideoPrompt.narration);
     setExistingVideoPrompt(null);
-    router.push(`/presentation/narration?v=${narrationVersion}`);
+    router.push(`/presentation/narration?v=${narrationVersion}&from=editor`);
   }, [existingVideoPrompt, narrationVersion, router]);
 
   const handleStartNewVideo = useCallback(() => {
     useVideoFlowStore.getState().clearSavedNarration();
     setExistingVideoPrompt(null);
-    router.push(`/presentation/narration?v=${narrationVersion}`);
+    router.push(`/presentation/narration?v=${narrationVersion}&from=editor`);
   }, [narrationVersion, router]);
   const [activeSlideId, setActiveSlideId] = useState<string | null>(slides[0]?.id ?? null);
   const [presentIndex, setPresentIndex]   = useState<number | null>(null);
@@ -3697,7 +3583,7 @@ export function PresentationEditorView() {
                 </button>
                 <Reorder.Group as="div" axis="y" values={slides} onReorder={setSlides} style={{ display:'flex', flexDirection:'column', alignItems: 'stretch' }}>
                   {slides.map((s, i) => (
-                    <FilmstripItem key={s.id} slide={s} theme={theme} index={i} isActive={s.id===activeSlideId}
+                    <FilmstripItem key={s.id} slide={s} thumbnail={<SlideThumbnail slide={s} theme={theme}/>} index={i} isActive={s.id===activeSlideId}
                       loading={isFirstLoad}
                       onClick={() => setActiveSlideId(s.id)}
                       isBlank={isBlankSlide(s)}
