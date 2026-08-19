@@ -1364,21 +1364,37 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
         signal without introducing a new accent color the rest of this chrome deliberately
         doesn't use. */}
     <style>{`.sp-focus:focus-visible { outline: 2px solid rgba(255,255,255,0.55) !important; outline-offset: 2px; }`}</style>
-    {/* Countdown covers the whole studio (canvas + action bar), not just the tiny record
-        button — a number squeezed into a 52px circle next to the version-switcher pill was
-        nearly invisible. This is the moment that matters most, so it gets the whole stage. */}
-    <AnimatePresence>
-      {phase === 'countdown' && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-          className="flex items-center justify-center" style={{ position: 'absolute', inset: 0, zIndex: 40, background: 'rgba(18,18,18,0.72)', backdropFilter: 'blur(2px)', borderRadius: 20 }}>
-          <motion.span key={countdownN} initial={{ opacity: 0, scale: 0.6 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 1.3 }}
-            transition={{ duration: 0.35, ease: 'easeOut' }}
-            style={{ ...ns, fontSize: 160, fontWeight: 800, color: '#fff', lineHeight: 1, letterSpacing: -4 }}>
-            {countdownN}
-          </motion.span>
-        </motion.div>
-      )}
-    </AnimatePresence>
+    {/* Countdown covers the whole screen, not just the tiny record button — a number squeezed
+        into a 52px circle next to the version-switcher pill was nearly invisible. This is the
+        moment that matters most, so it gets the whole stage. Portaled to document.body (same
+        trick the teleprompter uses below) rather than absolute-positioned inset:0 against this
+        canvas's own box: that box is inset by the canvas container's own 16px padding and
+        rounded 20px corners, and its actual size shifts under the overlay as surrounding chrome
+        (header, sidebar, filmstrip, Wordgenie) collapses the instant recording starts — an
+        absolute overlay would end up sized to whatever that box happens to be mid-collapse
+        instead of reliably reaching all four physical screen corners.
+
+        AnimatePresence has to sit *inside* the portal, not wrap it — AnimatePresence clones its
+        managed child to inject exit-tracking props, and a createPortal call one level up isn't a
+        plain element it can clone through, so the wrapped-portal ordering silently rendered
+        nothing at all. Portaling unconditionally (AnimatePresence itself is a stable, always-
+        mounted child of document.body) and letting the motion.div's own presence toggle inside
+        that is the ordering that actually works. */}
+    {typeof document !== 'undefined' && createPortal(
+      <AnimatePresence>
+        {phase === 'countdown' && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="flex items-center justify-center" style={{ position: 'fixed', inset: 0, zIndex: 2100, background: 'rgba(18,18,18,0.72)', backdropFilter: 'blur(2px)' }}>
+            <motion.span key={countdownN} initial={{ opacity: 0, scale: 0.6 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 1.3 }}
+              transition={{ duration: 0.35, ease: 'easeOut' }}
+              style={{ ...ns, fontSize: 160, fontWeight: 800, color: '#fff', lineHeight: 1, letterSpacing: -4 }}>
+              {countdownN}
+            </motion.span>
+          </motion.div>
+        )}
+      </AnimatePresence>,
+      document.body
+    )}
     <div ref={studioRef} style={{ position: 'relative', width: '100%', flex: 1, minHeight: 0, background: '#121212', borderRadius: 20,
       overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
 
