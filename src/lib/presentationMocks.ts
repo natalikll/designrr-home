@@ -67,6 +67,8 @@ export interface MockSlide {
   slidePhotos?: SlidePhoto[];
   titleOffset?: TextOffset;
   contentOffset?: TextOffset;
+  transitionType?: string;
+  transitionMs?: number;
 }
 
 export interface MockTheme {

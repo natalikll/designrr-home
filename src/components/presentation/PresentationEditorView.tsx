@@ -133,6 +133,29 @@ function FigCard({ children, style }: { children: React.ReactNode; style?: React
   return <div style={{ background: '#fff', border: '1px solid #E8EBF2', borderRadius: 10, boxShadow: '0px 4px 16px rgba(15,23,51,0.06)', ...style }}>{children}</div>;
 }
 
+// Inferred from the wordgenie brief's own wording, same trick as the video Studio's script
+// generation — "formal investor pitch" should change the notes without a separate tone picker.
+type NotesTone = 'casual' | 'formal' | 'energetic' | 'default';
+function toneFromNotesBrief(brief: string): NotesTone {
+  const b = brief.toLowerCase();
+  if (/\b(casual|informal|relaxed|light|friendly)\b/.test(b)) return 'casual';
+  if (/\b(formal|investor|precise|professional|corporate)\b/.test(b)) return 'formal';
+  if (/\b(energetic|inspiring|keynote|exciting|upbeat)\b/.test(b)) return 'energetic';
+  return 'default';
+}
+const OPENER_BULLET_BY_TONE: Record<NotesTone, (title: string) => string> = {
+  default: title => `Open with: ${title}`,
+  casual: title => `Kick off casually — "so, let's talk about ${title.toLowerCase()}"`,
+  formal: title => `Formal open: introduce ${title} and why it matters here`,
+  energetic: title => `High-energy open — "${title}!" Get the room's attention fast`,
+};
+const HEADLINE_BULLETS_BY_TONE: Record<NotesTone, (title: string) => string[]> = {
+  default: title => [`Welcome the audience`, `Set up: ${title}`],
+  casual: title => [`Say hi, keep it relaxed`, `Tease what's coming: ${title}`],
+  formal: title => [`Formal welcome`, `State the topic: ${title}`],
+  energetic: title => [`High-energy welcome`, `Big reveal: ${title}`],
+};
+
 function AIButton({ label, onClick, active, style }: { label: string; onClick: () => void; active?: boolean; style?: React.CSSProperties }) {
   // Matches the design system's "AI-outline" button (Figma node 8793:29409).
   return (
@@ -1612,29 +1635,6 @@ function FontSizeDropdown({ value, onChange }: { value: number; onChange: (v: nu
   );
 }
 
-const LANGUAGE_OPTIONS = [
-  { value: 'en-US', label: 'English (US)', flag: '🇺🇸' },
-  { value: 'en-GB', label: 'English (UK)', flag: '🇬🇧' },
-  { value: 'es', label: 'Spanish', flag: '🇪🇸' },
-  { value: 'fr', label: 'French', flag: '🇫🇷' },
-  { value: 'de', label: 'German', flag: '🇩🇪' },
-  { value: 'pt', label: 'Portuguese', flag: '🇵🇹' },
-  { value: 'it', label: 'Italian', flag: '🇮🇹' },
-  { value: 'nl', label: 'Dutch', flag: '🇳🇱' },
-  { value: 'pl', label: 'Polish', flag: '🇵🇱' },
-  { value: 'ru', label: 'Russian', flag: '🇷🇺' },
-  { value: 'ja', label: 'Japanese', flag: '🇯🇵' },
-  { value: 'zh-Hans', label: 'Chinese (Simplified)', flag: '🇨🇳' },
-  { value: 'zh-Hant', label: 'Chinese (Traditional)', flag: '🇹🇼' },
-  { value: 'ko', label: 'Korean', flag: '🇰🇷' },
-  { value: 'ar', label: 'Arabic', flag: '🇸🇦' },
-  { value: 'hi', label: 'Hindi', flag: '🇮🇳' },
-  { value: 'tr', label: 'Turkish', flag: '🇹🇷' },
-  { value: 'sv', label: 'Swedish', flag: '🇸🇪' },
-  { value: 'no', label: 'Norwegian', flag: '🇳🇴' },
-  { value: 'da', label: 'Danish', flag: '🇩🇰' },
-] as const;
-
 const TRANSITION_OPTIONS = [
   { value: 'none', label: 'None' },
   { value: 'fade', label: 'Fade' },
@@ -1642,116 +1642,6 @@ const TRANSITION_OPTIONS = [
   { value: 'zoom', label: 'Zoom' },
   { value: 'dissolve', label: 'Dissolve' },
 ] as const;
-
-function SettingsGlobeIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-      <circle cx="8" cy="8" r="6.3" stroke="#15191F" strokeWidth="1.3" />
-      <ellipse cx="8" cy="8" rx="2.7" ry="6.3" stroke="#15191F" strokeWidth="1.3" />
-      <line x1="1.7" y1="8" x2="14.3" y2="8" stroke="#15191F" strokeWidth="1.3" />
-    </svg>
-  );
-}
-
-function SettingsTransitionIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#15191F" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="17 2 21 6 17 10" />
-      <path d="M3 6h18" />
-      <polyline points="7 22 3 18 7 14" />
-      <path d="M21 18H3" />
-    </svg>
-  );
-}
-
-function SettingsClockIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#15191F" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="9" />
-      <polyline points="12 7 12 12 15.5 13.5" />
-    </svg>
-  );
-}
-
-function SettingsClockHistoryIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#15191F" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 12a9 9 0 1 0 3-6.7" />
-      <polyline points="3 4 3 9 8 9" />
-      <polyline points="12 7 12 12 15 14" />
-    </svg>
-  );
-}
-
-function LanguageSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const ref = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setTimeout(() => inputRef.current?.focus(), 50);
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, [open]);
-
-  const filtered = query.trim()
-    ? LANGUAGE_OPTIONS.filter(l => l.label.toLowerCase().includes(query.toLowerCase()))
-    : LANGUAGE_OPTIONS;
-
-  const current = LANGUAGE_OPTIONS.find(l => l.value === value) ?? LANGUAGE_OPTIONS[0];
-
-  return (
-    <div ref={ref} style={{ position: 'relative' }}>
-      <button
-        onMouseDown={e => { e.preventDefault(); setOpen(v => !v); }}
-        className="w-full flex items-center justify-between cursor-pointer"
-        style={{ height: 44, padding: '0 14px', borderRadius: 10, border: '1px solid #E0E5EB', background: '#fff' }}
-      >
-        <span className="flex items-center" style={{ gap: 9 }}>
-          <span style={{ fontSize: 17 }}>{current.flag}</span>
-          <span style={{ ...ns, fontSize: 14.5, fontWeight: 600, color: '#15191F' }}>{current.label}</span>
-        </span>
-        <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="#8C97A8" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-      </button>
-      {open && (
-        <div className="absolute z-50 bg-white" style={{ top: 'calc(100% + 4px)', left: 0, right: 0, borderRadius: 10, border: '1.5px solid #E3E6EC', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)', overflow: 'hidden' }}>
-          <div style={{ padding: '8px 8px 4px' }}>
-            <div className="flex items-center" style={{ gap: 6, background: '#F5F7FA', borderRadius: 7, padding: '5px 8px' }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A0AABA" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              <input
-                ref={inputRef}
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                placeholder="Search language…"
-                className="flex-1 outline-none bg-transparent"
-                style={{ ...ns, fontSize: 12, color: '#15191F', border: 'none' }}
-              />
-            </div>
-          </div>
-          <div style={{ maxHeight: 220, overflowY: 'auto', padding: '4px 8px 8px' }}>
-            {filtered.length === 0 ? (
-              <p style={{ ...ns, fontSize: 12, color: '#A0AABA', padding: '8px 4px' }}>No languages found</p>
-            ) : filtered.map(l => (
-              <button key={l.value}
-                onMouseDown={e => { e.preventDefault(); onChange(l.value); setOpen(false); setQuery(''); }}
-                className="w-full flex items-center cursor-pointer"
-                style={{ gap: 8, height: 32, padding: '0 8px', borderRadius: 6, border: 'none', background: l.value === value ? '#EFF6FF' : 'none', ...ns, fontSize: 13, fontWeight: 500, color: l.value === value ? '#006EFE' : '#15191F', textAlign: 'left' }}
-                onMouseEnter={e => { if (l.value !== value) e.currentTarget.style.background = '#F5F7FA'; }}
-                onMouseLeave={e => { if (l.value !== value) e.currentTarget.style.background = 'none'; }}
-              >
-                <span style={{ fontSize: 15 }}>{l.flag}</span>
-                {l.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function TransitionTypeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -1771,18 +1661,18 @@ function TransitionTypeSelect({ value, onChange }: { value: string; onChange: (v
       <button
         onMouseDown={e => { e.preventDefault(); setOpen(v => !v); }}
         className="w-full flex items-center justify-between cursor-pointer"
-        style={{ height: 44, padding: '0 14px', borderRadius: 10, border: '1px solid #E0E5EB', background: '#fff' }}
+        style={{ height: 32, padding: '0 10px', borderRadius: 7, border: '1px solid #E6E8EF', background: '#fff' }}
       >
-        <span style={{ ...ns, fontSize: 14.5, fontWeight: 600, color: '#15191F' }}>{current.label}</span>
+        <span style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#15191F' }}>{current.label}</span>
         <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="#8C97A8" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
       </button>
       {open && (
-        <div className="absolute z-50 bg-white" style={{ top: 'calc(100% + 4px)', left: 0, right: 0, borderRadius: 10, border: '1.5px solid #E3E6EC', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)', overflow: 'hidden' }}>
+        <div className="absolute z-50 bg-white" style={{ top: 'calc(100% + 4px)', left: 0, right: 0, borderRadius: 8, border: '1px solid #E3E6EC', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)', overflow: 'hidden' }}>
           {TRANSITION_OPTIONS.map(t => (
             <button key={t.value}
               onMouseDown={e => { e.preventDefault(); onChange(t.value); setOpen(false); }}
               className="w-full flex items-center cursor-pointer text-left"
-              style={{ height: 34, padding: '0 12px', border: 'none', background: t.value === value ? '#EFF6FF' : 'none', ...ns, fontSize: 13.5, fontWeight: t.value === value ? 600 : 500, color: t.value === value ? '#006EFE' : '#15191F' }}
+              style={{ height: 30, padding: '0 10px', border: 'none', background: t.value === value ? '#EFF6FF' : 'none', ...ns, fontSize: 12.5, fontWeight: t.value === value ? 600 : 500, color: t.value === value ? '#006EFE' : '#15191F' }}
               onMouseEnter={e => { if (t.value !== value) e.currentTarget.style.background = '#F5F7FA'; }}
               onMouseLeave={e => { if (t.value !== value) e.currentTarget.style.background = 'none'; }}
             >
@@ -1795,7 +1685,7 @@ function TransitionTypeSelect({ value, onChange }: { value: string; onChange: (v
   );
 }
 
-function SettingsNumberField({ value, onChange, min, max, width = 64 }: { value: number; onChange: (v: number) => void; min: number; max: number; width?: number }) {
+function SettingsNumberField({ value, onChange, min, max, width = 56 }: { value: number; onChange: (v: number) => void; min: number; max: number; width?: number }) {
   const [raw, setRaw] = useState(String(value));
   useEffect(() => { setRaw(String(value)); }, [value]);
 
@@ -1817,13 +1707,9 @@ function SettingsNumberField({ value, onChange, min, max, width = 64 }: { value:
       onBlur={commit}
       onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
       inputMode="numeric"
-      style={{ width, height: 44, flexShrink: 0, textAlign: 'center', border: '1px solid #E0E5EB', borderRadius: 10, ...ns, fontSize: 14.5, fontWeight: 600, color: '#15191F' }}
+      style={{ width, height: 32, flexShrink: 0, textAlign: 'center', border: '1px solid #E6E8EF', borderRadius: 7, ...ns, fontSize: 13, fontWeight: 500, color: '#15191F' }}
     />
   );
-}
-
-function SettingsSectionDivider() {
-  return <div style={{ height: 1, background: '#EEF0F4', margin: '13px 0' }} />;
 }
 
 const TEXT_COLORS = [
@@ -2139,7 +2025,7 @@ function PhotoFormatBar({ photo, isIcon, onColorChange, onSetBackground, onResiz
   );
 }
 
-function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode, focusedBlock, onFontSizeChange, onFontFamilyChange, onFontWeightChange, onTextColorChange, onListStyleChange, onTextAlignChange, onThemeChange, onBgColorChange, onBgImageChange, onBgToSlidePhoto, onContentAlignChange, selectedPhotoId, onPhotoColorChange, onPhotoSetBackground, onPhotoResize }: {
+function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode, focusedBlock, onFontSizeChange, onFontFamilyChange, onFontWeightChange, onTextColorChange, onListStyleChange, onTextAlignChange, onThemeChange, onBgColorChange, onBgImageChange, onBgToSlidePhoto, onContentAlignChange, selectedPhotoId, onPhotoColorChange, onPhotoSetBackground, onPhotoResize, onTransitionChange, onApplyTransitionToAll, transitionAppliedToAll }: {
   slide: PresentationSlide | null;
   theme: MockTheme;
   onLayoutChange: (l: SlideLayout) => void;
@@ -2161,10 +2047,15 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
   onPhotoColorChange: (color: string) => void;
   onPhotoSetBackground: () => void;
   onPhotoResize: (w: number, h: number) => void;
+  onTransitionChange: (type: string, ms: number) => void;
+  onApplyTransitionToAll: () => void;
+  transitionAppliedToAll: boolean;
 }) {
   const [photoLockAspect, setPhotoLockAspect] = useState(true);
   const selectedPhoto = slide?.slidePhotos?.find(p => p.id === selectedPhotoId) ?? null;
   const currentLayout: SlideLayout = slide?.layout ?? (slide?.type === 'headline' ? 'centered' : 'standard');
+  const curTransitionType = slide?.transitionType ?? 'fade';
+  const curTransitionMs = slide?.transitionMs ?? 600;
 
   const currentFontSize = focusedBlock === 'title' ? (slide?.titleFontSize ?? 24) : (slide?.contentFontSize ?? 14);
   const curFamily = focusedBlock === 'title' ? (slide?.titleFontFamily ?? "'Nunito Sans', sans-serif") : (slide?.contentFontFamily ?? "'Nunito Sans', sans-serif");
@@ -2439,6 +2330,30 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
               )}
             </div>
           ))}
+          {!selectedPhoto && section('Transition', (
+            <div className="flex flex-col" style={{ gap: 8 }}>
+              <div className="flex items-center" style={{ gap: 6 }}>
+                <TransitionTypeSelect value={curTransitionType} onChange={t => onTransitionChange(t, curTransitionMs)} />
+                <SettingsNumberField value={curTransitionMs} onChange={ms => onTransitionChange(curTransitionType, ms)} min={0} max={3000} />
+                <span style={{ ...ns, fontSize: 12, color: '#8996AC', flexShrink: 0 }}>ms</span>
+              </div>
+              {/* Disabled once every slide already matches — otherwise this stayed clickable
+                  forever, even right after using it, with no way to tell "did that work" from
+                  "still needs a click." Re-enables the moment type or duration changes on this
+                  slide, since that's exactly what makes the rest of the deck out of sync again. */}
+              <button onClick={onApplyTransitionToAll} disabled={transitionAppliedToAll}
+                className="flex items-center"
+                style={{ gap: 5, ...ns, fontSize: 12, fontWeight: 600,
+                  color: transitionAppliedToAll ? '#A8B3C4' : '#006EFE',
+                  background: 'none', border: 'none', padding: 0, textAlign: 'left', alignSelf: 'flex-start',
+                  cursor: transitionAppliedToAll ? 'default' : 'pointer' }}>
+                {transitionAppliedToAll && (
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#A8B3C4" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                )}
+                {transitionAppliedToAll ? 'Applied to all slides' : 'Apply to all slides'}
+              </button>
+            </div>
+          ))}
         </>
       )}
     </div>
@@ -2446,6 +2361,40 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
 }
 
 /* ───────────────────────── Present overlay ───────────────────────── */
+
+// Maps a slide's own transitionType/transitionMs (set in the RightPanel's Transition section
+// and shown as the filmstrip badge) to real framer-motion props — Present used to ignore both
+// entirely and always play the same hardcoded 0.18s fade/scale regardless of what was
+// configured, so choosing "Slide" or "Zoom" in the editor never actually showed up when you
+// presented. Each slide's own settings drive both how it enters (its animate/initial) and how
+// it exits (its own exit prop, captured by AnimatePresence at the moment it's swapped out) —
+// there's no separate "outgoing" transition to configure, matching every other deck tool.
+type SlideMotionProps = {
+  initial: Record<string, number | string>;
+  animate: Record<string, number | string>;
+  exit: Record<string, number | string>;
+  transition: { duration: number; ease?: 'easeInOut' };
+};
+
+// Explicit return type, not inferred — each branch's initial/animate/exit has a different
+// shape (x vs scale vs filter vs opacity-only), and without a shared declared type TS infers
+// an incompatible union across the switch that framer-motion's props rejected on spread.
+function motionForTransition(type: string | undefined, ms: number | undefined): SlideMotionProps {
+  const duration = (ms ?? 600) / 1000;
+  switch (type) {
+    case 'none':
+      return { initial: { opacity: 1 }, animate: { opacity: 1 }, exit: { opacity: 1 }, transition: { duration: 0 } };
+    case 'slide':
+      return { initial: { opacity: 0, x: 40 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: -40 }, transition: { duration, ease: 'easeInOut' } };
+    case 'zoom':
+      return { initial: { opacity: 0, scale: 0.85 }, animate: { opacity: 1, scale: 1 }, exit: { opacity: 0, scale: 1.08 }, transition: { duration, ease: 'easeInOut' } };
+    case 'dissolve':
+      return { initial: { opacity: 0, filter: 'blur(10px)' }, animate: { opacity: 1, filter: 'blur(0px)' }, exit: { opacity: 0, filter: 'blur(10px)' }, transition: { duration, ease: 'easeInOut' } };
+    case 'fade':
+    default:
+      return { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration, ease: 'easeInOut' } };
+  }
+}
 
 function PresentOverlay({ slides, theme, startIndex, mode, onClose }: {
   slides: PresentationSlide[]; theme: MockTheme; startIndex: number; mode: 'present' | 'presenter'; onClose: () => void;
@@ -2486,10 +2435,17 @@ function PresentOverlay({ slides, theme, startIndex, mode, onClose }: {
 
         {/* Left — current slide */}
         <div className="flex flex-col items-center justify-center flex-1" style={{ padding: '40px 32px', gap: 16 }}>
-          <motion.div key={slide.id} initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2 }}
-            className="relative w-full overflow-hidden" style={{ aspectRatio: '16/9', background: slide.bgImageUrl ? `url(${slide.bgImageUrl}) center/cover` : (slide.bgColor ?? theme.bg), borderRadius: 10, boxShadow: '0px 20px 60px rgba(0,0,0,0.55)' }}>
-            <SlideContent slide={slide} theme={theme} editable={false}/>
-          </motion.div>
+          {/* mode="wait": the outgoing slide's own exit finishes before the incoming slide's
+              enter starts. A true overlapping crossfade would need the slide positioned
+              absolute (to keep both in the same spot while neither is in normal flow), which
+              risked a centering bug of its own here — sequential still fully honors each
+              slide's configured type/duration for both directions, just not simultaneously. */}
+          <AnimatePresence mode="wait">
+            <motion.div key={slide.id} {...motionForTransition(slide.transitionType, slide.transitionMs)}
+              className="relative w-full overflow-hidden" style={{ aspectRatio: '16/9', background: slide.bgImageUrl ? `url(${slide.bgImageUrl}) center/cover` : (slide.bgColor ?? theme.bg), borderRadius: 10, boxShadow: '0px 20px 60px rgba(0,0,0,0.55)' }}>
+              <SlideContent slide={slide} theme={theme} editable={false}/>
+            </motion.div>
+          </AnimatePresence>
           {/* Nav */}
           <div className="flex items-center" style={{ gap: 16 }}>
             <button onClick={() => setIndex(i => Math.max(i-1,0))} disabled={index===0} className="flex items-center justify-center cursor-pointer" style={{ width:38,height:38,borderRadius:'50%',background:'rgba(255,255,255,0.1)',border:'none',opacity:index===0?0.3:1}}><ChevronLR dir="left"/></button>
@@ -2542,9 +2498,11 @@ function PresentOverlay({ slides, theme, startIndex, mode, onClose }: {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
       <div style={{ width: '84vw', maxWidth: 1100 }}>
-        <motion.div key={slide.id} initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.18 }} className="relative w-full overflow-hidden" style={{ aspectRatio: '16/9', background: slide.bgImageUrl ? `url(${slide.bgImageUrl}) center/cover` : (slide.bgColor ?? theme.bg), borderRadius: 10, boxShadow: '0px 24px 64px rgba(0,0,0,0.5)' }}>
+        <AnimatePresence mode="wait">
+        <motion.div key={slide.id} {...motionForTransition(slide.transitionType, slide.transitionMs)} className="relative w-full overflow-hidden" style={{ aspectRatio: '16/9', background: slide.bgImageUrl ? `url(${slide.bgImageUrl}) center/cover` : (slide.bgColor ?? theme.bg), borderRadius: 10, boxShadow: '0px 24px 64px rgba(0,0,0,0.5)' }}>
           <SlideContent slide={slide} theme={theme} editable={false}/>
         </motion.div>
+        </AnimatePresence>
         {slide.notes && (
           <div className="flex items-start" style={{ gap: 8, marginTop: 14, padding: '10px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.07)' }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1.8" strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -2621,20 +2579,20 @@ export function PresentationEditorView() {
       return;
     }
     useVideoFlowStore.getState().clearSavedNarration();
-    router.push(`/presentation/narration?v=${narrationVersion}&from=editor`);
+    router.push(`/presentation/narration?v=${narrationVersion}`);
   }, [presentationId, narrationVersion, router]);
 
   const handleContinueExistingVideo = useCallback(() => {
     if (!existingVideoPrompt) return;
     useVideoFlowStore.getState().loadSavedNarration(existingVideoPrompt.narration);
     setExistingVideoPrompt(null);
-    router.push(`/presentation/narration?v=${narrationVersion}&from=editor`);
+    router.push(`/presentation/narration?v=${narrationVersion}`);
   }, [existingVideoPrompt, narrationVersion, router]);
 
   const handleStartNewVideo = useCallback(() => {
     useVideoFlowStore.getState().clearSavedNarration();
     setExistingVideoPrompt(null);
-    router.push(`/presentation/narration?v=${narrationVersion}&from=editor`);
+    router.push(`/presentation/narration?v=${narrationVersion}`);
   }, [narrationVersion, router]);
   const [activeSlideId, setActiveSlideId] = useState<string | null>(slides[0]?.id ?? null);
   const [presentIndex, setPresentIndex]   = useState<number | null>(null);
@@ -2653,6 +2611,10 @@ export function PresentationEditorView() {
     { role: 'ai', text: "Hi! I can help you refine your presentation. Ask me to adjust slides, improve content, or generate ideas." }
   ]);
   const [aiInput, setAiInput] = useState('');
+  // Set when the panel was opened for a specific job (currently just "write notes for every
+  // slide") rather than general chat — routes the next message/pill into that job instead of
+  // the panel's usual canned replies, then clears itself.
+  const [aiChatIntent, setAiChatIntent] = useState<null | 'notes-all'>(null);
   const [notesGenMenuOpen, setNotesGenMenuOpen] = useState(false);
   const notesGenRef = useRef<HTMLDivElement>(null);
   const [generatingSlide, setGeneratingSlide] = useState(false);
@@ -2674,12 +2636,7 @@ export function PresentationEditorView() {
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [textEditorMode, setTextEditorMode] = useState<'panel' | 'bar'>('panel');
   const [notesPanelHeight, setNotesPanelHeight] = useState(90);
-  const [leftPanel, setLeftPanel] = useState<'slides' | 'media' | 'templates' | 'text' | 'artworks' | 'settings'>('slides');
-  const [settingsLanguage, setSettingsLanguage] = useState('en-US');
-  const [settingsTransitionType, setSettingsTransitionType] = useState('fade');
-  const [settingsTransitionMs, setSettingsTransitionMs] = useState(600);
-  const [settingsDefaultDuration, setSettingsDefaultDuration] = useState(5);
-  const [settingsMinDuration, setSettingsMinDuration] = useState(3);
+  const [leftPanel, setLeftPanel] = useState<'slides' | 'media' | 'templates' | 'text' | 'artworks'>('slides');
   const [templateDetailId, setTemplateDetailId] = useState<string | null>(null);
   const [checkedSlideIds, setCheckedSlideIds] = useState<string[]>([]);
   const [uploadedImages, setUploadedImages] = useState<string[]>([]);
@@ -2927,7 +2884,11 @@ export function PresentationEditorView() {
         updateSlidePhoto(activeSlide.id, id, { x: s.x + dxPct, y: s.y + dyPct });
       });
     }
-    const textScale = (zoom * containerScale) / 100;
+    // containerScale is measured directly from the stage box's actual rendered width, which
+    // the zoom control already resizes via CSS width% (see the stageBoxRef comment below) — so
+    // it's already the full effective scale on its own. Multiplying by zoom again here used to
+    // double-apply it, same bug as the stageRef transform.
+    const textScale = containerScale;
     const updates: Partial<PresentationSlide> = {};
     if (selection.includes(TEXT_TITLE_KEY)) updates.titleOffset = { x: start.title.x + dxPx / textScale, y: start.title.y + dyPx / textScale };
     if (selection.includes(TEXT_CONTENT_KEY)) updates.contentOffset = { x: start.content.x + dxPx / textScale, y: start.content.y + dyPx / textScale };
@@ -2992,26 +2953,26 @@ export function PresentationEditorView() {
     setActiveSlideId(blank.id);
   }, []);
 
-  const buildSpeakerNotes = (slide: PresentationSlide): string => {
+  // Talking points, not a script to read verbatim — short bullet phrases a presenter can
+  // glance at, not full sentences they'd end up reading word-for-word off the slide.
+  const buildSpeakerNotes = (slide: PresentationSlide, tone: NotesTone = 'default'): string => {
     const pts = slide.points.filter(p => p && p !== 'Add a point…');
     const title = slide.title;
 
     if (slide.type === 'headline' || pts.length === 0) {
-      return `Welcome and thank you for being here. This slide sets the stage for what we're about to cover: ${title}. Take a moment to let the headline land before speaking. You might open with a short anecdote or a surprising stat that connects to this theme — something that makes the audience lean in. Keep this to around 30 seconds, then move on with energy.`;
+      return HEADLINE_BULLETS_BY_TONE[tone](title).map(b => `• ${b}`).join('\n');
     }
 
-    const intro = `Let's talk about ${title}. Before you go through the points, pause briefly and make eye contact with the room.`;
-
-    const body = pts.map((pt, i) => {
+    const bullets: string[] = [OPENER_BULLET_BY_TONE[tone](title)];
+    pts.forEach((pt, i) => {
       const ptLower = pt.charAt(0).toLowerCase() + pt.slice(1);
-      if (i === 0) return `Start by addressing ${ptLower} — this is your hook. Give one concrete example or story to make it real for the audience.`;
-      if (i === pts.length - 1) return `Close with ${ptLower}. This is your strongest point, so slow down here and let it resonate before transitioning.`;
-      return `Next, cover ${ptLower}. Keep this brief — one key idea, ideally backed by a number or a name the audience will recognise.`;
-    }).join(' ');
+      if (i === 0) bullets.push(`Hook: ${ptLower} — back it with a concrete example`);
+      else if (i === pts.length - 1) bullets.push(`Close strong: ${ptLower} — slow down, let it land`);
+      else bullets.push(`${ptLower.charAt(0).toUpperCase() + ptLower.slice(1)} — one key idea, cite a number or name`);
+    });
+    bullets.push(`Wrap: tie back to "${title}", invite questions`);
 
-    const outro = `Wrap up by linking back to the headline: "${title}". Invite questions or a nod of acknowledgement before moving to the next slide.`;
-
-    return `${intro} ${body} ${outro}`;
+    return bullets.map(b => `• ${b}`).join('\n');
   };
 
   const generateNotes = () => {
@@ -3023,12 +2984,29 @@ export function PresentationEditorView() {
     }, 1100);
   };
 
-  const generateAllNotes = () => {
+  const generateAllNotes = (brief?: string) => {
+    const tone = toneFromNotesBrief(brief ?? '');
     setGeneratingAllNotes(true);
     setTimeout(() => {
-      setSlides(prev => prev.map(s => s.notes ? s : { ...s, notes: buildSpeakerNotes(s) }));
+      // Unconditional now — this only runs off a brief the user just typed, so "skip slides
+      // that already have notes" would silently no-op on every slide carrying the default
+      // "Generated from your manuscript" placeholder, making the whole feature look broken.
+      setSlides(prev => prev.map(s => ({ ...s, notes: buildSpeakerNotes(s, tone) })));
       setGeneratingAllNotes(false);
     }, 1600);
+  };
+
+  // "All slides" used to fire generateAllNotes blind — now it opens the same Wordgenie panel
+  // used for general chat, seeded with a notes-specific ask, and aiChatIntent routes the next
+  // message (or pill) back into generateAllNotes instead of the panel's usual canned replies.
+  const openNotesChatForAllSlides = () => {
+    setAiPanelOpen(true);
+    setAiChatIntent('notes-all');
+    setAiMessages(prev => [...prev, {
+      role: 'ai',
+      text: "Describe your presentation — the audience, tone, and depth you want, and I'll write speaker notes for every slide.",
+      pills: ['Casual team update, keep it light', 'Formal investor pitch, be precise', 'Conference keynote, energetic and inspiring'],
+    }]);
   };
 
   const generateSlideContent = (id: string, prompt: string) => {
@@ -3100,11 +3078,21 @@ export function PresentationEditorView() {
     setAiRewriteUndo(null);
   };
 
-  const sendAiMessage = () => {
-    const msg = aiInput.trim();
+  // Shared by the input's send button and any message pill (both the general-chat pills and
+  // the notes-all pills) — intent decides whether this text is a job brief or just a question.
+  const sendAiChatText = (text: string) => {
+    const msg = text.trim();
     if (!msg) return;
     setAiMessages(prev => [...prev, { role: 'user', text: msg }]);
     setAiInput('');
+    if (aiChatIntent === 'notes-all') {
+      setAiChatIntent(null);
+      generateAllNotes(msg);
+      setTimeout(() => {
+        setAiMessages(prev => [...prev, { role: 'ai', text: `On it — writing speaker notes for every slide, aiming for: "${msg}"` }]);
+      }, 900);
+      return;
+    }
     setTimeout(() => {
       const responses = [
         `I've looked at your slides. "${msg}" is a great direction — I'd suggest expanding that point in slide 2 and adding a concrete example.`,
@@ -3114,6 +3102,7 @@ export function PresentationEditorView() {
       setAiMessages(prev => [...prev, { role: 'ai', text: responses[Math.floor(Math.random() * responses.length)] }]);
     }, 900);
   };
+  const sendAiMessage = () => sendAiChatText(aiInput);
 
   const openAiForSlide = (slide: PresentationSlide, blank = false) => {
     setAiPanelOpen(true);
@@ -3204,7 +3193,10 @@ export function PresentationEditorView() {
 
   const dragProps: DragProps | undefined = activeSlide ? {
     stageRef,
-    zoom: zoom * containerScale,
+    // Expressed as a percentage (matching the prop's existing name/convention downstream,
+    // which divides by 100 itself) — containerScale alone is already the true effective scale,
+    // zoom is baked into it via the stage box's own CSS width%. See stageBoxRef below.
+    zoom: containerScale * 100,
     titleOffset: activeSlide.titleOffset,
     contentOffset: activeSlide.contentOffset,
     onTitleOffsetChange: (o) => updateSlidePartial(activeSlide.id, { titleOffset: o }),
@@ -3354,21 +3346,28 @@ export function PresentationEditorView() {
                   )}
                   {(narrationVersion === '2' || narrationVersion === '3' || narrationVersion === '4') && (
                     <>
-                      <div style={{ borderTop: '1px solid #F0F2F5', margin: '3px 0' }}/>
-                      <button onClick={() => { setExportOpen(false); handleCreateVideoClick(); }} className="flex items-center w-full cursor-pointer text-left" style={{ gap: 10, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none' }}
-                        onMouseEnter={e => { e.currentTarget.style.background = '#F5F7FA'; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-                        <div style={{ width: 28, height: 28, borderRadius: 7, background: '#DDD3FC', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-                            <rect x="2" y="6" width="13" height="12" rx="2.5" fill="#7C5CFC"/>
-                            <path d="M15 9L21 6V18L15 15V9Z" fill="#7C5CFC"/>
-                          </svg>
-                        </div>
-                        <div className="flex flex-col" style={{ gap: 1 }}>
-                          <span style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }}>Create video</span>
-                          <span style={{ ...ns, fontSize: 11, color: '#9AA5B4' }}>Record a voiceover, export as video</span>
-                        </div>
-                      </button>
+                      <div style={{ margin: '3px 0 2px', padding: '0 2px' }}>
+                        {/* Same card shape as the "Turn into Presentation" nudge in EbookCreateFlow.tsx,
+                            but as a light pastel wash of the brand colors (dark text) with the full-strength
+                            AI_GRADIENT reserved for the icon tile — the color pop without a heavy fill. */}
+                        <button onClick={() => { setExportOpen(false); handleCreateVideoClick(); }} className="flex items-center w-full cursor-pointer text-left" style={{ gap: 11, padding: '10px 12px', borderRadius: 10, border: '1px solid #E7E1FB', background: 'linear-gradient(135deg,#EDF4FF 0%,#F2EEFD 100%)', transition: 'border-color 0.15s ease, background 0.15s ease' }}
+                          onMouseEnter={e => { e.currentTarget.style.borderColor = '#D9CEFA'; e.currentTarget.style.background = 'linear-gradient(135deg,#E6F0FF 0%,#EBE4FC 100%)'; }}
+                          onMouseLeave={e => { e.currentTarget.style.borderColor = '#E7E1FB'; e.currentTarget.style.background = 'linear-gradient(135deg,#EDF4FF 0%,#F2EEFD 100%)'; }}>
+                          <div style={{ width: 38, height: 30, borderRadius: 7, background: AI_GRADIENT, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+                              <path d="M8 5.5l9 6.5-9 6.5v-13z" fill="#fff"/>
+                            </svg>
+                          </div>
+                          <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
+                            <div className="flex items-center" style={{ gap: 6 }}>
+                              <span style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#1F2532' }}>Create video</span>
+                              <span style={{ ...ns, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.3, color: '#3D6FD9', background: '#DCE6F7', borderRadius: 4, padding: '1.5px 5px' }}>NEW</span>
+                            </div>
+                            <span style={{ ...ns, fontSize: 11, color: '#7C8798', lineHeight: 1.35 }}>Video course, webinar, or demo — narrated in minutes</span>
+                          </div>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9AA5B4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M9 6l6 6-6 6"/></svg>
+                        </button>
+                      </div>
                     </>
                   )}
                 </div>
@@ -3538,25 +3537,6 @@ export function PresentationEditorView() {
               );
             })}
           </div>
-
-          {/* Bottom: Settings */}
-          <div style={{ width: '100%', paddingLeft: 8, paddingRight: 8, paddingBottom: 8, marginTop: 'auto' }}>
-            <div style={{ height: 1, background: '#ECEEF2', marginBottom: 8 }}/>
-            {(() => {
-              const isActive = leftPanel === 'settings';
-              return (
-                <button
-                  onClick={() => setLeftPanel('settings')}
-                  style={{ width: '100%', height: 52, borderRadius: 12, border: 'none', background: isActive ? '#EEF3FF' : 'transparent', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, cursor: 'pointer', color: isActive ? '#006EFE' : '#6B7280' }}
-                  onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = '#F5F6F8'; }}
-                  onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
-                >
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                  <span style={{ ...ns, fontSize: 10.5, fontWeight: 600 }}>Settings</span>
-                </button>
-              );
-            })()}
-          </div>
         </div>
 
         {/* Left panel — switches between filmstrip and other panels */}
@@ -3583,7 +3563,7 @@ export function PresentationEditorView() {
                 </button>
                 <Reorder.Group as="div" axis="y" values={slides} onReorder={setSlides} style={{ display:'flex', flexDirection:'column', alignItems: 'stretch' }}>
                   {slides.map((s, i) => (
-                    <FilmstripItem key={s.id} slide={s} thumbnail={<SlideThumbnail slide={s} theme={theme}/>} index={i} isActive={s.id===activeSlideId}
+                    <FilmstripItem key={s.id} slide={s} thumbnail={<SlideThumbnail slide={s} theme={theme} rounded={s.id !== activeSlideId}/>} index={i} isActive={s.id===activeSlideId}
                       loading={isFirstLoad}
                       onClick={() => setActiveSlideId(s.id)}
                       isBlank={isBlankSlide(s)}
@@ -3630,7 +3610,7 @@ export function PresentationEditorView() {
                   );
                 })() : (
                   <span style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#15191F' }}>
-                    {leftPanel === 'templates' ? 'Templates' : leftPanel === 'media' ? 'Upload' : leftPanel === 'text' ? 'Text Presets' : leftPanel === 'artworks' ? 'Artworks' : 'Settings'}
+                    {leftPanel === 'templates' ? 'Templates' : leftPanel === 'media' ? 'Upload' : leftPanel === 'text' ? 'Text Presets' : 'Artworks'}
                   </span>
                 )}
               </div>
@@ -3784,79 +3764,6 @@ export function PresentationEditorView() {
                       }}
                     />
                   )}
-
-                  {/* Settings */}
-                  {leftPanel === 'settings' && (
-                    <div className="flex flex-col" style={{ gap: 28 }}>
-                      {/* Language */}
-                      <div>
-                        <div className="flex items-center" style={{ gap: 8, marginBottom: 10 }}>
-                          <SettingsGlobeIcon />
-                          <span style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#15191F' }}>Language</span>
-                        </div>
-                        <LanguageSelect value={settingsLanguage} onChange={setSettingsLanguage} />
-                        <SettingsSectionDivider />
-                        <p style={{ ...ns, fontSize: 12.5, color: '#8996AC', lineHeight: 1.5, margin: 0 }}>
-                          Sets the narration voice and text-to-speech pronunciation.
-                        </p>
-                      </div>
-
-                      {/* Transition */}
-                      <div>
-                        <div className="flex items-center" style={{ gap: 8, marginBottom: 10 }}>
-                          <SettingsTransitionIcon />
-                          <span style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#15191F' }}>Transition</span>
-                        </div>
-                        <div className="flex items-center" style={{ gap: 8 }}>
-                          <TransitionTypeSelect value={settingsTransitionType} onChange={setSettingsTransitionType} />
-                          <SettingsNumberField value={settingsTransitionMs} onChange={setSettingsTransitionMs} min={0} max={3000} width={64} />
-                          <span style={{ ...ns, fontSize: 13, color: '#52637A', flexShrink: 0 }}>ms</span>
-                        </div>
-                        <SettingsSectionDivider />
-                        <p style={{ ...ns, fontSize: 12.5, color: '#8996AC', lineHeight: 1.5, margin: 0 }}>
-                          Applied between slides during playback and video export.
-                        </p>
-                      </div>
-
-                      {/* Default slide duration */}
-                      <div>
-                        <div className="flex items-center" style={{ gap: 8, marginBottom: 10 }}>
-                          <SettingsClockIcon />
-                          <span style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#15191F' }}>Default slide duration</span>
-                        </div>
-                        <div className="flex items-center" style={{ gap: 8 }}>
-                          <SettingsNumberField value={settingsDefaultDuration} onChange={setSettingsDefaultDuration} min={1} max={60} width={72} />
-                          <span style={{ ...ns, fontSize: 13, color: '#52637A', flexShrink: 0 }}>s</span>
-                        </div>
-                        <SettingsSectionDivider />
-                        <p style={{ ...ns, fontSize: 12.5, color: '#8996AC', lineHeight: 1.5, margin: 0 }}>
-                          How long a slide without narration stays on screen.
-                        </p>
-                      </div>
-
-                      {/* Minimum slide duration */}
-                      <div>
-                        <div className="flex items-center" style={{ gap: 8, marginBottom: 10 }}>
-                          <SettingsClockHistoryIcon />
-                          <span style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#15191F' }}>Minimum slide duration</span>
-                        </div>
-                        <div className="flex items-center" style={{ gap: 8 }}>
-                          <SettingsNumberField
-                            value={settingsMinDuration}
-                            onChange={v => { setSettingsMinDuration(v); if (v > settingsDefaultDuration) setSettingsDefaultDuration(v); }}
-                            min={1}
-                            max={settingsDefaultDuration}
-                            width={72}
-                          />
-                          <span style={{ ...ns, fontSize: 13, color: '#52637A', flexShrink: 0 }}>s</span>
-                        </div>
-                        <SettingsSectionDivider />
-                        <p style={{ ...ns, fontSize: 12.5, color: '#8996AC', lineHeight: 1.5, margin: 0 }}>
-                          A slide never displays shorter than this, so it does not flash by.
-                        </p>
-                      </div>
-                    </div>
-                  )}
               </div>
             </motion.div>
           )}
@@ -3873,7 +3780,7 @@ export function PresentationEditorView() {
               <AISparkleIcon size={16}/>
               <span style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#15191F' }}>Wordgenie</span>
             </div>
-            <button onClick={() => setAiPanelOpen(false)} className="flex items-center justify-center cursor-pointer" style={{ width: 26, height: 26, borderRadius: 7, background: '#F5F7FA', border: 'none' }}>
+            <button onClick={() => { setAiPanelOpen(false); setAiChatIntent(null); }} className="flex items-center justify-center cursor-pointer" style={{ width: 26, height: 26, borderRadius: 7, background: '#F5F7FA', border: 'none' }}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="2.2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
@@ -3897,7 +3804,13 @@ export function PresentationEditorView() {
                   <div className="flex flex-wrap" style={{ gap: 6, paddingLeft: 29 }}>
                     {msg.pills.map(pill => (
                       <button key={pill}
-                        onClick={() => { setAiMessages(prev => [...prev, { role: 'user', text: pill }]); setTimeout(() => { setAiMessages(prev => [...prev, { role: 'ai', text: `Got it — working on "${pill}" for this slide…` }]); }, 600); }}
+                        onClick={() => {
+                          // notes-all pills are a job brief, not a slide-content suggestion —
+                          // route those into the same generation path a typed message would take.
+                          if (aiChatIntent === 'notes-all') { sendAiChatText(pill); return; }
+                          setAiMessages(prev => [...prev, { role: 'user', text: pill }]);
+                          setTimeout(() => { setAiMessages(prev => [...prev, { role: 'ai', text: `Got it — working on "${pill}" for this slide…` }]); }, 600);
+                        }}
                         className="cursor-pointer"
                         style={{ ...ns, fontSize: 12, fontWeight: 500, color: '#7C5CFC', padding: '5px 11px', borderRadius: 20, border: '1.5px solid #DDD0FB', background: '#F9F7FF', textAlign: 'left' }}
                         onMouseEnter={e => { e.currentTarget.style.background = '#F0EEFF'; }}
@@ -3910,7 +3823,7 @@ export function PresentationEditorView() {
             ))}
           </div>
           {/* Input */}
-          <div className="flex-shrink-0" style={{ padding: '12px 16px', borderTop: '1px solid #F0F2F5', minWidth: 300 }}>
+          <div className="flex-shrink-0" style={{ padding: '12px 16px', minWidth: 300 }}>
             <div className="flex items-center" style={{ gap: 8, background: '#F4F6F9', borderRadius: 10, padding: '8px 12px' }}>
               <input value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') sendAiMessage(); }} placeholder="Ask about your presentation..." className="flex-1 outline-none bg-transparent" style={{ ...ns, fontSize: 13, color: '#1F2532', border: 'none' }}/>
               <button onClick={sendAiMessage} disabled={!aiInput.trim()} className="flex items-center justify-center cursor-pointer flex-shrink-0" style={{ width: 28, height: 28, borderRadius: 7, background: aiInput.trim() ? '#006EFE' : '#E0E5EB', border: 'none' }}>
@@ -3987,15 +3900,20 @@ export function PresentationEditorView() {
                 <div className="flex flex-col items-center" style={{ gap: 14, width: zoom <= 100 ? `${zoom}%` : '100%', minWidth: 280, flexShrink: 0 }}>
                   {/* Padding-bottom trick: height = 56.25% of width = exact 16:9 */}
                   <motion.div ref={stageBoxRef} key={activeSlide.id} initial={{ opacity: 0, scale: 0.99 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.16 }}
-                    style={{ width: '100%', paddingBottom: '56.25%', position: 'relative', flexShrink: 0, borderRadius: 14, boxShadow: '0px 8px 40px rgba(15,23,51,0.16)', overflow: 'clip' }}
+                    style={{ width: '100%', paddingBottom: '56.25%', position: 'relative', flexShrink: 0, borderRadius: 0, boxShadow: '0px 8px 40px rgba(15,23,51,0.16)', overflow: 'clip' }}
                   >
                     {/* stageRef renders at a fixed natural slide size (SLIDE_VIRTUAL_W) then scales
-                        by the box's actual measured width (containerScale) times the manual zoom
-                        control, so text/layout scale with both the panel layout and zoom. */}
-                    <div ref={stageRef} style={{ position: 'absolute', top: 0, left: 0, width: SLIDE_VIRTUAL_W, height: SLIDE_VIRTUAL_W * 9 / 16, transform: `scale(${containerScale * zoom / 100})`, transformOrigin: 'top left' }}>
+                        by the box's actual measured width (containerScale). The zoom control
+                        already resizes stageBoxRef itself via the wrapper's width:zoom% two
+                        blocks up — that's what makes the whole card visually shrink/grow — so
+                        containerScale (measured straight off that box) already has zoom baked
+                        in. Multiplying by zoom/100 again here used to double-apply it: at 50%
+                        zoom the content rendered at 25% while the frame correctly sat at 50%,
+                        leaving content stranded small in the corner of an otherwise-empty card. */}
+                    <div ref={stageRef} style={{ position: 'absolute', top: 0, left: 0, width: SLIDE_VIRTUAL_W, height: SLIDE_VIRTUAL_W * 9 / 16, transform: `scale(${containerScale})`, transformOrigin: 'top left' }}>
                       {/* Clip inner content to slide bounds */}
                       <div
-                        style={{ position: 'absolute', inset: 0, borderRadius: 14, overflow: 'hidden', background: activeSlide.bgImageUrl ? `url(${activeSlide.bgImageUrl}) center/cover` : (activeSlide.bgColor ?? (selectedThemeId ? theme.bg : '#FFFFFF')), outline: artworkDropActive ? '2.5px dashed #006EFE' : 'none', outlineOffset: -2 }}
+                        style={{ position: 'absolute', inset: 0, borderRadius: 0, overflow: 'hidden', background: activeSlide.bgImageUrl ? `url(${activeSlide.bgImageUrl}) center/cover` : (activeSlide.bgColor ?? (selectedThemeId ? theme.bg : '#FFFFFF')), outline: artworkDropActive ? '2.5px dashed #006EFE' : 'none', outlineOffset: -2 }}
                         onDragOver={e => {
                           if (e.dataTransfer.types.includes(ARTWORK_DND_TYPE)) {
                             e.preventDefault();
@@ -4236,7 +4154,7 @@ export function PresentationEditorView() {
                       <button onClick={() => { generateNotes(); setNotesGenMenuOpen(false); }} className="flex items-center cursor-pointer text-left w-full" style={{ gap: 8, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none', ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }} onMouseEnter={e => { e.currentTarget.style.background = '#F5F0FF'; }} onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
                         <AISparkleIcon size={13}/>This slide
                       </button>
-                      <button onClick={() => { generateAllNotes(); setNotesGenMenuOpen(false); }} className="flex items-center cursor-pointer text-left w-full" style={{ gap: 8, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none', ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }} onMouseEnter={e => { e.currentTarget.style.background = '#F5F0FF'; }} onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                      <button onClick={() => { openNotesChatForAllSlides(); setNotesGenMenuOpen(false); }} className="flex items-center cursor-pointer text-left w-full" style={{ gap: 8, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none', ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }} onMouseEnter={e => { e.currentTarget.style.background = '#F5F0FF'; }} onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
                         <AISparkleIcon size={13}/>All slides
                       </button>
                     </div>
@@ -4277,6 +4195,20 @@ export function PresentationEditorView() {
           onPhotoColorChange={handlePhotoColorChange}
           onPhotoSetBackground={handlePhotoSetBackground}
           onPhotoResize={handlePhotoResize}
+          onTransitionChange={(t, ms) => { if (activeSlide) updateSlidePartial(activeSlide.id, { transitionType: t, transitionMs: ms }); }}
+          // Derived, not a one-time "did I click Apply" flag — every slide already matching the
+          // active slide's transition is exactly the condition under which there's nothing left
+          // for the button to do, whether that's because it was just clicked or the deck simply
+          // started out uniform. Changing type OR duration on the active slide immediately makes
+          // this false again (now there's something new to broadcast), no extra state to track.
+          transitionAppliedToAll={!!activeSlide && slides.every(s =>
+            (s.transitionType ?? 'fade') === (activeSlide.transitionType ?? 'fade') &&
+            (s.transitionMs ?? 600) === (activeSlide.transitionMs ?? 600))}
+          onApplyTransitionToAll={() => {
+            if (!activeSlide) return;
+            const { transitionType, transitionMs } = activeSlide;
+            setSlides(p => p.map(s => ({ ...s, transitionType, transitionMs })));
+          }}
           onFontSizeChange={handleFontSizeChange}
           onFontFamilyChange={family => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, focusedBlock === 'title' ? { titleFontFamily: family } : { contentFontFamily: family }); }}
           onFontWeightChange={weight => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, focusedBlock === 'title' ? { titleFontWeight: weight } : { contentFontWeight: weight }); }}

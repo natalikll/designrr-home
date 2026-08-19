@@ -13,6 +13,34 @@ function DotsIcon() {
   return <svg width="14" height="14" viewBox="0 0 24 24" fill="#52637A"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>;
 }
 
+const TRANSITION_LABELS: Record<string, string> = { fade: 'Fade', slide: 'Slide', zoom: 'Zoom', dissolve: 'Dissolve' };
+
+// One glyph per transition type so a slide whose transition doesn't match its neighbors reads
+// as a shape change at a glance across the filmstrip, not just a tooltip you'd have to check
+// slide by slide. 'none' renders nothing — its absence already says "no transition" the same
+// way an unlit status dot does elsewhere in this app, so a dedicated icon for it would just be
+// noise on what's likely the majority of slides in a lot of decks.
+function TransitionBadgeIcon({ type }: { type: string }) {
+  if (type === 'slide') return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+  );
+  if (type === 'zoom') return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+  );
+  if (type === 'dissolve') return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="#fff">
+      <circle cx="5" cy="6" r="1.7"/><circle cx="13" cy="4" r="1.7"/><circle cx="20" cy="8" r="1.7" opacity="0.55"/>
+      <circle cx="7" cy="13" r="1.7" opacity="0.7"/><circle cx="16" cy="13" r="1.7" opacity="0.4"/>
+      <circle cx="10" cy="20" r="1.7" opacity="0.3"/>
+    </svg>
+  );
+  // Default/fade — two overlapping circles read as "blend of two things" without needing a
+  // gradient fill at a size this small, matching the flat stroke language of the others.
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4"><circle cx="9" cy="12" r="6" opacity="0.9"/><circle cx="16" cy="12" r="6" opacity="0.5"/></svg>
+  );
+}
+
 export interface FilmstripItemProps {
   slide: PresentationSlide;
   /** Pre-rendered slide preview (e.g. <SlideThumbnail/>) — kept as a render prop so this file doesn't need to import the editor's slide-content renderer. */
@@ -58,7 +86,7 @@ export function FilmstripItem({ slide, thumbnail, index, isActive, isBlank, load
 
   return (
     <Reorder.Item value={slide} dragListener={false} dragControls={dragControls} as="div" className="group/fi" style={{ width: '100%' }}>
-      <div onClick={onClick} className="relative cursor-pointer" style={{ borderRadius: 7, outline: isActive ? '2.5px solid #006EFE' : '1.5px solid transparent', outlineOffset: 1 }}>
+      <div onClick={onClick} className="relative cursor-pointer" style={{ borderRadius: isActive ? 0 : 7, outline: isActive ? '2.5px solid #006EFE' : '1.5px solid transparent', outlineOffset: 1 }}>
         {loading ? (
           <div className="relative w-full overflow-hidden rounded-[5px]" style={{ aspectRatio: '16/9', background: '#F4F5F7' }}>
             <div className="absolute inset-0 flex flex-col items-center justify-center" style={{ gap: 7, padding: '0 14%' }}>
@@ -74,6 +102,32 @@ export function FilmstripItem({ slide, thumbnail, index, isActive, isBlank, load
             <div className="absolute flex items-center justify-center" style={{ bottom: 4, left: 5, minWidth: 16, height: 16, borderRadius: 4, background: 'rgba(15,23,51,0.45)', padding: '0 4px' }}>
               <span style={{ ...ns, fontSize: 9, fontWeight: 700, color: '#fff' }}>{index + 1}</span>
             </div>
+            {/* Transition — bottom right, mirroring the number badge's placement and treatment
+                on the opposite corner. Always visible, not hover-only: the whole point is
+                scanning the filmstrip for a slide whose icon breaks the pattern, which only
+                works if every slide's badge is on screen at the same time. */}
+            {(() => {
+              const effectiveType = slide.transitionType ?? 'fade';
+              if (effectiveType === 'none') return null;
+              const label = TRANSITION_LABELS[effectiveType] ?? 'Fade';
+              const ms = slide.transitionMs ?? 600;
+              // The absolute positioning has to be the outer element, not wrapped inside
+              // Tooltip — Tooltip's own wrapper is itself position:relative, which would
+              // otherwise become the nearest positioned ancestor and resolve bottom/right
+              // against Tooltip's tiny inline-flex box instead of this thumbnail.
+              return (
+                // Same bottom offset, size, and radius as the number badge above — this is
+                // just that badge's treatment mirrored onto the opposite corner, not a
+                // different one.
+                <div className="absolute flex items-center justify-center" style={{ bottom: 4, right: 5, width: 16, height: 16, borderRadius: 4, background: 'rgba(15,23,51,0.45)' }}>
+                  <Tooltip label={`${label} · ${ms}ms`} position="top">
+                    <div className="w-full h-full flex items-center justify-center">
+                      <TransitionBadgeIcon type={effectiveType} />
+                    </div>
+                  </Tooltip>
+                </div>
+              );
+            })()}
           </>
         )}
         {/* Drag grip — top left */}

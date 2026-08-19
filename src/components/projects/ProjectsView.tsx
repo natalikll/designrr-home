@@ -92,7 +92,15 @@ function PlusIcon() {
 /* ── Sort dropdown ── */
 const SORT_OPTIONS = ['Newest', 'Oldest', 'Title A–Z', 'Title Z–A'];
 
-function SortDropdown() {
+function SortIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M3.5 4h9M3.5 8h6M3.5 12h3" stroke="#52637A" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SortDropdown({ compact = false }: { compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState('Newest');
   const ref = useRef<HTMLDivElement>(null);
@@ -104,18 +112,28 @@ function SortDropdown() {
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
+  const button = (
+    <button
+      onClick={() => setOpen(v => !v)}
+      className="flex items-center cursor-pointer bg-white"
+      style={compact
+        ? { width: 38, height: 38, justifyContent: 'center', borderRadius: 8, border: '1px solid #E0E5EB' }
+        : { gap: 8, height: 38, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB' }}
+    >
+      {compact ? <SortIcon /> : (
+        <>
+          <span style={{ ...ns, fontSize: 14, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
+            Sort: {selected}
+          </span>
+          <ChevronDown />
+        </>
+      )}
+    </button>
+  );
+
   return (
     <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="flex items-center cursor-pointer bg-white"
-        style={{ gap: 8, height: 38, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB' }}
-      >
-        <span style={{ ...ns, fontSize: 14, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
-          Sort: {selected}
-        </span>
-        <ChevronDown />
-      </button>
+      {compact ? <Tooltip label={`Sort: ${selected}`} position="bottom">{button}</Tooltip> : button}
       {open && (
         <div className="absolute bg-white flex flex-col" style={{ top: 'calc(100% + 4px)', right: 0, minWidth: 160, borderRadius: 8, padding: 5, boxShadow: '0px 4px 20px rgba(0,0,0,0.1)', zIndex: 20 }}>
           {SORT_OPTIONS.map(opt => (
@@ -289,6 +307,30 @@ function TabsWithOverflow({ activeTab, onSelect }: { activeTab: ProjectType; onS
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+const COMPACT_SORT_THRESHOLD = 480;
+
+function TabsAndControlsRow({ activeTab, onSelect }: { activeTab: ProjectType; onSelect: (t: ProjectType) => void }) {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [compactSort, setCompactSort] = useState(false);
+
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setCompactSort(el.getBoundingClientRect().width < COMPACT_SORT_THRESHOLD));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  return (
+    <div ref={rowRef} className="flex items-center" style={{ margin: '20px 0 0', padding: '0 32px', height: 52, gap: 24 }}>
+      <TabsWithOverflow activeTab={activeTab} onSelect={onSelect} />
+      <div className="flex-shrink-0">
+        <SortDropdown compact={compactSort} />
+      </div>
     </div>
   );
 }
@@ -641,15 +683,7 @@ export function ProjectsView() {
         </div>
 
         {/* ── Tabs + controls ── */}
-        <div className="flex items-center" style={{ margin: '20px 0 0', padding: '0 32px', height: 52, gap: 24 }}>
-          {/* Tabs */}
-          <TabsWithOverflow activeTab={activeTab} onSelect={setActiveTab} />
-
-          {/* Controls */}
-          <div className="flex-shrink-0">
-            <SortDropdown />
-          </div>
-        </div>
+        <TabsAndControlsRow activeTab={activeTab} onSelect={setActiveTab} />
 
         {/* ── Card grid ── */}
         <div style={{ padding: '28px 32px 40px' }}>
