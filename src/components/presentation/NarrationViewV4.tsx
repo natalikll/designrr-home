@@ -1049,6 +1049,21 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
   // The side-by-side camera claims a fixed slice of the row so the slide sits directly next to
   // it, not centered independently with an arbitrary gap between them.
   const sideBySideVisible = entryMode === 'record' && captureMode === 'video' && cameraLayout === 'sideBySide';
+  // Viewfinder framing — what's actually inside this border is what ends up in the recording,
+  // camera-app convention (a red frame around the live capture bounds). Bubble mode never needed
+  // this: the camera circle already draws inside the slide's own box, so the slide's border was
+  // always the true capture edge. Side-by-side was the real gap — its "backing panel" (below)
+  // exists purely to size the combined slide+camera shape, with a background that's the exact
+  // same #121212 as the canvas behind it, so the region meant to say "these two are composited
+  // into one output" had no visible edge of its own; nothing distinguished "the recording" from
+  // "empty studio". Same red-while-live treatment as the record button itself now applies to
+  // whichever container actually represents the true output bounds for the current layout, so
+  // the two connect visually even though Record itself sits far away in the top bar now.
+  const captureFrameLive = phase === 'recording' || phase === 'paused';
+  const captureFrameBorder = captureFrameLive ? '2px solid #E5484D' : '1px solid rgba(255,255,255,0.14)';
+  const captureFrameShadow = captureFrameLive
+    ? '0 0 0 5px rgba(229,72,77,0.16), 0 20px 60px rgba(0,0,0,0.5)'
+    : '0 20px 60px rgba(0,0,0,0.5)';
   // Fixed slice of the combined 16:9 frame the camera claims — see fit() below, which sizes
   // the *combined* slide+camera box to 16:9 (matching what an actual composited recording
   // would look like) and gives the camera this much of it, rather than sizing the slide alone
@@ -1418,11 +1433,13 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
             </div>
           )}
         </AnimatePresence>
-        {phase !== 'idle' && (
+        {phase !== 'idle' ? (
           <button onClick={requestDiscard} className="cursor-pointer flex items-center justify-center flex-shrink-0"
             style={{ width: 32, height: 32, borderRadius: 9, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.05)', outline: 'none' }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
+        ) : (
+          <div style={{ minWidth: 32 }} />
         )}
       </div>
 
@@ -1625,15 +1642,23 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
           // solved for to make the whole combined shape 16:9, so re-deriving it here (rather
           // than a CSS aspect-ratio that can't see the same constraints) keeps it in lockstep.
           ...(sideBySideVisible ? { width: slideBox.w + sbsGap + sbsCameraW + 20, height: slideBox.h + 20,
-            padding: 10, borderRadius: 18, background: '#121212', boxSizing: 'border-box' } : {}) }}>
+            padding: 10, borderRadius: 18, background: '#121212', boxSizing: 'border-box',
+            // The one true capture-bounds frame in this layout — see captureFrameBorder's own
+            // comment above. Slide and camera below keep their plain neutral borders; this
+            // wrapper is what should read as "the recording", not either individual panel.
+            border: captureFrameBorder, boxShadow: captureFrameShadow, transition: 'border-color 0.2s, box-shadow 0.2s' } : {}) }}>
         <AnimatePresence mode="wait">
           <motion.div key={idx} initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }}
             transition={{ duration: 0.18 }}
             style={{ width: slideBox.w, height: slideBox.h, flexShrink: 0, borderRadius: 0, overflow: 'hidden', background: bg, position: 'relative', containerType: 'inline-size',
               // Always on, not just while recording — a dark-themed slide on this dark canvas
-              // otherwise has no visible edge at all, border or no recording indicator.
-              border: '1px solid rgba(255,255,255,0.14)',
-              boxShadow: '0 20px 60px rgba(0,0,0,0.5)' } as React.CSSProperties}>
+              // otherwise has no visible edge at all, border or no recording indicator. Only the
+              // true capture-bounds container gets the live red viewfinder treatment, though —
+              // in side-by-side layout that's the backing panel above, not this slide on its own
+              // (the camera bubble composites inside this same box, so here it still is).
+              border: sideBySideVisible ? '1px solid rgba(255,255,255,0.14)' : captureFrameBorder,
+              boxShadow: sideBySideVisible ? '0 20px 60px rgba(0,0,0,0.5)' : captureFrameShadow,
+              transition: 'border-color 0.2s, box-shadow 0.2s' } as React.CSSProperties}>
             {/* Bottom padding reserves the take-preview overlay's own height (scrub bar +
                 timestamp, ~64px) whenever that overlay is showing — otherwise this block's
                 vertically-centered text and that bottom-anchored overlay each size independently
@@ -2015,8 +2040,8 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                     </div>
             </div>
 
-            {/* Right: slide nav — its own cluster, opposite the left-side controls, with the
-                record button centered independently between them. */}
+            {/* Slide nav — its own cluster on the right, opposite the left-side
+                controls, with the record button centered independently between them. */}
             <div className="flex items-center" style={{ gap: 8 }}>
               {/* Still idle (nothing captured yet this session) → route through the parent so
                   the destination slide's own recorded/idle status loads correctly, same as the

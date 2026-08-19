@@ -49,30 +49,35 @@ export function ExistingVideoModal({ videoTitle, onContinue, onStartNew, onClose
         <h2 style={{ ...ns, fontSize: 19, fontWeight: 700, color: '#0D1433', lineHeight: 1.3 }}>This deck already has a video</h2>
         {/* The title is the one fact worth scanning for — bolded and dark rather than boxed in
             plain quote marks, so it reads as "this specific thing" instead of blending into the
-            rest of the gray sentence. No restating what the buttons below already say. */}
+            rest of the gray sentence. Doesn't restate "narrated" — videoTitle already carries
+            that (e.g. "Q2 Roadmap — Narrated"), so echoing it in the sentence just doubled up
+            the same word. */}
         <p style={{ ...ns, fontSize: 13.5, color: '#52637A', lineHeight: 1.55, marginTop: 8, marginBottom: 26 }}>
-          <span style={{ color: '#334155', fontWeight: 700 }}>&ldquo;{videoTitle}&rdquo;</span> was narrated from this presentation. Continue that video, or start a separate one.
+          <span style={{ color: '#334155', fontWeight: 700 }}>&ldquo;{videoTitle}&rdquo;</span> is already set up for this deck. Pick up where you left off, or start a separate one.
         </p>
 
-        <button onClick={onContinue}
-          className="cursor-pointer"
-          style={{ ...ns, height: 44, borderRadius: 10, border: 'none', background: '#006EFE', color: '#fff', fontSize: 14, fontWeight: 700, boxShadow: '0 1px 2px rgba(0,110,254,0.05), 0 8px 20px rgba(0,110,254,0.28)', transition: 'background 0.15s' }}
-          onMouseEnter={e => { e.currentTarget.style.background = '#0060E0'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
-          Continue editing
-        </button>
+        {/* Side by side and right-aligned, primary on the right — matches where the eye lands
+            reading left to right, and where a confirm action sits in every other modal footer
+            in this app. Auto-width instead of the old full-bleed stacked pair, since neither
+            label needs the room and stacking implied a priority order neither button actually
+            has. */}
+        <div className="flex items-center justify-end" style={{ gap: 10 }}>
+          <button onClick={onStartNew}
+            className="cursor-pointer"
+            style={{ ...ns, height: 40, padding: '0 18px', borderRadius: 10, border: '1.5px solid #E0E5EB', background: '#fff', color: '#334155', fontSize: 14, fontWeight: 600, transition: 'background 0.15s, border-color 0.15s' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#F8F9FC'; e.currentTarget.style.borderColor = '#C7CEDB'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.borderColor = '#E0E5EB'; }}>
+            Start a new video
+          </button>
 
-        {/* A real bordered secondary button, not a bare text link — abandoning an already-
-            narrated video for a fresh, disconnected one is a decision with something to lose,
-            not a "nevermind" you'd reach for by accident, so it earns the same button weight as
-            the primary rather than reading as an afterthought. */}
-        <button onClick={onStartNew}
-          className="cursor-pointer"
-          style={{ ...ns, height: 44, marginTop: 10, borderRadius: 10, border: '1.5px solid #E0E5EB', background: '#fff', color: '#334155', fontSize: 14, fontWeight: 600, transition: 'background 0.15s, border-color 0.15s' }}
-          onMouseEnter={e => { e.currentTarget.style.background = '#F8F9FC'; e.currentTarget.style.borderColor = '#C7CEDB'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.borderColor = '#E0E5EB'; }}>
-          Start a new video instead
-        </button>
+          <button onClick={onContinue}
+            className="cursor-pointer"
+            style={{ ...ns, height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#006EFE', color: '#fff', fontSize: 14, fontWeight: 700, transition: 'background 0.15s' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#0060E0'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
+            Continue editing
+          </button>
+        </div>
       </motion.div>
     </motion.div>
   );
