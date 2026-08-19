@@ -3814,17 +3814,24 @@ function WordgenieChatPanel({ open, messages, typing, input, onInputChange, onSe
   useEffect(() => { if (open) endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, open, typing]);
   return (
     <div className="flex-shrink-0 flex flex-col overflow-hidden"
-      style={{ position: 'relative', width: open ? 300 : 0, borderRight: open ? '1px solid rgba(255,255,255,0.08)' : 'none',
-        // Same fill as the studio canvas and the filmstrip now (#15191F), not its own separate
-        // panel gray — one continuous background for the whole studio interior, with borders
-        // doing all the work of separating filmstrip / Wordgenie / canvas instead of a color
-        // shift as well.
+      style={{ position: 'relative', width: open ? 300 : 0, borderRight: open ? '1px solid rgba(139,111,240,0.14)' : 'none',
+        // Background stays the shared #121212 (same as the filmstrip and canvas either side of
+        // it) — separation is carried by the border plus the inset shadow below instead of a
+        // color shift. A real drop shadow would get clipped by this element's own
+        // overflow:hidden (needed to clip content while width animates) before it ever escaped
+        // the box, so this is an inset shadow instead — it paints inside the border box, so
+        // overflow:hidden never touches it. Stronger on the right, facing the canvas (which
+        // carries no border of its own — see the audit finding that the canvas edge relies
+        // entirely on this panel's own boundary), lighter on the left, which already has the
+        // filmstrip's own border doing some of the work.
+        boxShadow: open ? 'inset -14px 0 20px -16px rgba(0,0,0,0.8), inset 8px 0 14px -14px rgba(0,0,0,0.6)' : 'none',
         background: '#121212', transition: 'width 0.22s cubic-bezier(0.2,0,0.2,1)' }}>
       {/* Header — plain white title, not gradient text. The editor's own aiPanelOpen panel
           (PresentationEditorView.tsx, this component's direct sibling) only spends the gradient
           on the *trigger* pill that opens the panel; once you're inside, the title goes flat.
-          Matching that restraint instead of gradient-clipping the title everywhere. */}
-      <div className="flex items-center justify-between flex-shrink-0" style={{ padding: '14px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)', minWidth: 300 }}>
+          Matching that restraint instead of gradient-clipping the title everywhere — the violet
+          background tint above now carries the identity instead of the title needing to. */}
+      <div className="flex items-center justify-between flex-shrink-0" style={{ padding: '14px 16px', borderBottom: '1px solid rgba(139,111,240,0.1)', minWidth: 300 }}>
         <div className="flex items-center" style={{ gap: 9 }}>
           <div className="flex items-center justify-center" style={{ width: 26, height: 26, borderRadius: 8,
             background: 'linear-gradient(135deg, rgba(76,141,255,0.22), rgba(139,111,240,0.22))', flexShrink: 0 }}>
@@ -4004,10 +4011,20 @@ const ENTRY_STAGES: { id: EntryStage; label: string }[] = [
   { id: 'ready', label: 'Studio ready' },
 ];
 
+// Mirrors the platform's one existing generation-loader shape (GenerationTransition.tsx, used
+// by the ebook wizard) rather than inventing a new one: glow-halo icon with a spring entrance
+// and gentle float, a gradient-text headline, a small rotating status line, and the same
+// shimmering progress-bar treatment — just re-skinned dark for the studio hand-off. Left out:
+// GenerationTransition's confetti/orbit/mesh-gradient particle layers, since those read as
+// celebratory ("something was made for you") and this moment is quieter — a threshold, not an
+// achievement.
+//
 // Nothing here is actually waiting on a network call — slides and voice defaults are already
 // synchronous zustand state by the time this mounts. But the three beats stay honest about
-// that: they're paced to match a deliberately unhurried "settling in" read, not a spinner
-// standing in for latency that doesn't exist.
+// that: they're paced to match the progress bar's own fixed duration, not a spinner standing
+// in for latency that doesn't exist.
+const ENTRY_TOTAL_MS = 2350;
+
 function StudioEntryTransition({ onDone }: { onDone: () => void }) {
   const [stageIdx, setStageIdx] = useState(0);
   const [exiting, setExiting] = useState(false);
@@ -4016,8 +4033,8 @@ function StudioEntryTransition({ onDone }: { onDone: () => void }) {
     const timers = [
       setTimeout(() => setStageIdx(1), 950),
       setTimeout(() => setStageIdx(2), 1700),
-      setTimeout(() => setExiting(true), 2350),
-      setTimeout(onDone, 2800),
+      setTimeout(() => setExiting(true), ENTRY_TOTAL_MS),
+      setTimeout(onDone, ENTRY_TOTAL_MS + 450),
     ];
     return () => timers.forEach(clearTimeout);
   }, [onDone]);
@@ -4029,55 +4046,96 @@ function StudioEntryTransition({ onDone }: { onDone: () => void }) {
       style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center',
         pointerEvents: exiting ? 'none' : 'auto' }}
     >
-      {/* Crossfades from the editor's own white chrome into the studio's #121212 — the light →
-          dark hand-off happens inside this one overlay so the editor page itself stays untouched. */}
+      {/* Three stops, not two: white editor → #1E1E1E (the studio's own menu/surface tone,
+          already used elsewhere in this file — not an invented mid-gray) → #121212 canvas.
+          A single white→#121212 blend passes through a flat muddy gray at the midpoint (the
+          same reason film edits cut to black between very different shots rather than
+          dissolving them into each other); splitting it into two smaller hops keeps each one
+          gentle. This layer only carries the first hop, white → #1E1E1E, with content waiting
+          until it's mostly there before fading in. The second hop, #1E1E1E → #121212, is just
+          this whole overlay fading out on exit to reveal the studio's real canvas underneath —
+          both dark tones are close enough that blend never reads as muddy. */}
       <motion.div
         initial={{ backgroundColor: '#FFFFFF' }}
-        animate={{ backgroundColor: '#121212' }}
-        transition={{ duration: 0.8, ease: [0.4, 0, 0.2, 1] }}
+        animate={{ backgroundColor: '#1E1E1E' }}
+        transition={{ duration: 0.55, ease: [0.4, 0, 0.2, 1] }}
         style={{ position: 'absolute', inset: 0 }}
       />
 
-      <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 22 }}>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.35, delay: 0.45 }}
+        style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        {/* Glow halo behind icon — same two-layer treatment as the book/outline loader's icon */}
         <motion.div
-          animate={{ scale: [1, 1.045, 1] }}
-          transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
-          style={{ width: 60, height: 60, borderRadius: '50%',
-            background: 'linear-gradient(135deg, rgba(76,141,255,0.25), rgba(139,111,240,0.25))',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 20px 46px rgba(76,141,255,0.18)' }}
+          className="absolute rounded-full"
+          style={{ width: 110, height: 110, top: -25,
+            background: 'radial-gradient(circle, rgba(76,141,255,0.16) 0%, transparent 70%)' }}
+          animate={{ scale: [1, 1.35, 1], opacity: [0.5, 1, 0.5] }}
+          transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <motion.div
+          className="relative mb-5 flex justify-center"
+          initial={{ scale: 0.3, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.3 }}
         >
-          <WordgenieIcon size={26} />
+          <motion.div animate={{ y: [0, -4, 0, 4, 0] }} transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}>
+            <div style={{ width: 60, height: 60, borderRadius: '50%',
+              background: 'linear-gradient(135deg, rgba(76,141,255,0.25), rgba(139,111,240,0.25))',
+              display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <WordgenieIcon size={26} />
+            </div>
+          </motion.div>
         </motion.div>
 
-        <div style={{ height: 20, display: 'flex', alignItems: 'center' }}>
+        {/* Headline — blur-in + gradient text, same treatment as "Generating manuscript" */}
+        <motion.p
+          initial={{ opacity: 0, y: 15, filter: 'blur(8px)' }}
+          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+          transition={{ delay: 0.5, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+          style={{ ...ns, fontSize: 16, fontWeight: 700, margin: 0,
+            background: WG_GRADIENT, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+          Setting up your studio
+        </motion.p>
+
+        {/* Small rotating status line — same role as the book loader's typewriter progress,
+            just a plain crossfade since three short stages don't need a per-character type-on. */}
+        <div style={{ height: 18, marginTop: 6, display: 'flex', alignItems: 'center' }}>
           <AnimatePresence mode="wait">
             <motion.span key={stageIdx}
-              initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.25 }}
-              style={{ ...ns, fontSize: 14, fontWeight: 600, color: 'rgba(255,255,255,0.92)' }}>
+              style={{ ...ns, fontSize: 12.5, color: 'rgba(255,255,255,0.5)' }}>
               {ENTRY_STAGES[stageIdx].label}{stageIdx < ENTRY_STAGES.length - 1 ? '…' : ''}
             </motion.span>
           </AnimatePresence>
         </div>
 
-        <div className="flex items-center" style={{ gap: 16 }}>
-          {ENTRY_STAGES.map((s, i) => (
-            <div key={s.id} className="flex items-center" style={{ gap: 6 }}>
-              <span style={{ width: 13, height: 13, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                background: i < stageIdx ? '#006EFE' : 'rgba(255,255,255,0.08)',
-                border: i === stageIdx ? '1.5px solid rgba(255,255,255,0.55)' : '1.5px solid transparent' }}>
-                {i < stageIdx ? (
-                  <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
-                ) : i === stageIdx ? (
-                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#fff', animation: 'v2blink 1s infinite' }} />
-                ) : null}
-              </span>
-              <span style={{ ...ns, fontSize: 10.5, fontWeight: 600, color: i <= stageIdx ? 'rgba(255,255,255,0.62)' : 'rgba(255,255,255,0.26)' }}>{s.label}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+        {/* Premium progress bar — same track + gradient fill + shimmer sweep as the book loader,
+            re-skinned for a dark track instead of a light one. Fill duration matches the beats
+            above so it lands full right as the third stage arrives. */}
+        <motion.div
+          initial={{ opacity: 0, scaleX: 0 }}
+          animate={{ opacity: 1, scaleX: 1 }}
+          transition={{ delay: 0.7, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+          style={{ transformOrigin: 'center', marginTop: 18 }}>
+          <div style={{ width: 180, height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.1)', overflow: 'hidden', position: 'relative' }}>
+            <motion.div
+              style={{ height: '100%', borderRadius: 999, background: WG_GRADIENT }}
+              initial={{ width: '0%' }} animate={{ width: '100%' }}
+              transition={{ duration: ENTRY_TOTAL_MS / 1000, ease: [0.4, 0, 0.2, 1] }}
+            />
+            <motion.div
+              style={{ position: 'absolute', inset: 0, borderRadius: 999,
+                background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.45) 50%, transparent 100%)' }}
+              animate={{ x: ['-100%', '200%'] }}
+              transition={{ duration: 1.3, repeat: Infinity, ease: 'linear', delay: 0.7 }}
+            />
+          </div>
+        </motion.div>
+      </motion.div>
     </motion.div>
   );
 }
