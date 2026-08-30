@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Reorder } from 'framer-motion';
 import ContentEditable from 'react-contenteditable';
 import type { MockSlide } from '@/lib/presentationMocks';
+import { Tooltip } from '../ui/Tooltip';
 
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 
@@ -54,6 +55,61 @@ export function SmallXIcon() {
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#A0AABA" strokeWidth="2.4" strokeLinecap="round">
       <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
     </svg>
+  );
+}
+
+/** Hover-revealed control for inserting a slide at an exact position, not just the end of the
+ *  deck — sits in the gap between two cards. Fixed-height row regardless of hover state (only
+ *  opacity/color change on reveal) so hovering never shifts the cards above/below it. */
+export function InsertGap({ onAddBlank, onAddAi, adding }: {
+  onAddBlank: () => void; onAddAi: () => void; adding: boolean;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const show = hovered || adding;
+  return (
+    <div
+      className="relative flex items-center justify-center flex-shrink-0"
+      style={{ height: 24 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div style={{ position: 'absolute', left: 0, right: 0, height: 1, background: '#C9D6F5', opacity: show ? 1 : 0, transition: 'opacity 0.12s' }} />
+      <div
+        className="relative flex items-center"
+        style={{
+          gap: 2, background: '#fff', border: '1px solid #C9D6F5', borderRadius: 999, padding: 3,
+          opacity: show ? 1 : 0, pointerEvents: show ? 'auto' : 'none', transition: 'opacity 0.12s',
+        }}
+      >
+        <Tooltip label="Insert blank slide here" position="top">
+          <button
+            onClick={onAddBlank}
+            className="flex items-center justify-center cursor-pointer"
+            style={{ width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'transparent' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = '#F4F6F9'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            aria-label="Insert blank slide here"
+          >
+            <PlusIcon />
+          </button>
+        </Tooltip>
+        <Tooltip label={adding ? 'Generating…' : 'Insert AI-generated slide here'} position="top">
+          <button
+            onClick={onAddAi}
+            disabled={adding}
+            className="flex items-center justify-center cursor-pointer"
+            style={{ width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'transparent' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = '#F4F6F9'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            aria-label="Insert AI-generated slide here"
+          >
+            {adding
+              ? <span style={{ width: 10, height: 10, border: '1.5px solid #DCD3F5', borderTopColor: '#5326BD', borderRadius: '50%', display: 'inline-block', animation: 'v2spin 0.8s linear infinite' }} />
+              : <AiSparkleIcon />}
+          </button>
+        </Tooltip>
+      </div>
+    </div>
   );
 }
 

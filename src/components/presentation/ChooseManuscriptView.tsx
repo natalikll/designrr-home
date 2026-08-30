@@ -33,17 +33,54 @@ function EmptyStateIcon() {
   );
 }
 
-function ManuscriptThumb() {
+function CheckBadge() {
   return (
-    <div className="flex items-center justify-center flex-shrink-0" style={{ width: '100%', height: 158, background: '#F2F4F7', borderRadius: 10 }}>
-      <div style={{ width: 94, background: '#fff', borderRadius: 5, boxShadow: '0 4px 14px rgba(15,23,51,0.06)', padding: '14px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ height: 5, width: '55%', background: '#C8CDD8', borderRadius: 2 }} />
-        <div style={{ height: 3, width: '90%', background: '#E2E5EC', borderRadius: 2, marginTop: 5 }} />
-        <div style={{ height: 3, width: '80%', background: '#E2E5EC', borderRadius: 2 }} />
-        <div style={{ height: 3, width: '85%', background: '#E2E5EC', borderRadius: 2 }} />
-        <div style={{ height: 3, width: '70%', background: '#E2E5EC', borderRadius: 2 }} />
-        <div style={{ height: 3, width: '75%', background: '#E2E5EC', borderRadius: 2 }} />
+    <div
+      className="flex items-center justify-center"
+      style={{ position: 'absolute', top: 7, right: 7, width: 16, height: 16, borderRadius: '50%', background: '#006EFE' }}
+    >
+      <svg width="9" height="9" viewBox="0 0 14 14" fill="none">
+        <path d="M2.5 7.2L5.2 9.8L11.5 4" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </div>
+  );
+}
+
+const THUMB_LINES = [92, 88, 95, 40, 90, 85, 93, 78, 91, 87, 94, 42, 89, 84];
+
+function ManuscriptThumb({ isSelected }: { isSelected: boolean }) {
+  return (
+    <div
+      className="relative flex-shrink-0 overflow-hidden"
+      style={{
+        width: '100%', height: 214, background: '#F6F7F9', borderRadius: 12,
+        border: `1px solid ${isSelected ? '#006EFE' : 'transparent'}`,
+      }}
+    >
+      <div
+        className="absolute overflow-hidden bg-white"
+        style={{
+          left: '50%', transform: 'translateX(-50%)', top: 16, bottom: -25, width: 196,
+          borderRadius: '7px 7px 0 0',
+          boxShadow: '0px 2px 17px rgba(0,0,0,0.08)',
+          padding: '12px 14px',
+        }}
+      >
+        <div style={{ height: 6, width: '48%', background: '#B7BFCC', borderRadius: 2, marginBottom: 8 }} />
+        {THUMB_LINES.map((w, i) => (
+          <div key={i} style={{ height: 3, width: `${w}%`, background: '#E2E5EC', borderRadius: 1, marginBottom: 4 }} />
+        ))}
       </div>
+      {isSelected && <CheckBadge />}
+    </div>
+  );
+}
+
+function DocTypeIcon() {
+  return (
+    <div className="flex items-center justify-center flex-shrink-0" style={{ width: 36, height: 36 }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/ebook-icon.svg" alt="" width={28} height={32} style={{ pointerEvents: 'none' }} />
     </div>
   );
 }
@@ -96,16 +133,16 @@ export function ChooseManuscriptView() {
         <div style={{ maxWidth: 1180, margin: '0 auto', padding: '40px 32px 64px' }}>
           <div className="flex items-start justify-between" style={{ marginBottom: 28, gap: 24 }}>
             <div>
-              <h1 style={{ ...ns, fontSize: 28, fontWeight: 700, color: '#0D1433' }}>Your manuscripts</h1>
+              <h1 style={{ ...ns, fontSize: 24, fontWeight: 600, lineHeight: '32px', color: '#15191F' }}>Your manuscripts</h1>
               <p style={{ ...ns, fontSize: 14, color: '#52637A', marginTop: 6 }}>Select one to turn into a presentation.</p>
             </div>
-            <div className="flex items-center flex-shrink-0" style={{ gap: 8, height: 40, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB', width: 260 }}>
+            <div className="flex items-center flex-shrink-0" style={{ gap: 8, height: 40, padding: '0 16px', borderRadius: 8, border: '1px solid #E0E5EB', width: 260 }}>
               <SearchIcon />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search manuscripts…"
-                style={{ ...ns, fontSize: 14, color: '#15191F', border: 'none', outline: 'none', flex: 1, background: 'transparent', minWidth: 0 }}
+                style={{ ...ns, fontSize: 16, color: '#15191F', border: 'none', outline: 'none', flex: 1, background: 'transparent', minWidth: 0 }}
               />
             </div>
           </div>
@@ -156,7 +193,7 @@ export function ChooseManuscriptView() {
               </button>
             </div>
           ) : (
-            <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 20 }}>
+            <div className="grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 20 }}>
               {filtered.map((m) => {
                 const isSelected = selectedManuscriptId === m.id;
                 return (
@@ -167,17 +204,16 @@ export function ChooseManuscriptView() {
                     whileTap={{ scale: 0.98 }}
                     onClick={() => setSelectedManuscriptId(m.id)}
                     onDoubleClick={() => { setSelectedManuscriptId(m.id); router.push('/presentation/sections'); }}
-                    className="flex flex-col text-left cursor-pointer"
-                    style={{
-                      gap: 12, borderRadius: 12, padding: 14, background: '#fff',
-                      border: `1.5px solid ${isSelected ? '#006EFE' : 'transparent'}`,
-                      boxShadow: isSelected ? '0 0 0 1px #006EFE' : 'none',
-                    }}
+                    className="flex flex-col text-left cursor-pointer bg-white"
+                    style={{ gap: 6 }}
                   >
-                    <ManuscriptThumb />
-                    <div>
-                      <p className="line-clamp-2" style={{ ...ns, fontSize: 15, fontWeight: 600, color: '#15191F', lineHeight: 1.3 }}>{m.title}</p>
-                      <p style={{ ...ns, fontSize: 13, color: '#8E99AB', marginTop: 4 }}>Edited {m.editedAt}</p>
+                    <ManuscriptThumb isSelected={isSelected} />
+                    <div className="flex items-center" style={{ gap: 8 }}>
+                      <DocTypeIcon />
+                      <div className="min-w-0">
+                        <p className="truncate" style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#15191F', lineHeight: '18px' }}>{m.title}</p>
+                        <p style={{ ...ns, fontSize: 12, color: '#52637A' }}>Edited {m.editedAt}</p>
+                      </div>
                     </div>
                   </motion.button>
                 );

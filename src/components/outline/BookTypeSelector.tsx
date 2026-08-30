@@ -3,14 +3,18 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { BookType } from '@/lib/types';
+import { UpgradePlanModal } from '../account/MyAccountView';
+import { Tooltip } from '../ui/Tooltip';
 
 interface BookTypeSelectorProps {
   show: boolean;
   onSelect: (type: BookType) => void;
   onClose: () => void;
+  /** Current account plan — gates which formats are locked. Defaults to the Standard tier. */
+  plan?: 'standard' | 'pro' | 'premium' | 'agency';
 }
 
-const BOOK_TYPES: { type: BookType; title: string; description: string }[] = [
+const BOOK_TYPES: { type: BookType; title: string; description: string; requiredPlan?: 'pro' | 'premium' }[] = [
   {
     type: 'ebook',
     title: 'Ebook',
@@ -20,18 +24,44 @@ const BOOK_TYPES: { type: BookType; title: string; description: string }[] = [
     type: 'print',
     title: 'Print Book',
     description: 'Bring your story to life on paper',
+    requiredPlan: 'premium',
   },
   {
     type: 'kindle',
     title: 'Kindle Book',
     description: 'Designed for digital reading',
+    requiredPlan: 'pro',
   },
   {
     type: 'audiobook',
     title: 'Audiobook',
     description: 'Clear listening experience',
+    requiredPlan: 'premium',
   },
 ];
+
+const PLAN_RANK: Record<string, number> = { standard: 0, pro: 1, premium: 2, agency: 3 };
+const PLAN_TINT: Record<string, { bg: string; fg: string }> = {
+  pro: { bg: '#EAF1FF', fg: '#006EFE' },
+  premium: { bg: '#EAF1FF', fg: '#006EFE' },
+};
+
+/* Mirrors each tier's own icon from the pricing modal (star for Pro, crown for Premium)
+   so the badge tells you which plan unlocks it without reading the label underneath. */
+function TierIcon({ tier, color }: { tier: 'pro' | 'premium'; color: string }) {
+  if (tier === 'premium') {
+    return (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill={color}>
+        <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill={color}>
+      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+    </svg>
+  );
+}
 
 /* ── Popup header sparkle icon (from Figma) ── */
 function PopupSparkleIcon() {
@@ -156,8 +186,29 @@ const ICONS: Record<BookType, () => React.JSX.Element> = {
   kindle: EbookIcon,
 };
 
-export function BookTypeSelector({ show, onSelect, onClose }: BookTypeSelectorProps) {
+export function BookTypeSelector({ show, onSelect, onClose, plan = 'standard' }: BookTypeSelectorProps) {
   const [hoveredType, setHoveredType] = useState<BookType | null>(null);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium' } | null>(null);
+
+  const handleCardClick = (bt: typeof BOOK_TYPES[number]) => {
+    const isLocked = bt.requiredPlan && PLAN_RANK[plan] < PLAN_RANK[bt.requiredPlan];
+    if (isLocked && bt.requiredPlan) {
+      setUpgradeCtx({ message: `Unlock the ${bt.title} format`, planId: bt.requiredPlan });
+      return;
+    }
+    onSelect(bt.type);
+  };
+
+  if (upgradeCtx) {
+    return (
+      <UpgradePlanModal
+        onClose={() => setUpgradeCtx(null)}
+        currentPlanId={plan}
+        contextMessage={upgradeCtx.message}
+        highlightPlanId={upgradeCtx.planId}
+      />
+    );
+  }
 
   return (
     <AnimatePresence>
@@ -214,6 +265,7 @@ export function BookTypeSelector({ show, onSelect, onClose }: BookTypeSelectorPr
                 {BOOK_TYPES.map((bt, index) => {
                   const Icon = ICONS[bt.type];
                   const isHovered = hoveredType === bt.type;
+                  const isLocked = !!bt.requiredPlan && PLAN_RANK[plan] < PLAN_RANK[bt.requiredPlan];
 
                   return (
                     <motion.button
@@ -225,10 +277,10 @@ export function BookTypeSelector({ show, onSelect, onClose }: BookTypeSelectorPr
                         transition: { duration: 0.25, delay: index * 0.06 },
                       }}
                       whileTap={{ scale: 0.97 }}
-                      onClick={() => onSelect(bt.type)}
+                      onClick={() => handleCardClick(bt)}
                       onMouseEnter={() => setHoveredType(bt.type)}
                       onMouseLeave={() => setHoveredType(null)}
-                      className="flex flex-col items-center text-center cursor-pointer overflow-hidden"
+                      className="flex flex-col items-center text-center cursor-pointer overflow-hidden relative"
                       style={{
                         width: 146,
                         minWidth: 146,
@@ -242,6 +294,17 @@ export function BookTypeSelector({ show, onSelect, onClose }: BookTypeSelectorPr
                         transition: 'border-color 0.2s, box-shadow 0.2s',
                       }}
                     >
+                      {isLocked && bt.requiredPlan && (
+                        <div
+                          className="absolute flex items-center justify-center"
+                          style={{ top: 10, right: 10, width: 22, height: 22, borderRadius: '50%', background: PLAN_TINT[bt.requiredPlan].bg }}
+                        >
+                          <Tooltip label={`Requires ${bt.requiredPlan === 'pro' ? 'Pro' : 'Premium'}`} position="top">
+                            <TierIcon tier={bt.requiredPlan} color={PLAN_TINT[bt.requiredPlan].fg} />
+                          </Tooltip>
+                        </div>
+                      )}
+
                       {/* Inner content — shifts up on hover to reveal description */}
                       <div
                         className="flex flex-col items-center justify-center flex-1 w-full px-3"
@@ -267,19 +330,26 @@ export function BookTypeSelector({ show, onSelect, onClose }: BookTypeSelectorPr
                           {bt.title}
                         </p>
 
-                        {/* Description — revealed on hover */}
-                        <p
-                          className="text-[12px] font-normal text-text-tertiary mt-1 leading-tight"
+
+                        {/* Description — revealed on hover. Animates via grid-template-rows
+                            (0fr/1fr) instead of max-height, so the browser only recomputes
+                            this grid track rather than the whole layout on every frame. */}
+                        <div
+                          className="mt-1"
                           style={{
-                            fontFamily: 'var(--font-nunito-sans)',
+                            display: 'grid',
+                            gridTemplateRows: isHovered ? '1fr' : '0fr',
                             opacity: isHovered ? 1 : 0,
-                            maxHeight: isHovered ? 40 : 0,
-                            transition: 'opacity 0.25s ease, max-height 0.25s ease',
-                            overflow: 'hidden',
+                            transition: 'opacity 0.25s ease, grid-template-rows 0.25s ease',
                           }}
                         >
-                          {bt.description}
-                        </p>
+                          <p
+                            className="text-[12px] font-normal text-text-tertiary leading-tight overflow-hidden"
+                            style={{ fontFamily: 'var(--font-nunito-sans)' }}
+                          >
+                            {bt.description}
+                          </p>
+                        </div>
                       </div>
                     </motion.button>
                   );

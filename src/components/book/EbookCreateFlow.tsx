@@ -7,6 +7,7 @@ import { useFlowStore } from '@/stores/flowStore';
 import { usePresentationFlowStore } from '@/stores/presentationFlowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
+import { UpgradePlanModal } from '../account/MyAccountView';
 
 /* ── constants ──────────────────────────────────────────────────────────────── */
 
@@ -39,29 +40,32 @@ interface Template {
   textColor: string;
   accentColor: string;
   themes: string[];
+  isPro?: boolean;
+  /** Pro-tier template usable without upgrading, as a trial. Locked Pro templates omit this. */
+  tryForFree?: boolean;
 }
 
 const TEMPLATES: Template[] = [
   { id: 1,  name: 'SEO 2-05',                    bg: 'linear-gradient(160deg,#22c55e,#15803d)', textColor: '#fff',     accentColor: '#86efac', themes: ['Marketing', 'Business', 'Tech'] },
   { id: 2,  name: 'Social Media Marketing 2-05', bg: '#111827',                                 textColor: '#f59e0b', accentColor: '#fbbf24', themes: ['Content Creation', 'Education', 'Creative', 'Design'] },
-  { id: 3,  name: 'Pro Print Book',              bg: '#f8f8f6',                                 textColor: '#111827', accentColor: '#6b7280', themes: ['Business', 'Entrepreneurship'] },
+  { id: 3,  name: 'Pro Print Book',              bg: '#f8f8f6',                                 textColor: '#111827', accentColor: '#6b7280', themes: ['Business', 'Entrepreneurship'], isPro: true, tryForFree: true },
   { id: 4,  name: 'Echoes',                      bg: 'linear-gradient(160deg,#a78bfa,#7c3aed)', textColor: '#fff',     accentColor: '#c4b5fd', themes: ['Creative', 'Lifestyle'] },
   { id: 5,  name: 'Sunset',                      bg: 'linear-gradient(160deg,#fb923c,#dc2626)', textColor: '#fff',     accentColor: '#fcd34d', themes: ['Lifestyle', 'Motivation'] },
-  { id: 6,  name: 'Kamy',                        bg: '#1a1a1a',                                 textColor: '#e5e7eb', accentColor: '#9ca3af', themes: ['Creative', 'Design'] },
-  { id: 7,  name: 'Regalia',                     bg: 'linear-gradient(160deg,#d4a574,#b8860b)', textColor: '#1a1a1a', accentColor: '#78350f', themes: ['Business', 'Sales'] },
+  { id: 6,  name: 'Kamy',                        bg: '#1a1a1a',                                 textColor: '#e5e7eb', accentColor: '#9ca3af', themes: ['Creative', 'Design'], isPro: true },
+  { id: 7,  name: 'Regalia',                     bg: 'linear-gradient(160deg,#d4a574,#b8860b)', textColor: '#1a1a1a', accentColor: '#78350f', themes: ['Business', 'Sales'], isPro: true, tryForFree: true },
   { id: 8,  name: 'Bestseller',                  bg: '#111',                                    textColor: '#fff',     accentColor: '#d1d5db', themes: ['Business', 'Success'] },
-  { id: 9,  name: 'Minimal Pro',                 bg: '#fff',                                    textColor: '#111827', accentColor: '#4b5563', themes: ['Business', 'Entrepreneurship'] },
+  { id: 9,  name: 'Minimal Pro',                 bg: '#fff',                                    textColor: '#111827', accentColor: '#4b5563', themes: ['Business', 'Entrepreneurship'], isPro: true },
   { id: 10, name: 'Business Blue',               bg: 'linear-gradient(160deg,#3b82f6,#1d4ed8)', textColor: '#fff',     accentColor: '#93c5fd', themes: ['Business', 'Marketing'] },
   { id: 11, name: 'Creative Orange',             bg: 'linear-gradient(160deg,#f97316,#ea580c)', textColor: '#fff',     accentColor: '#fed7aa', themes: ['Creative', 'Motivation'] },
   { id: 12, name: 'Nature Green',                bg: 'linear-gradient(160deg,#4ade80,#15803d)', textColor: '#fff',     accentColor: '#bbf7d0', themes: ['Health & wellness', 'Lifestyle'] },
 ];
 
-const PUBLISH_FORMATS = [
+const PUBLISH_FORMATS: { id: string; label: string; sub: string; badgeBg: string; badgeText: string; icon: string; requiredPlan?: 'pro' | 'premium' }[] = [
   { id: 'pdf',      label: 'PDF',      sub: 'For adobe reader',        badgeBg: '#FEE2E2', badgeText: '#B91C1C',  icon: 'pdf' },
   { id: 'flipbook', label: 'Flipbook', sub: 'Set your book in motion', badgeBg: '#EDE9FE', badgeText: '#7C3AED',  icon: 'flipbook' },
-  { id: 'kindle',   label: 'Kindle',   sub: 'E-pub export',            badgeBg: '#FEF3C7', badgeText: '#92400E',  icon: 'kindle' },
-  { id: 'html',     label: 'HTML',     sub: 'Export html',             badgeBg: '#DBEAFE', badgeText: '#1D4ED8',  icon: 'html' },
-  { id: 'epub',     label: 'EPUB',     sub: 'For e-readers',           badgeBg: '#D1FAE5', badgeText: '#065F46',  icon: 'epub' },
+  { id: 'kindle',   label: 'Kindle',   sub: 'E-pub export',            badgeBg: '#FEF3C7', badgeText: '#92400E',  icon: 'kindle', requiredPlan: 'pro' },
+  { id: 'html',     label: 'HTML',     sub: 'Export html',             badgeBg: '#DBEAFE', badgeText: '#1D4ED8',  icon: 'html', requiredPlan: 'premium' },
+  { id: 'epub',     label: 'EPUB',     sub: 'For e-readers',           badgeBg: '#D1FAE5', badgeText: '#065F46',  icon: 'epub', requiredPlan: 'pro' },
 ];
 
 const DOC_TITLE = 'The Power of Unknowing: How Embracing Ignorance Can Lead to Wisdom';
@@ -242,6 +246,15 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
       <div className="relative overflow-hidden"
         style={{ borderRadius: 8, border: `1.5px solid ${hovered ? '#006EFE' : '#E8EBF2'}`, transition: 'border-color 0.15s, box-shadow 0.15s', boxShadow: hovered ? '0 4px 16px rgba(0,110,254,0.12)' : '0 2px 8px rgba(0,0,0,0.06)' }}>
         <TemplateCover t={t} height={260} />
+        {t.isPro && (
+          <div
+            className="absolute flex items-center"
+            style={{ top: 10, left: 10, gap: 5, background: 'rgba(21,25,31,0.85)', borderRadius: 999, padding: '4px 10px 4px 8px' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="#F5C344"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" /></svg>
+            <span style={{ ...ns, fontSize: 11, fontWeight: 600, color: '#fff' }}>{t.tryForFree ? 'Try for free' : 'Pro'}</span>
+          </div>
+        )}
         {hovered && (
           <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.32)' }}>
             <span style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: '#006EFE', borderRadius: 8, padding: '8px 18px' }}>Preview</span>
@@ -256,7 +269,7 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
 function TemplateLightbox({ t, allTemplates, onUse, onClose }: {
   t: Template;
   allTemplates: Template[];
-  onUse: () => void;
+  onUse: (template: Template) => void;
   onClose: () => void;
 }) {
   const [idx, setIdx] = useState(allTemplates.findIndex(x => x.id === t.id));
@@ -271,27 +284,27 @@ function TemplateLightbox({ t, allTemplates, onUse, onClose }: {
       style={{ background: 'rgba(0,0,0,0.6)' }}
       onClick={onClose}
     >
+      {/* nav arrows — sit near the viewport edges, outside the modal card, matching the live product */}
+      {(['prev', 'next'] as const).map(dir => (
+        <button key={dir} onClick={(e) => { e.stopPropagation(); dir === 'prev' ? prev() : next(); }}
+          className="fixed flex items-center justify-center cursor-pointer z-10"
+          style={{ [dir === 'prev' ? 'left' : 'right']: '4%', top: '50%', transform: 'translateY(-50%)', width: 36, height: 36, borderRadius: '50%', background: '#fff', border: '1px solid #E0E5EB', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="2" strokeLinecap="round">
+            {dir === 'prev' ? <path d="M15 18l-6-6 6-6"/> : <path d="M9 18l6-6-6-6"/>}
+          </svg>
+        </button>
+      ))}
+
       <motion.div
         initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
         className="bg-white flex overflow-hidden relative"
-        style={{ width: 960, maxHeight: '88vh', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,0.3)' }}
+        style={{ width: '85vw', maxWidth: 1240, maxHeight: '88vh', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,0.3)' }}
         onClick={e => e.stopPropagation()}
       >
-        {/* nav arrows */}
-        {(['prev', 'next'] as const).map(dir => (
-          <button key={dir} onClick={dir === 'prev' ? prev : next}
-            className="absolute flex items-center justify-center cursor-pointer z-10"
-            style={{ [dir === 'prev' ? 'left' : 'right']: 16, top: '38%', width: 36, height: 36, borderRadius: '50%', background: '#fff', border: '1px solid #E0E5EB', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="2" strokeLinecap="round">
-              {dir === 'prev' ? <path d="M15 18l-6-6 6-6"/> : <path d="M9 18l6-6-6-6"/>}
-            </svg>
-          </button>
-        ))}
-
-        {/* left preview */}
-        <div className="flex flex-col flex-1 min-w-0" style={{ padding: 28, background: '#F6F7F9', gap: 14 }}>
-          <TemplateCover t={current} height={380} title={DOC_TITLE} />
+        {/* left preview — image fills the full panel width (minus padding), no artificial cap */}
+        <div className="flex flex-col flex-1 min-w-0 justify-center" style={{ padding: '40px 32px', gap: 16 }}>
+          <TemplateCover t={current} height={520} title={DOC_TITLE} />
           <div className="flex" style={{ gap: 8 }}>
             {[0, 1, 2].map(i => (
               <div key={i} style={{ flex: 1, borderRadius: 4, overflow: 'hidden', border: i === 0 ? '2px solid #006EFE' : '1.5px solid #E0E5EB' }}>
@@ -307,35 +320,40 @@ function TemplateLightbox({ t, allTemplates, onUse, onClose }: {
         </div>
 
         {/* right info */}
-        <div className="flex flex-col" style={{ width: 300, padding: '32px 24px', flexShrink: 0 }}>
+        <div className="flex flex-col" style={{ width: 380, padding: '40px 40px', flexShrink: 0 }}>
           <button onClick={onClose} className="absolute cursor-pointer flex items-center justify-center"
-            style={{ top: 16, right: 16, width: 28, height: 28, borderRadius: '50%', background: '#F4F6F9', border: 'none' }}>
+            style={{ top: 24, right: 24, width: 28, height: 28, borderRadius: '50%', background: '#F4F6F9', border: 'none' }}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="2.5" strokeLinecap="round">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
           </button>
 
-          <h3 style={{ ...ns, fontSize: 18, fontWeight: 700, color: '#15191F', marginBottom: 8 }}>{current.name}</h3>
-          <p style={{ ...ns, fontSize: 13, color: '#52637A', lineHeight: 1.6, marginBottom: 20 }}>
-            You'll be able to play with the template & change covers inside the editor
-          </p>
-
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 28 }}>
-            {current.themes.map(label => {
-              const td = POPULAR_THEMES.find(p => p.label === label);
-              return (
-                <span key={label} style={{ ...ns, fontSize: 13, color: '#52637A', background: '#F4F6F9', borderRadius: 999, padding: '5px 12px', border: '1px solid #E8EBF2', display: 'flex', alignItems: 'center', gap: 5 }}>
-                  {td?.emoji} {label}
-                </span>
-              );
-            })}
+          {/* Title row — small badge inline with the name, matching the live product; badge only
+              appears for Pro templates and carries the tier + price so it's clear at a glance. */}
+          <div className="flex items-center" style={{ gap: 10, marginBottom: 12 }}>
+            {current.isPro && (
+              <div className="flex items-center justify-center flex-shrink-0" style={{ width: 26, height: 26, borderRadius: 6, background: '#15191F' }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="#F5C344"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" /></svg>
+              </div>
+            )}
+            <h3 style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#15191F' }}>{current.name}</h3>
           </div>
 
-          <button onClick={onUse}
+          {current.isPro && current.tryForFree && (
+            <p style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: '#3F6152', marginBottom: 12 }}>
+              Try for free — no upgrade needed
+            </p>
+          )}
+
+          <p style={{ ...ns, fontSize: 13, color: '#52637A', lineHeight: 1.6, marginBottom: 32 }}>
+            You&apos;ll be able to play with the template &amp; change covers inside the editor
+          </p>
+
+          <button onClick={() => onUse(current)}
             style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '11px 0', cursor: 'pointer', width: '100%', marginBottom: 10 }}
             onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
             onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
-            Use this template
+            {current.isPro && !current.tryForFree ? 'Unlock with Pro' : 'Use this template'}
           </button>
 
           <div style={{ display: 'flex', gap: 8 }}>
@@ -356,6 +374,28 @@ function TemplateLightbox({ t, allTemplates, onUse, onClose }: {
   );
 }
 
+const TYPE_OPTIONS = ['All', 'Standard', 'Two Column', 'User', 'Asian', 'Cyrillic', 'RTL', 'Pro'];
+const PAGE_SIZE_OPTIONS = ['Letter', 'A4', 'A5', '6x9', 'Legal', 'A3', 'Square'];
+const ORIENTATION_OPTIONS = ['Portrait', 'Landscape'];
+const THEME_OPTIONS = [
+  { emoji: '⚡', label: 'Self Development' },
+  { emoji: '📚', label: 'Education' },
+  { emoji: '🥑', label: 'Health & wellness' },
+  { emoji: '💼', label: 'Business' },
+  { emoji: '💡', label: 'Digital Marketing' },
+  { emoji: '⚡', label: 'Spiritual Self Development' },
+  { emoji: '💡', label: 'Life coaching' },
+  { emoji: '🏋️', label: 'Training and Development' },
+];
+
+function FilterChevron({ open }: { open: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>
+      <path d="M3 5.5L7 9l4-3.5" stroke="#52637A" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+}
+
 function TemplateGallery({ selectedThemes, onUse, onBack }: {
   selectedThemes: string[];
   onUse: (t: Template) => void;
@@ -364,14 +404,22 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
   const [search, setSearch] = useState('');
   const [pageSize, setPageSize] = useState('Letter');
   const [orientation, setOrientation] = useState('Portrait');
+  const [typeFilter, setTypeFilter] = useState('All');
+  const [themesFilter, setThemesFilter] = useState<string[]>(selectedThemes);
+  const [themeSearch, setThemeSearch] = useState('');
+  const [openFilter, setOpenFilter] = useState<null | 'type' | 'themes' | 'pageSize' | 'orientation'>(null);
   const [preview, setPreview] = useState<Template | null>(null);
-  const themesLabel = selectedThemes.length ? `Themes: ${selectedThemes.join(', ')}` : 'Themes';
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' } | null>(null);
+  const themesLabel = themesFilter.length ? `Themes: ${themesFilter.join(', ')}` : 'Themes';
 
   const filtered = TEMPLATES.filter(t => {
     const matchSearch = !search || t.name.toLowerCase().includes(search.toLowerCase());
-    const matchTheme = selectedThemes.length === 0 || t.themes.some(th => selectedThemes.includes(th));
-    return matchSearch && matchTheme;
+    const matchTheme = themesFilter.length === 0 || t.themes.some(th => themesFilter.includes(th));
+    const matchType = typeFilter === 'All' || (typeFilter === 'Pro' ? t.isPro : true);
+    return matchSearch && matchTheme && matchType;
   });
+  const proCount = TEMPLATES.filter(t => t.isPro).length;
+  const visibleThemeOptions = THEME_OPTIONS.filter(o => o.label.toLowerCase().includes(themeSearch.toLowerCase()));
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-white">
@@ -387,32 +435,138 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
       </div>
 
       <div className="flex-1 overflow-y-auto" style={{ padding: '28px 32px 40px' }}>
-        <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#15191F', marginBottom: 22 }}>Choose a template</h1>
+        <div className="flex items-center justify-between" style={{ marginBottom: 22 }}>
+          <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#15191F' }}>Choose a template</h1>
+          {proCount > 0 && (
+            <button
+              onClick={() => setUpgradeCtx({ message: `Unlock all ${proCount} Pro templates`, planId: 'pro' })}
+              style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', cursor: 'pointer' }}
+            >
+              Upgrade to use all Pro templates ↗
+            </button>
+          )}
+        </div>
 
         {/* Filters */}
-        <div className="flex items-center" style={{ gap: 12, marginBottom: 28 }}>
+        <div className="flex items-center relative" style={{ gap: 12, marginBottom: 24 }}>
           <div className="flex-1 flex items-center" style={{ gap: 10, height: 42, padding: '0 16px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', maxWidth: 520 }}>
             <svg width="16" height="16" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#8E99AB" strokeWidth="1.5"/><path d="M12.5 12.5L16 16" stroke="#8E99AB" strokeWidth="1.5" strokeLinecap="round"/></svg>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search for a template"
               style={{ flex: 1, border: 'none', outline: 'none', ...ns, fontSize: 14, color: '#15191F', background: 'transparent' }}/>
           </div>
 
-          {/* Filter pills */}
-          {[
-            { label: 'Type', val: '', set: () => {} },
-            { label: themesLabel, val: '', set: () => {} },
-            { label: `Page Size: ${pageSize}`, val: pageSize, set: setPageSize },
-            { label: `Orientation: ${orientation}`, val: orientation, set: setOrientation },
-          ].map(f => (
-            <button key={f.label} className="flex items-center cursor-pointer flex-shrink-0"
-              style={{ gap: 6, height: 42, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
-              {f.label}
-              <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M3 5.5L7 9l4-3.5" stroke="#52637A" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          {/* Type — single-select */}
+          <div className="relative flex-shrink-0">
+            <button onClick={() => setOpenFilter(openFilter === 'type' ? null : 'type')} className="flex items-center cursor-pointer"
+              style={{ gap: 6, height: 42, padding: '0 14px', borderRadius: 8, border: `1px solid ${openFilter === 'type' ? '#006EFE' : '#E0E5EB'}`, background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
+              Type
+              <FilterChevron open={openFilter === 'type'} />
             </button>
-          ))}
+            {openFilter === 'type' && (
+              <div className="absolute" style={{ top: 48, left: 0, zIndex: 30, width: 220, background: '#fff', borderRadius: 10, border: '1px solid #E0E5EB', boxShadow: '0 12px 32px rgba(0,0,0,0.12)', padding: '8px 0' }}>
+                {TYPE_OPTIONS.map(opt => (
+                  <button key={opt} onClick={() => { setTypeFilter(opt); setOpenFilter(null); }}
+                    className="flex items-center justify-between cursor-pointer w-full text-left"
+                    style={{ padding: '9px 16px', background: 'none', border: 'none', ...ns, fontSize: 14, color: '#15191F' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                    {opt}
+                    {typeFilter === opt && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Themes — multi-select with search */}
+          <div className="relative flex-shrink-0">
+            <button onClick={() => setOpenFilter(openFilter === 'themes' ? null : 'themes')} className="flex items-center cursor-pointer"
+              style={{ gap: 6, height: 42, padding: '0 14px', borderRadius: 8, border: `1px solid ${openFilter === 'themes' ? '#006EFE' : '#E0E5EB'}`, background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {themesLabel}
+              <FilterChevron open={openFilter === 'themes'} />
+            </button>
+            {openFilter === 'themes' && (
+              <div className="absolute" style={{ top: 48, left: 0, zIndex: 30, width: 300, background: '#fff', borderRadius: 10, border: '1px solid #E0E5EB', boxShadow: '0 12px 32px rgba(0,0,0,0.12)', padding: 12 }}>
+                <div className="flex items-center" style={{ gap: 8, height: 38, padding: '0 12px', borderRadius: 8, border: '1px solid #E0E5EB', marginBottom: 10 }}>
+                  <svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#8E99AB" strokeWidth="1.5"/><path d="M12.5 12.5L16 16" stroke="#8E99AB" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                  <input value={themeSearch} onChange={e => setThemeSearch(e.target.value)} placeholder="Search..."
+                    style={{ flex: 1, border: 'none', outline: 'none', ...ns, fontSize: 13, color: '#15191F' }} />
+                </div>
+                <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+                  {visibleThemeOptions.map(opt => {
+                    const checked = themesFilter.includes(opt.label);
+                    return (
+                      <button key={opt.label}
+                        onClick={() => setThemesFilter(checked ? themesFilter.filter(x => x !== opt.label) : [...themesFilter, opt.label])}
+                        className="flex items-center justify-between cursor-pointer w-full text-left"
+                        style={{ padding: '9px 8px', background: 'none', border: 'none', borderRadius: 6, ...ns, fontSize: 14, color: '#15191F' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                        <span className="flex items-center" style={{ gap: 8 }}>
+                          <span>{opt.emoji}</span>{opt.label}
+                        </span>
+                        {checked && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Page Size — single-select */}
+          <div className="relative flex-shrink-0">
+            <button onClick={() => setOpenFilter(openFilter === 'pageSize' ? null : 'pageSize')} className="flex items-center cursor-pointer"
+              style={{ gap: 6, height: 42, padding: '0 14px', borderRadius: 8, border: `1px solid ${openFilter === 'pageSize' ? '#006EFE' : '#E0E5EB'}`, background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
+              {`Page Size: ${pageSize}`}
+              <FilterChevron open={openFilter === 'pageSize'} />
+            </button>
+            {openFilter === 'pageSize' && (
+              <div className="absolute" style={{ top: 48, left: 0, zIndex: 30, width: 180, background: '#fff', borderRadius: 10, border: '1px solid #E0E5EB', boxShadow: '0 12px 32px rgba(0,0,0,0.12)', padding: '8px 0' }}>
+                {PAGE_SIZE_OPTIONS.map(opt => (
+                  <button key={opt} onClick={() => { setPageSize(opt); setOpenFilter(null); }}
+                    className="flex items-center justify-between cursor-pointer w-full text-left"
+                    style={{ padding: '9px 16px', background: 'none', border: 'none', ...ns, fontSize: 14, color: '#15191F' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                    {opt}
+                    {pageSize === opt && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Orientation — single-select */}
+          <div className="relative flex-shrink-0">
+            <button onClick={() => setOpenFilter(openFilter === 'orientation' ? null : 'orientation')} className="flex items-center cursor-pointer"
+              style={{ gap: 6, height: 42, padding: '0 14px', borderRadius: 8, border: `1px solid ${openFilter === 'orientation' ? '#006EFE' : '#E0E5EB'}`, background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
+              {`Orientation: ${orientation}`}
+              <FilterChevron open={openFilter === 'orientation'} />
+            </button>
+            {openFilter === 'orientation' && (
+              <div className="absolute" style={{ top: 48, left: 0, zIndex: 30, width: 170, background: '#fff', borderRadius: 10, border: '1px solid #E0E5EB', boxShadow: '0 12px 32px rgba(0,0,0,0.12)', padding: '8px 0' }}>
+                {ORIENTATION_OPTIONS.map(opt => (
+                  <button key={opt} onClick={() => { setOrientation(opt); setOpenFilter(null); }}
+                    className="flex items-center justify-between cursor-pointer w-full text-left"
+                    style={{ padding: '9px 16px', background: 'none', border: 'none', ...ns, fontSize: 14, color: '#15191F' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                    {opt}
+                    {orientation === opt && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Click-outside backdrop to close any open dropdown */}
+          {openFilter && (
+            <div className="fixed inset-0" style={{ zIndex: 20 }} onClick={() => setOpenFilter(null)} />
+          )}
         </div>
 
-        {/* Grid */}
+        {/* Unified grid — Pro templates are badged inline, not segregated into a skippable row */}
         {filtered.length === 0
           ? <p style={{ ...ns, fontSize: 14, color: '#8596AD', textAlign: 'center', marginTop: 60 }}>No templates found.</p>
           : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20 }}>
@@ -422,13 +576,29 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
             </div>}
       </div>
 
+      {upgradeCtx && (
+        <UpgradePlanModal
+          onClose={() => setUpgradeCtx(null)}
+          currentPlanId="standard"
+          contextMessage={upgradeCtx.message}
+          highlightPlanId={upgradeCtx.planId}
+        />
+      )}
+
       {/* Lightbox */}
       <AnimatePresence>
         {preview && (
           <TemplateLightbox
             t={preview}
             allTemplates={filtered}
-            onUse={() => { setPreview(null); onUse(preview); }}
+            onUse={(template) => {
+              setPreview(null);
+              if (template.isPro && !template.tryForFree) {
+                setUpgradeCtx({ message: 'Unlock this template', planId: 'pro' });
+              } else {
+                onUse(template);
+              }
+            }}
             onClose={() => setPreview(null)}
           />
         )}
@@ -587,9 +757,31 @@ function FormatIcon({ id }: { id: string }) {
   return map[id] ?? null;
 }
 
+const TIER_TINT: Record<'pro' | 'premium', { bg: string; fg: string }> = {
+  pro: { bg: '#EAF1FF', fg: '#006EFE' },
+  premium: { bg: '#EAF1FF', fg: '#006EFE' },
+};
+
+/* Mirrors each tier's own icon from the pricing modal (star for Pro, crown for Premium). */
+function TierIcon({ tier, color }: { tier: 'pro' | 'premium'; color: string }) {
+  if (tier === 'premium') {
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill={color}>
+        <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill={color}>
+      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+    </svg>
+  );
+}
+
 function PublishView({ template, onBack }: { template: Template; onBack: () => void }) {
   const router = useRouter();
   const setSelectedManuscriptId = usePresentationFlowStore((s) => s.setSelectedManuscriptId);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium' } | null>(null);
 
   const [format, setFormat] = useState('pdf');
   const [title, setTitle] = useState('The Power of Unknowing: How Embracing Ignorance');
@@ -600,8 +792,19 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
   const [copied, setCopied] = useState(false);
 
   const mockUrl = 'https://designrr.s3.amazonaws.com/klimiashvilinn_568/the-power-of-unknowing';
+  const selectedFormatMeta = PUBLISH_FORMATS.find(f => f.id === format);
+  const selectedRequiredPlan = selectedFormatMeta?.requiredPlan;
 
+  // Presentations are Pro+ (see HomePageStandard's locked hub chip) — this nudge used to skip
+  // that gate entirely, letting a Standard account reach the full flow for free. Matches the
+  // "always locked" assumption every other gate in this file makes since there's no real plan
+  // state yet (currentPlanId is hardcoded 'standard' throughout).
+  const isPresentationLocked = true;
   const handleTurnIntoPresentation = () => {
+    if (isPresentationLocked) {
+      setUpgradeCtx({ message: 'Unlock Presentations and Courses', planId: 'pro' });
+      return;
+    }
     setSelectedManuscriptId('m-1');
     router.push('/presentation/sections');
   };
@@ -624,11 +827,18 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             Edit design
           </button>
-          <button onClick={() => setPublished(true)}
+          <button
+            onClick={() => {
+              if (selectedRequiredPlan) {
+                setUpgradeCtx({ message: `Unlock ${selectedFormatMeta?.label} export`, planId: selectedRequiredPlan });
+              } else {
+                setPublished(true);
+              }
+            }}
             style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '8px 20px', cursor: 'pointer' }}
             onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
             onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
-            Publish
+            {selectedRequiredPlan ? 'Upgrade' : 'Publish'}
           </button>
         </div>
       </div>
@@ -664,21 +874,33 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
           <div className="flex-1 min-w-0">
             <h2 style={{ ...ns, fontSize: 18, fontWeight: 700, color: '#15191F', marginBottom: 20 }}>How would you like to publish?</h2>
             <div className="flex flex-col" style={{ gap: 10 }}>
-              {PUBLISH_FORMATS.map(f => (
-                <button key={f.id} onClick={() => setFormat(f.id)}
-                  className="flex items-center text-left cursor-pointer"
+              {PUBLISH_FORMATS.map(f => {
+                const isLocked = !!f.requiredPlan;
+                const tint = f.requiredPlan ? TIER_TINT[f.requiredPlan] : null;
+                return (
+                <button key={f.id}
+                  onClick={() => setFormat(f.id)}
+                  className="flex items-center text-left cursor-pointer relative"
                   style={{ gap: 14, padding: '16px 18px', borderRadius: 10, border: `2px solid ${format === f.id ? '#006EFE' : '#E0E5EB'}`, background: '#fff', transition: 'border-color 0.12s' }}>
-                  {/* radio */}
+                  {/* radio — locked formats are selectable too; the gate only kicks in at Publish */}
                   <div style={{ width: 18, height: 18, borderRadius: '50%', border: `2px solid ${format === f.id ? '#006EFE' : '#C5CDD9'}`, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     {format === f.id && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#006EFE' }}/>}
                   </div>
                   <FormatIcon id={f.id} />
-                  <div>
+                  <div className="flex-1">
                     <div style={{ ...ns, fontSize: 15, fontWeight: 600, color: '#15191F' }}>{f.label}</div>
                     <div style={{ ...ns, fontSize: 13, color: '#8596AD' }}>{f.sub}</div>
                   </div>
+                  {isLocked && tint && (
+                    <div className="flex items-center justify-center" style={{ width: 26, height: 26, borderRadius: '50%', background: tint.bg, flexShrink: 0 }}>
+                      <Tooltip label={`Requires ${f.requiredPlan === 'pro' ? 'Pro' : 'Premium'}`} position="top">
+                        <TierIcon tier={f.requiredPlan!} color={tint.fg} />
+                      </Tooltip>
+                    </div>
+                  )}
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -761,7 +983,14 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
                 <div style={{ width: '60%', height: 2.5, borderRadius: 2, background: 'rgba(255,255,255,0.22)' }}/>
               </div>
               <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
-                <p style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#fff', margin: 0 }}>Turn into Presentation</p>
+                <div className="flex items-center" style={{ gap: 8 }}>
+                  <p style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#fff', margin: 0 }}>Turn into Presentation</p>
+                  {isPresentationLocked && (
+                    <span style={{ ...ns, fontSize: 10, fontWeight: 700, letterSpacing: 0.3, color: '#fff', background: 'rgba(255,255,255,0.18)', border: '1px solid rgba(255,255,255,0.3)', borderRadius: 999, padding: '2px 8px' }}>
+                      PRO
+                    </span>
+                  )}
+                </div>
                 <p style={{ ...ns, fontSize: 12, color: 'rgba(255,255,255,0.6)', margin: 0, lineHeight: 1.45 }}>
                   Repurpose your content as a polished slide deck in minutes
                 </p>
@@ -797,25 +1026,49 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
             <div>
               <p style={{ ...ns, fontSize: 15, fontWeight: 700, color: '#15191F', marginBottom: 10 }}>Promote your eBook</p>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                {[
+                {([
                   { icon: '🌐', label: 'Create landing page' },
-                  { icon: '📦', label: 'Create 3d covers & Mockups' },
+                  { icon: '📦', label: 'Create 3d covers & Mockups', requiredPlan: 'pro' as const },
                   { icon: '📱', label: 'Generate QR code' },
                   { icon: '✉️', label: 'Share with e-mail' },
-                ].map(a => (
+                ]).map(a => {
+                  const isLocked = !!a.requiredPlan;
+                  const tint = a.requiredPlan ? TIER_TINT[a.requiredPlan] : null;
+                  return (
                   <button key={a.label}
+                    onClick={() => {
+                      if (isLocked && a.requiredPlan) setUpgradeCtx({ message: `Unlock ${a.label}`, planId: a.requiredPlan });
+                    }}
+                    className="relative"
                     style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', borderRadius: 10, border: '1px solid #E0E5EB', background: '#fff', cursor: 'pointer', ...ns, fontSize: 14, fontWeight: 500, color: '#15191F' }}
                     onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
                     onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
                     <span style={{ fontSize: 18 }}>{a.icon}</span>
                     {a.label}
+                    {isLocked && tint && (
+                      <div className="flex items-center justify-center flex-shrink-0" style={{ width: 22, height: 22, borderRadius: '50%', background: tint.bg, marginLeft: 'auto' }}>
+                        <Tooltip label={`Requires ${a.requiredPlan === 'pro' ? 'Pro' : 'Premium'}`} position="top">
+                          <TierIcon tier={a.requiredPlan!} color={tint.fg} />
+                        </Tooltip>
+                      </div>
+                    )}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
         </div>
       </div>
+    )}
+
+    {upgradeCtx && (
+      <UpgradePlanModal
+        onClose={() => setUpgradeCtx(null)}
+        currentPlanId="standard"
+        contextMessage={upgradeCtx.message}
+        highlightPlanId={upgradeCtx.planId}
+      />
     )}
     </div>
   );

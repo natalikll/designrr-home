@@ -2,6 +2,9 @@ export interface MockSection {
   id: string;
   title: string;
   wordCount: number;
+  /** When set, Wordgenie's suggested slide selection leaves this section out by default,
+   *  and this text explains why (shown inline while the section stays unchecked). */
+  wordgenieSkip?: string;
 }
 
 export interface MockManuscript {
@@ -10,6 +13,10 @@ export interface MockManuscript {
   cover?: string;
   editedAt: string;
   sections: MockSection[];
+  /** One short paragraph covering the whole suggestion — both why the kept sections belong
+   *  and why the skipped one doesn't — shown as a single blurb in the "See why" panel instead
+   *  of separately-labeled included/skipped lines. */
+  wordgenieReason?: string;
 }
 
 export type SlideLayout = 'standard' | 'centered' | 'image-right' | 'image-left' | 'two-column' | 'big-title' | 'split' | 'minimal'
@@ -90,19 +97,21 @@ export const MOCK_MANUSCRIPTS: MockManuscript[] = [
     id: 'm-1',
     title: 'Design Career Handbook',
     editedAt: '2 days ago',
+    wordgenieReason: "These three trace one continuous arc — finding direction, proving it, and getting hired. Growing Into Senior was left out; it speaks to a narrower audience than the rest of the deck.",
     sections: [
       { id: 'm1-s1', title: 'Finding Your Path', wordCount: 820 },
       { id: 'm1-s2', title: 'Building a Portfolio', wordCount: 1140 },
       { id: 'm1-s3', title: 'Landing the Interview', wordCount: 980 },
-      { id: 'm1-s4', title: 'Growing Into Senior', wordCount: 1050 },
+      { id: 'm1-s4', title: 'Growing Into Senior', wordCount: 1050, wordgenieSkip: 'Narrower audience than the rest of this deck' },
     ],
   },
   {
     id: 'm-2',
     title: 'The Remote Work Playbook',
     editedAt: '5 days ago',
+    wordgenieReason: "These two speak to the audience-facing side of remote work — communicating and staying visible. Setting Up Your Space was left out; it's practical setup detail, less compelling than the collaboration story.",
     sections: [
-      { id: 'm2-s1', title: 'Setting Up Your Space', wordCount: 700 },
+      { id: 'm2-s1', title: 'Setting Up Your Space', wordCount: 700, wordgenieSkip: 'Practical setup tips — less compelling than the collaboration story' },
       { id: 'm2-s2', title: 'Async Communication', wordCount: 1200 },
       { id: 'm2-s3', title: 'Staying Visible', wordCount: 900 },
     ],
@@ -121,10 +130,11 @@ export const MOCK_MANUSCRIPTS: MockManuscript[] = [
     id: 'm-4',
     title: 'Startup Fundraising 101',
     editedAt: '2 weeks ago',
+    wordgenieReason: "These three map the story an investor actually follows — why now, the pitch, and getting to yes. Term Sheets Explained was left out; it's dense legal detail better suited to a handout than a slide.",
     sections: [
       { id: 'm4-s1', title: 'Before You Raise', wordCount: 800 },
       { id: 'm4-s2', title: 'Crafting the Pitch', wordCount: 1150 },
-      { id: 'm4-s3', title: 'Term Sheets Explained', wordCount: 980 },
+      { id: 'm4-s3', title: 'Term Sheets Explained', wordCount: 980, wordgenieSkip: 'Dense legal detail — better as a handout than a slide' },
       { id: 'm4-s4', title: 'Closing the Round', wordCount: 700 },
     ],
   },
@@ -162,11 +172,12 @@ export const MOCK_MANUSCRIPTS: MockManuscript[] = [
     id: 'm-8',
     title: 'The First 90 Days',
     editedAt: '2 months ago',
+    wordgenieReason: "These three stay inside the first-90-days window, in the order a new hire actually lives it. Setting Up for Year Two was left out; that's longer-range planning, less essential to a first-90-days story.",
     sections: [
       { id: 'm8-s1', title: 'Your First Week', wordCount: 600 },
       { id: 'm8-s2', title: 'Building Trust', wordCount: 900 },
       { id: 'm8-s3', title: 'Early Wins', wordCount: 850 },
-      { id: 'm8-s4', title: 'Setting Up for Year Two', wordCount: 700 },
+      { id: 'm8-s4', title: 'Setting Up for Year Two', wordCount: 700, wordgenieSkip: 'Long-range planning — less essential for a first-90-days story' },
     ],
   },
   // Below: manuscript entries for the actual eBook projects in /projects, keyed by that
@@ -187,10 +198,11 @@ export const MOCK_MANUSCRIPTS: MockManuscript[] = [
     id: '2',
     title: 'The Blueprint Builder: A Step-by-Step Guide to Your First Product',
     editedAt: 'June 29, 2026',
+    wordgenieReason: "These three cover the build itself, from problem to shipped product. Testing With Real Users was left out; it overlaps with Sketching the Blueprint.",
     sections: [
       { id: 'eb2-s1', title: 'Starting With the Problem', wordCount: 810 },
       { id: 'eb2-s2', title: 'Sketching the Blueprint', wordCount: 990 },
-      { id: 'eb2-s3', title: 'Testing With Real Users', wordCount: 860 },
+      { id: 'eb2-s3', title: 'Testing With Real Users', wordCount: 860, wordgenieSkip: "Overlaps with 'Sketching the Blueprint'" },
       { id: 'eb2-s4', title: 'Shipping v1', wordCount: 720 },
     ],
   },
@@ -397,6 +409,24 @@ export const SAVED_PRESENTATIONS: Record<string, SavedPresentation> = {
   },
 };
 
+/** A slide's worth of bullets covers roughly this many source words before it's split —
+ *  keeps a 1,200-word section from collapsing into the same single slide as a 200-word one.
+ *  Shared by the generator and the section-picker's live slide count so the two never disagree. */
+const WORDS_PER_SLIDE = 350;
+
+export function estimateSlidesForSection(wordCount: number): number {
+  return Math.max(1, Math.ceil(wordCount / WORDS_PER_SLIDE));
+}
+
+export function estimateSlideCount(manuscriptId: string, sectionIds: string[]): number {
+  const manuscript = MOCK_MANUSCRIPTS.find((m) => m.id === manuscriptId);
+  if (!manuscript) return 0;
+  const contentSlides = manuscript.sections
+    .filter((s) => sectionIds.includes(s.id))
+    .reduce((sum, s) => sum + estimateSlidesForSection(s.wordCount), 0);
+  return contentSlides + 2; // title + closing
+}
+
 export function getMockSlidesForManuscript(manuscriptId: string, sectionIds: string[]): MockSlide[] {
   const manuscript = MOCK_MANUSCRIPTS.find((m) => m.id === manuscriptId);
   if (!manuscript) return [];
@@ -406,24 +436,31 @@ export function getMockSlidesForManuscript(manuscriptId: string, sectionIds: str
     { id: 'slide-title', type: 'headline', title: manuscript.title, points: [], notes: 'Generated from your manuscript', layout: 'centered' },
   ];
 
-  sections.forEach((section, i) => {
-    slides.push({
-      id: `${section.id}-content`,
-      type: 'content',
-      title: section.title,
-      points: [
-        'Key takeaway from this section',
-        'Supporting detail drawn from your chapter',
-        'A point worth remembering',
-      ],
-      // 'image-left' was here for layout variety, but these slides never carry an imageUrl —
-      // ImageZone falls back to a plain gray placeholder that ignores the selected theme
-      // entirely, so a dark/colorful theme gets one incongruous light-gray slide. 'two-column'
-      // gives the same visual variety without depending on image content. Same reasoning for
-      // the hardcoded bgColor/textColorOverride below — a theme-agnostic near-black slide
-      // looks fine against a dark theme (coincidentally) and broken against a light one.
-      layout: i % 3 === 2 ? 'two-column' : 'standard',
-    });
+  const contentPoints = [
+    ['Key takeaway from this section', 'Supporting detail drawn from your chapter', 'A point worth remembering'],
+    ['A second angle on the same idea', 'Evidence or example from your chapter', 'Why it matters to your reader'],
+    ['One more supporting detail', 'A quote or stat worth surfacing', 'How this connects to the next section'],
+  ];
+
+  let slideIndex = 0;
+  sections.forEach((section) => {
+    const count = estimateSlidesForSection(section.wordCount);
+    for (let part = 0; part < count; part++) {
+      slides.push({
+        id: `${section.id}-content-${part}`,
+        type: 'content',
+        title: section.title,
+        points: contentPoints[part % contentPoints.length],
+        // 'image-left' was here for layout variety, but these slides never carry an imageUrl —
+        // ImageZone falls back to a plain gray placeholder that ignores the selected theme
+        // entirely, so a dark/colorful theme gets one incongruous light-gray slide. 'two-column'
+        // gives the same visual variety without depending on image content. Same reasoning for
+        // the hardcoded bgColor/textColorOverride below — a theme-agnostic near-black slide
+        // looks fine against a dark theme (coincidentally) and broken against a light one.
+        layout: slideIndex % 3 === 2 ? 'two-column' : 'standard',
+      });
+      slideIndex++;
+    }
   });
 
   slides.push({ id: 'slide-closing', type: 'headline', title: 'Thank you', points: ['Questions & discussion'], layout: 'centered' });
