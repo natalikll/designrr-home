@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useFlowStore } from '@/stores/flowStore';
 import { createPortal } from 'react-dom';
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { UpgradePlanModal } from '../account/MyAccountView';
 
 export const SIDEBAR_WIDTH = 240;
 
@@ -373,6 +374,7 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
 
   const [activePopup, setActivePopup] = useState<PopupType>(null);
   const [popupAnchor, setPopupAnchor] = useState({ top: 0, right: 0 });
+  const [showUpgrade, setShowUpgrade] = useState(false);
 
   const projectsRef = useRef<HTMLButtonElement>(null);
   const mediaRef = useRef<HTMLButtonElement>(null);
@@ -568,6 +570,7 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                   {/* Upgrades */}
                   <button
                     style={bottomItemStyle}
+                    onClick={() => setShowUpgrade(true)}
                     onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
                     onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                   >
@@ -640,6 +643,7 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
         </div>,
         document.body
       )}
+      {showUpgrade && <UpgradePlanModal onClose={() => setShowUpgrade(false)} currentPlanId="standard" />}
     </>
   );
 }

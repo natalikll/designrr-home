@@ -44,6 +44,12 @@ interface FlowActions {
   resetFlow: () => void;
   homeKey: number;
   bumpHomeKey: () => void;
+  manuscriptGenerationsUsed: number;
+  incrementManuscriptGenerations: () => void;
+  // Separate pool from manuscripts — presentations are a genuinely different, more premium
+  // output, so they get their own 5 free generations rather than sharing the book count.
+  presentationGenerationsUsed: number;
+  incrementPresentationGenerations: () => void;
   // Last route the sidebar saw itself mounted on — lets a freshly-mounted AppSidebar (after a
   // full route change away from '/') detect that the user just left the home page, since a new
   // mount has no memory of the previous route otherwise.
@@ -54,6 +60,8 @@ interface FlowActions {
 type FlowStore = FlowState & FlowActions;
 
 const SIDEBAR_KEY = 'dsgn_sidebar_open';
+export const MANUSCRIPT_GENERATION_LIMIT = 5;
+export const PRESENTATION_GENERATION_LIMIT = 5;
 
 function readSidebarPref(): boolean {
   if (typeof window === 'undefined') return true;
@@ -261,4 +269,18 @@ export const useFlowStore = create<FlowStore>((set) => ({
   resetFlow: () => set((s) => ({ ...initialState, sidebarOpen: s.sidebarOpen })),
 
   bumpHomeKey: () => set((s) => ({ homeKey: s.homeKey + 1 })),
+
+  manuscriptGenerationsUsed: 0,
+  incrementManuscriptGenerations: () =>
+    set((s) => ({ manuscriptGenerationsUsed: Math.min(s.manuscriptGenerationsUsed + 1, MANUSCRIPT_GENERATION_LIMIT) })),
+
+  presentationGenerationsUsed: 0,
+  incrementPresentationGenerations: () =>
+    set((s) => ({ presentationGenerationsUsed: Math.min(s.presentationGenerationsUsed + 1, PRESENTATION_GENERATION_LIMIT) })),
 }));
+
+// Dev-only console access, e.g. `useFlowStore.setState({ manuscriptGenerationsUsed: 5 })`
+// to re-trigger the exhausted-generations modal without actually generating 5 books.
+if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+  (window as unknown as { useFlowStore: typeof useFlowStore }).useFlowStore = useFlowStore;
+}

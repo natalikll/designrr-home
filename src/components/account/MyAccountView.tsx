@@ -1,9 +1,11 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, Fragment } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useRouter } from 'next/navigation';
 import { useFlowStore } from '@/stores/flowStore';
 import { createPortal } from 'react-dom';
+import { Tooltip } from '@/components/ui/Tooltip';
 
 type Tab = 'profile' | 'password' | 'preferences' | 'billing';
 
@@ -574,6 +576,9 @@ function ProfileTab() {
               <Field label="First name" value={firstName} onChange={setFirstName} />
               <Field label="Last name" value={lastName} onChange={setLastName} />
             </div>
+            <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 12, fontWeight: 400, color: '#8596AD', lineHeight: '16px', marginTop: 10 }}>
+              Use your real name for best results.
+            </p>
           </div>
         </SectionCard>
 
@@ -595,6 +600,9 @@ function ProfileTab() {
           />
           <div className="px-6 py-6">
             <Field label="Email" value={email} onChange={setEmail} type="email" />
+            <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 12, fontWeight: 400, color: '#8596AD', lineHeight: '16px', marginTop: 10 }}>
+              Make sure you have access to this inbox.
+            </p>
           </div>
         </SectionCard>
 
@@ -624,6 +632,9 @@ function ProfileTab() {
                   {bio.length} / 300
                 </span>
               </div>
+              <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 12, fontWeight: 400, color: '#8596AD', lineHeight: '16px', marginTop: 4 }}>
+                Keep it short — a sentence or two works best.
+              </p>
             </div>
           </div>
         </SectionCard>
@@ -933,7 +944,7 @@ const PLANS = [
         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="#006EFE" />
       </svg>
     ),
-    features: ['Standard Templates', 'Unlimited PDF eBooks', 'Page Numbering & Table Of Contents Generator'],
+    features: ['5 Wordgenie Manuscript Generations/month', 'Standard Templates', 'Unlimited PDF eBooks', 'Page Numbering & Table Of Contents Generator'],
   },
   {
     id: 'pro',
@@ -945,7 +956,7 @@ const PLANS = [
         <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
       </svg>
     ),
-    features: ['Dynamic Templates', 'Publish to Kindle', '3D Cover Creator'],
+    features: ['10 Wordgenie Manuscript Generations/month', 'Create Presentations and Courses', 'Pro Templates', 'Publish to Kindle', '3D Cover Creator'],
   },
   {
     id: 'premium',
@@ -953,11 +964,11 @@ const PLANS = [
     price: '$297',
     period: '/year',
     icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-        <path d="M2 20h20M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12" stroke="#006EFE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="#006EFE">
+        <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" />
       </svg>
     ),
-    features: ['Transcribe videos and audio', 'Create Audiobooks'],
+    features: ['Unlimited Wordgenie Manuscript Generations', 'Publish Print Books', 'Transcribe Videos and Audio', 'Create Audiobooks'],
   },
   {
     id: 'agency',
@@ -965,22 +976,115 @@ const PLANS = [
     price: '$497',
     period: '/year',
     icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-        <rect x="2" y="7" width="20" height="14" rx="2" stroke="#006EFE" strokeWidth="2" />
-        <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" stroke="#006EFE" strokeWidth="2" />
-        <line x1="12" y1="12" x2="12" y2="16" stroke="#006EFE" strokeWidth="2" strokeLinecap="round" />
-        <line x1="10" y1="14" x2="14" y2="14" stroke="#006EFE" strokeWidth="2" strokeLinecap="round" />
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="#006EFE">
+        <path fillRule="evenodd" d="M8 3H16V9H8V3Z M9.5 4.5H14.5V7.5H9.5V4.5Z" />
+        <rect x="2" y="8" width="20" height="12" rx="2" />
       </svg>
     ),
-    features: ['Custom Template Creator', 'Collaborative eBooks with Client Interface', 'Accounts for agency members'],
+    features: ['Custom Template Creator', 'Collaborative eBooks with Client Interface', 'Accounts for Agency Members'],
   },
 ];
 
 const PLAN_ORDER = PLANS.map((p) => p.id);
 
-export function UpgradePlanModal({ onClose, currentPlanId = 'premium' }: { onClose: () => void; currentPlanId?: string }) {
+/** A cell is either a literal value shown as text ("100", "Unlimited", "100,000 Credits"),
+ *  or a boolean rendered as a checkmark / dash. Order matches PLAN_ORDER: standard, pro, premium, agency. */
+type ComparisonCell = string | boolean;
+interface ComparisonRow { label: string; tooltip?: string; values: [ComparisonCell, ComparisonCell, ComparisonCell, ComparisonCell]; }
+interface ComparisonSection { header?: string; rows: ComparisonRow[]; }
+
+const COMPARISON_SECTIONS: ComparisonSection[] = [
+  {
+    rows: [
+      { label: 'Standard Templates', values: ['100', '200', '300', '300'] },
+      { label: 'Dynamic Templates', tooltip: 'Templates that adapt their layout automatically as you add content, instead of a fixed structure.', values: [false, true, true, true] },
+    ],
+  },
+  {
+    header: 'Presentations',
+    rows: [
+      { label: 'Create Presentations and Courses', tooltip: 'Turn a manuscript into a narrated presentation, video course, or webinar.', values: [false, true, true, true] },
+    ],
+  },
+  {
+    header: 'Publish',
+    rows: [
+      { label: 'PDF eBooks', values: ['Unlimited', 'Unlimited', 'Unlimited', 'Unlimited'] },
+      { label: 'Flipbooks', values: ['Unlimited', 'Unlimited', 'Unlimited', 'Unlimited'] },
+      { label: 'PDF to Flipbook', tooltip: '"Active" means flipbooks currently published — replace one to publish another once you hit the limit.', values: ['10 Active', 'Unlimited', 'Unlimited', 'Unlimited'] },
+      { label: 'Kindle, ePub & iBooks', values: [false, 'Unlimited', 'Unlimited', 'Unlimited'] },
+      { label: 'Print Books', values: [false, false, true, true] },
+      { label: 'AudioBooks', tooltip: 'Credits are spent per minute of audio generated for your book.', values: [false, false, '100,000 Credits', '250,000 Credits'] },
+      { label: 'Live eBooks', tooltip: 'A published eBook that updates automatically whenever you edit the source document.', values: [false, true, true, true] },
+    ],
+  },
+  {
+    header: 'Imports',
+    rows: [
+      { label: 'PDF (Text and Image extractor)', values: [false, true, true, true] },
+      { label: 'Web, MS Word, Google Docs, Text', values: [true, true, true, true] },
+      { label: 'Video or Audio', tooltip: '"/m" is hours of video or audio you can import and transcribe each month.', values: [false, false, '4 hours /m', '25 hours /m'] },
+    ],
+  },
+  {
+    header: 'Tools',
+    rows: [
+      { label: 'eBook 3D Cover Creator', values: [false, true, true, true] },
+      { label: 'eBook Mockup Creator', values: [false, true, true, true] },
+      { label: 'Custom Template Creator', values: [false, false, false, true] },
+      { label: 'Collaborative eBooks with Client Interface', tooltip: 'Invite clients into a dedicated view to leave feedback directly on the eBook.', values: [false, false, false, true] },
+    ],
+  },
+  {
+    header: 'Wordgenie Tools',
+    rows: [
+      { label: 'Wordgenie Book Generator', values: [true, true, true, true] },
+      { label: 'Wordgenie v4 Manuscript Generations', tooltip: 'Generate full manuscripts with the improved Wordgenie v4 experience.', values: ['5 /mo', '10 /mo', 'Unlimited', 'Unlimited'] },
+      { label: 'Wordgenie Prompt', tooltip: 'Generate a manuscript from a single instruction, without the guided step-by-step flow.', values: [false, true, true, true] },
+      { label: 'Wordgenie Chat', tooltip: 'Refine and expand your manuscript through a back-and-forth conversation with Wordgenie.', values: [false, true, true, true] },
+      { label: 'Wordgenie Edit', tooltip: 'Ask Wordgenie to rewrite, tighten, or restyle existing chapters in place.', values: [false, true, true, true] },
+    ],
+  },
+];
+
+export function UpgradePlanModal({
+  onClose,
+  currentPlanId = 'premium',
+  contextMessage,
+  highlightPlanId,
+}: {
+  onClose: () => void;
+  currentPlanId?: string;
+  /** Shown as a banner above the plan cards — e.g. "Kindle export requires Pro or higher." */
+  contextMessage?: string;
+  /** Plan to visually highlight as the one satisfying contextMessage. Defaults to the Premium "Recommended" plan when unset. */
+  highlightPlanId?: string;
+}) {
   const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
   const currentRank = PLAN_ORDER.indexOf(currentPlanId);
+  const router = useRouter();
+  const [compareOpen, setCompareOpen] = useState(false);
+  // The expand/collapse wrapper clips with overflow:hidden while animating so the height:0→auto
+  // transition doesn't flash content early. That same overflow:hidden would also break the table's
+  // sticky header (it'd stick relative to this clipped box instead of the modal's real scroll
+  // container), so it's lifted to 'visible' once the open animation actually finishes.
+  const [compareSettled, setCompareSettled] = useState(false);
+  // Collapsed by section index — every section starts open since the user already opted
+  // into "Compare plans" explicitly; collapsing is theirs to do, not a default we impose.
+  const [collapsedSections, setCollapsedSections] = useState<Set<number>>(new Set());
+
+  const handleUpgrade = (planId: string) => {
+    if (planId === 'pro' || planId === 'premium') {
+      router.push(`/checkout?plan=${planId}`);
+    }
+  };
+
+  const effectiveHighlight = highlightPlanId ?? 'premium';
+  const highlightRank = PLAN_ORDER.indexOf(effectiveHighlight);
+  // Every tier at or above the one that unlocks the triggering feature also includes it —
+  // surface all of them (not just the cheapest) so the user sees their real set of options.
+  const qualifyingIds = contextMessage ? PLAN_ORDER.slice(highlightRank) : [];
+  const highlightPlanData = PLANS.find((p) => p.id === effectiveHighlight);
 
   const modal = (
     <div
@@ -994,7 +1098,7 @@ export function UpgradePlanModal({ onClose, currentPlanId = 'premium' }: { onClo
         exit={{ opacity: 0, scale: 0.96, y: 10 }}
         transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
         className="bg-white relative"
-        style={{ width: 900, borderRadius: 16, padding: '32px 32px 28px', boxShadow: '0px 4px 40px 0px rgba(0,0,0,0.12)', maxHeight: '90vh', overflowY: 'auto' }}
+        style={{ width: 980, borderRadius: 16, padding: '0 32px 28px', boxShadow: '0px 4px 40px 0px rgba(0,0,0,0.12)', maxHeight: '90vh', overflowY: 'auto' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Close */}
@@ -1008,41 +1112,85 @@ export function UpgradePlanModal({ onClose, currentPlanId = 'premium' }: { onClo
           </svg>
         </button>
 
-        {/* Header */}
-        <div style={{ marginBottom: 24 }}>
+        {/* Header — paddingTop lives here (not on the scroll container) so the comparison
+            table's sticky header can stick flush at true top:0 with no gap above it. */}
+        <div style={{ paddingTop: 32, marginBottom: contextMessage ? 12 : 24 }}>
           <p style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#001633', lineHeight: '26px' }}>Upgrade your account</p>
         </div>
+
+        {/* Context banner — why this modal opened, when triggered by a locked feature.
+            Leads with what the user gains (not "requires X"), and names every qualifying
+            tier so a feature available on Pro+ doesn't read as if only one plan works. */}
+        {contextMessage && (
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: 3,
+            background: '#EEF5FF', border: '1px solid #B8D4FF', borderRadius: 8,
+            padding: '10px 14px', marginBottom: 20,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+                {effectiveHighlight === 'premium' ? (
+                  <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" fill="#006EFE" />
+                ) : (
+                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="#006EFE" />
+                )}
+              </svg>
+              <span style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: '#001633', lineHeight: '20px' }}>
+                {contextMessage}
+                {highlightPlanData && (
+                  <span style={{ fontWeight: 400 }}> with {highlightPlanData.name} or higher.</span>
+                )}
+              </span>
+            </div>
+            {qualifyingIds.length > 1 && (() => {
+              const names = qualifyingIds.map((id) => PLANS.find((p) => p.id === id)?.name ?? '');
+              const list = names.length === 2
+                ? names.join(' and ')
+                : `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+              return (
+                <p style={{ ...ns, fontSize: 12, fontWeight: 500, color: '#3D5A80', margin: 0, marginLeft: 24 }}>
+                  {list} all include this — compare the rest below to see which fits.
+                </p>
+              );
+            })()}
+          </div>
+        )}
 
         {/* Plan cards */}
         <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
           {PLANS.map((plan) => {
             const isCurrent = plan.id === currentPlanId;
             const isDowngrade = !isCurrent && PLAN_ORDER.indexOf(plan.id) < currentRank;
+            const isHighlighted = !isCurrent && plan.id === effectiveHighlight;
             return (
             <div
               key={plan.id}
               style={{
                 borderRadius: 12,
-                border: isCurrent ? '1.5px solid #B8D4FF' : '1px solid #E0E5EB',
-                background: isCurrent ? '#EEF5FF' : '#fff',
-                padding: '20px 16px 16px',
+                border: '1px solid #E0E5EB',
+                background: '#fff',
+                boxShadow: isHighlighted ? '0 8px 24px rgba(0,110,254,0.14)' : 'none',
+                overflow: 'visible',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 0,
                 position: 'relative',
               }}
             >
-              {/* Your plan badge */}
-              {isCurrent && (
+              {/* Floating badge — sits on top of the card, not part of its internal layout, so it
+                  never affects card height or pushes siblings out of alignment. */}
+              {isHighlighted && (
                 <div style={{
-                  position: 'absolute', top: 16, right: 12,
-                  background: '#E0E5EB', borderRadius: 6,
-                  padding: '3px 10px',
-                  ...ns, fontSize: 12, fontWeight: 600, color: '#52637A', lineHeight: '16px',
+                  position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)',
+                  background: '#006EFE', borderRadius: 999, padding: '4px 14px', whiteSpace: 'nowrap',
+                  ...ns, fontSize: 11, fontWeight: 700, color: '#fff', letterSpacing: 0.3,
+                  boxShadow: '0 2px 8px rgba(0,110,254,0.3)',
                 }}>
-                  Your plan
+                  RECOMMENDED
                 </div>
               )}
+
+              <div style={{ padding: '20px 16px 16px', flex: 1, display: 'flex', flexDirection: 'column' }}>
 
               {/* Icon */}
               <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#EEF5FF', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
@@ -1063,6 +1211,14 @@ export function UpgradePlanModal({ onClose, currentPlanId = 'premium' }: { onClo
 
               {/* Features */}
               <div className="flex flex-col" style={{ gap: 10, flex: 1 }}>
+                {(() => {
+                  const prevPlan = PLANS[PLAN_ORDER.indexOf(plan.id) - 1];
+                  return (
+                    <p style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: '#8596AD', marginBottom: 2 }}>
+                      {prevPlan ? `Everything in ${prevPlan.name}, plus:` : 'Features:'}
+                    </p>
+                  );
+                })()}
                 {plan.features.map((f) => (
                   <div key={f} className="flex items-start" style={{ gap: 8 }}>
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
@@ -1076,18 +1232,19 @@ export function UpgradePlanModal({ onClose, currentPlanId = 'premium' }: { onClo
               {/* CTA button */}
               <div style={{ marginTop: 20 }}>
                 {isCurrent ? (
-                  <div style={{ height: 40, borderRadius: 8, background: '#C8DEFF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <span style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#6FA8FF', lineHeight: '18px' }}>Your plan</span>
-                  </div>
+                  <button disabled style={{ width: '100%', height: 40, borderRadius: 8, border: 'none', background: '#F0F2F5', cursor: 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <span style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#8596AD', lineHeight: '18px' }}>Current plan</span>
+                  </button>
                 ) : isDowngrade ? (
                   <button style={{ width: '100%', height: 40, borderRadius: 8, border: '1.5px solid #006EFE', background: '#fff', cursor: 'pointer', ...ns, fontSize: 14, fontWeight: 600, color: '#006EFE', lineHeight: '18px' }}>
                     Change Plan
                   </button>
                 ) : (
-                  <button style={{ width: '100%', height: 40, borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer', ...ns, fontSize: 14, fontWeight: 600, color: '#fff', lineHeight: '18px' }}>
+                  <button onClick={() => handleUpgrade(plan.id)} style={{ width: '100%', height: 40, borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer', ...ns, fontSize: 14, fontWeight: 600, color: '#fff', lineHeight: '18px' }}>
                     Upgrade
                   </button>
                 )}
+              </div>
               </div>
             </div>
             );
@@ -1096,13 +1253,158 @@ export function UpgradePlanModal({ onClose, currentPlanId = 'premium' }: { onClo
 
         {/* Compare plans link */}
         <div className="flex items-center justify-center" style={{ marginTop: 24, gap: 6 }}>
-          <button style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            onClick={() => setCompareOpen((v) => { const next = !v; if (!next) setCompareSettled(false); return next; })}
+            style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+          >
             Compare plans and features
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: compareOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>
               <polyline points="6 9 12 15 18 9" />
             </svg>
           </button>
         </div>
+
+        {/* Inline comparison table */}
+        <AnimatePresence>
+          {compareOpen && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2 }}
+              onAnimationComplete={() => { if (compareOpen) setCompareSettled(true); }}
+              style={{ overflow: compareSettled ? 'visible' : 'hidden' }}
+            >
+              <div style={{ marginTop: 24 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ position: 'sticky', top: 0, zIndex: 2, padding: '16px', background: '#fff', verticalAlign: 'bottom', boxShadow: '0 1px 0 #E0E5EB' }} />
+                      {PLANS.map((p) => {
+                        const isHighlighted = p.id === effectiveHighlight;
+                        return (
+                          <th key={p.id} style={{
+                            position: 'sticky', top: 0, zIndex: 2,
+                            padding: '16px 12px', minWidth: 120, verticalAlign: 'bottom',
+                            background: isHighlighted ? '#F0F7FF' : '#fff',
+                            boxShadow: '0 1px 0 #E0E5EB',
+                          }}>
+                            <div className="flex flex-col items-center" style={{ gap: 8 }}>
+                              <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#EEF5FF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                {p.icon}
+                              </div>
+                              <span style={{ ...ns, fontSize: 15, fontWeight: 700, color: isHighlighted ? '#006EFE' : '#52637A' }}>{p.name}</span>
+                            </div>
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {COMPARISON_SECTIONS.map((section, si) => {
+                      const isCollapsed = collapsedSections.has(si);
+                      return (
+                      <Fragment key={si}>
+                        {section.header && (
+                          <tr>
+                            <td style={{ paddingTop: si === 0 ? 8 : 32, paddingBottom: 12 }}>
+                              <button
+                                onClick={() => setCollapsedSections((prev) => {
+                                  const next = new Set(prev);
+                                  next.has(si) ? next.delete(si) : next.add(si);
+                                  return next;
+                                })}
+                                className="flex items-center cursor-pointer"
+                                style={{ gap: 8, background: 'none', border: 'none', padding: 0 }}
+                              >
+                                <span style={{ ...ns, fontSize: 22, fontWeight: 700, color: '#15191F' }}>{section.header}</span>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8596AD" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: isCollapsed ? 'none' : 'rotate(180deg)', transition: 'transform 0.15s' }}>
+                                  <polyline points="6 9 12 15 18 9" />
+                                </svg>
+                              </button>
+                            </td>
+                            {/* Empty cells (not colSpan) so the highlighted column's tint keeps
+                                running underneath section headers instead of breaking at each one. */}
+                            {PLANS.map((p) => (
+                              <td key={p.id} style={{ background: p.id === effectiveHighlight ? '#F0F7FF' : 'transparent' }} />
+                            ))}
+                          </tr>
+                        )}
+                        {!isCollapsed && section.rows.map((row) => (
+                          <tr
+                            key={row.label}
+                            className="transition-colors hover:bg-[#F3F7FD]"
+                          >
+                            <td style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#3D4A5C', padding: '14px 16px', borderTop: '1px solid #E0E5EB' }}>
+                              <div className="flex items-center" style={{ gap: 6 }}>
+                                {row.label}
+                                {row.tooltip && (
+                                  <Tooltip label={row.tooltip} maxWidth={220}>
+                                    <span className="inline-flex items-center justify-center" style={{ width: 14, height: 14, borderRadius: '50%', border: '1.3px solid #A7B4C6', color: '#8596AD', fontSize: 9.5, fontWeight: 700, cursor: 'default', lineHeight: 1 }}>
+                                      i
+                                    </span>
+                                  </Tooltip>
+                                )}
+                              </div>
+                            </td>
+                            {row.values.map((cell, ci) => {
+                              const isHighlighted = PLANS[ci].id === effectiveHighlight;
+                              return (
+                                <td key={ci} style={{
+                                  textAlign: 'center', padding: '14px 12px',
+                                  background: isHighlighted ? '#F0F7FF' : 'transparent',
+                                  borderTop: '1px solid #E0E5EB',
+                                }}>
+                                  {typeof cell === 'string' ? (
+                                    <span style={{ ...ns, fontSize: 14, color: '#3D4A5C' }}>{cell}</span>
+                                  ) : cell ? (
+                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ display: 'inline-block' }}>
+                                      <path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                  ) : (
+                                    <span style={{ color: '#C5CDD9' }}>–</span>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </Fragment>
+                      );
+                    })}
+
+                    {/* Bottom CTA row — repeats the plan-card actions so comparing every row
+                        doesn't force a scroll back up to the cards to act on the decision. */}
+                    <tr>
+                      <td style={{ paddingTop: 28 }} />
+                      {PLANS.map((plan) => {
+                        const isCurrent = plan.id === currentPlanId;
+                        const isDowngrade = !isCurrent && PLAN_ORDER.indexOf(plan.id) < currentRank;
+                        return (
+                          <td key={plan.id} style={{ padding: '28px 12px 24px' }}>
+                            {isCurrent ? (
+                              <button disabled style={{ width: '100%', height: 38, borderRadius: 8, border: 'none', background: '#F0F2F5', cursor: 'not-allowed', ...ns, fontSize: 13.5, fontWeight: 600, color: '#8596AD' }}>
+                                Current plan
+                              </button>
+                            ) : isDowngrade ? (
+                              <button style={{ width: '100%', height: 38, borderRadius: 8, border: '1.5px solid #006EFE', background: '#fff', cursor: 'pointer', ...ns, fontSize: 13.5, fontWeight: 600, color: '#006EFE' }}>
+                                Change Plan
+                              </button>
+                            ) : (
+                              <button onClick={() => handleUpgrade(plan.id)} style={{ width: '100%', height: 38, borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer', ...ns, fontSize: 13.5, fontWeight: 600, color: '#fff' }}>
+                                Upgrade
+                              </button>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </motion.div>
     </div>
   );
@@ -1172,6 +1474,64 @@ function RevokeAccessModal({ onClose, onConfirm }: { onClose: () => void; onConf
   return typeof window !== 'undefined' ? createPortal(modal, document.body) : null;
 }
 
+function DeleteAccountModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: () => void }) {
+  const modal = (
+    <div
+      className="fixed inset-0 flex items-center justify-center"
+      style={{ background: 'rgba(20,25,31,0.40)', zIndex: 9999 }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 10 }}
+        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+        className="bg-white relative"
+        style={{ width: 484, borderRadius: 12, padding: 32, boxShadow: '0px 2px 20px 0px rgba(0,0,0,0.08)' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Close */}
+        <button
+          onClick={onClose}
+          className="absolute flex items-center justify-center hover:opacity-60 transition-opacity cursor-pointer"
+          style={{ top: 16, right: 16, width: 24, height: 24, background: 'none', border: 'none', padding: 0 }}
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M14 4L4 14M4 4l10 10" stroke="#29323D" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+        </button>
+
+        <div className="flex flex-col" style={{ gap: 32 }}>
+          <div className="flex flex-col" style={{ gap: 12 }}>
+            <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 20, fontWeight: 600, color: '#15191F', lineHeight: '24px' }}>
+              Delete your account?
+            </p>
+            <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 16, fontWeight: 400, color: '#52637A', lineHeight: '20px' }}>
+              This permanently deletes your account, projects, and files. This action can&apos;t be undone.
+            </p>
+          </div>
+          <div className="flex items-center justify-end" style={{ gap: 6 }}>
+            <button
+              onClick={onClose}
+              style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 600, color: '#001633', height: 38, padding: '0 20px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', cursor: 'pointer' }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => { onConfirm(); onClose(); }}
+              style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 600, color: '#fff', height: 38, padding: '0 20px', borderRadius: 8, border: 'none', background: '#D62929', cursor: 'pointer' }}
+            >
+              Delete account
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+
+  return typeof window !== 'undefined' ? createPortal(modal, document.body) : null;
+}
+
 /* ─────────────────────────────────────────────
    Tab: Password & Security
 ───────────────────────────────────────────── */
@@ -1206,9 +1566,12 @@ function DeviceIcon({ type }: { type?: string }) {
 }
 
 function PasswordTab() {
+  const router = useRouter();
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [revokeSessionId, setRevokeSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState(MOCK_SESSIONS);
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
+  const [showDeleteAccount, setShowDeleteAccount] = useState(false);
 
   const revokeSession = (id: string) => {
     setSessions((s) => s.filter((sess) => sess.id !== id));
@@ -1224,6 +1587,12 @@ function PasswordTab() {
           <RevokeAccessModal
             onClose={() => setRevokeSessionId(null)}
             onConfirm={() => revokeSession(revokeSessionId)}
+          />
+        )}
+        {showDeleteAccount && (
+          <DeleteAccountModal
+            onClose={() => setShowDeleteAccount(false)}
+            onConfirm={() => router.push('/')}
           />
         )}
       </AnimatePresence>
@@ -1246,6 +1615,32 @@ function PasswordTab() {
             >
               Change password
             </button>
+          </div>
+        </SectionCard>
+
+        {/* Two-factor authentication */}
+        <SectionCard>
+          <SectionHeader
+            title="Two-factor authentication"
+            description="Add an extra layer of security. Once enabled, you'll need a verification code in addition to your password."
+          />
+          <div className="px-6 py-5 flex items-center justify-between">
+            <div className="flex items-center" style={{ gap: 12 }}>
+              <div className="flex items-center justify-center rounded-full flex-shrink-0" style={{ width: 32, height: 32, background: '#F6F7F9' }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#667C98" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2l8 4v6c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-4z" />
+                </svg>
+              </div>
+              <div>
+                <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 600, color: '#15191F', lineHeight: '20px' }}>
+                  2FA is {twoFactorEnabled ? 'enabled' : 'disabled'}
+                </p>
+                <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 12, fontWeight: 400, color: '#667C98', lineHeight: '16px' }}>
+                  {twoFactorEnabled ? 'Your account has an extra layer of protection.' : 'We recommend enabling 2FA.'}
+                </p>
+              </div>
+            </div>
+            <Toggle value={twoFactorEnabled} onChange={() => setTwoFactorEnabled((v) => !v)} />
           </div>
         </SectionCard>
 
@@ -1291,6 +1686,22 @@ function PasswordTab() {
                 )}
               </div>
             ))}
+          </div>
+        </SectionCard>
+
+        {/* Danger zone */}
+        <SectionCard>
+          <SectionHeader
+            title="Delete account"
+            description="Permanently delete your account and all associated data. This can't be undone."
+          />
+          <div className="px-6 py-5">
+            <button
+              onClick={() => setShowDeleteAccount(true)}
+              style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 600, color: '#D62929', height: 38, padding: '0 20px', borderRadius: 8, border: '1px solid #F3D2D2', background: '#fff', cursor: 'pointer' }}
+            >
+              Delete account
+            </button>
           </div>
         </SectionCard>
       </div>
@@ -1692,13 +2103,20 @@ const INVOICES = [
 
 function BillingTab() {
   const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
-  const [showUpgrade, setShowUpgrade] = useState(false);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message?: string; planId?: string } | null>(null);
   const [buyCreditsType, setBuyCreditsType] = useState<string | null>(null);
 
   return (
     <div className="flex flex-col gap-6">
       <AnimatePresence>
-        {showUpgrade && <UpgradePlanModal onClose={() => setShowUpgrade(false)} />}
+        {upgradeCtx && (
+          <UpgradePlanModal
+            onClose={() => setUpgradeCtx(null)}
+            currentPlanId="premium"
+            contextMessage={upgradeCtx.message}
+            highlightPlanId={upgradeCtx.planId}
+          />
+        )}
         {buyCreditsType && <BuyCreditsModal creditType={buyCreditsType} onClose={() => setBuyCreditsType(null)} />}
       </AnimatePresence>
 
@@ -1708,7 +2126,7 @@ function BillingTab() {
           title="Current plan"
           description="You're on the Premium Plan"
           right={
-            <button onClick={() => setShowUpgrade(true)} style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', height: 38, padding: '0 20px', borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button onClick={() => setUpgradeCtx({})} style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', height: 38, padding: '0 20px', borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
               Manage plan
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
@@ -1772,10 +2190,20 @@ function BillingTab() {
                     )}
                   </div>
                 </div>
-                {/* Progress bar */}
+                {/* Progress bar — scaleX instead of animating width, so this only costs paint/composite, not layout */}
                 <div style={{ height: 6, borderRadius: 999, background: '#E0E5EB', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${pct}%`, borderRadius: 999, background: c.remainingColor === '#D62929' ? 'linear-gradient(90deg, #006EFE, #D62929)' : '#006EFE', transition: 'width 0.4s ease' }} />
+                  <div style={{ height: '100%', width: '100%', borderRadius: 999, background: c.remainingColor === '#D62929' ? 'linear-gradient(90deg, #006EFE, #D62929)' : '#006EFE', transform: `scaleX(${pct / 100})`, transformOrigin: 'left', transition: 'transform 0.4s ease' }} />
                 </div>
+                {/* Near-exhausted nudge — a repeat top-up isn't always the cheaper fix;
+                    surface the plan that raises this limit for good, right where it bites. */}
+                {c.remainingColor === '#D62929' && (
+                  <button
+                    onClick={() => setUpgradeCtx({ message: `Raise your ${c.label.toLowerCase()} limit with Agency Premium`, planId: 'agency' })}
+                    style={{ ...ns, fontSize: 12, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', width: 'fit-content' }}
+                  >
+                    Upgrading may cost less than buying more →
+                  </button>
+                )}
               </div>
             );
           })}
@@ -1832,7 +2260,7 @@ export function MyAccountView() {
   };
 
   return (
-    <div className="h-full w-full overflow-y-auto" style={{ background: '#F6F7F9' }}>
+    <div className="h-full w-full overflow-y-auto bg-white">
       <div className="max-w-[960px] mx-auto px-8 py-10">
 
         {/* Page header */}
