@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useFlowStore } from '@/stores/flowStore';
 import { OutlineView } from '@/components/outline/OutlineView';
 import { AppSidebar } from '@/components/sidebar/AppSidebar';
+import { AccountOverlay } from '@/components/account/AccountOverlay';
 import { getMockOutline, getMockDirections, getMockBook } from '@/lib/mockResponses';
 
 export default function OutlinePage() {
@@ -30,6 +31,7 @@ export default function OutlinePage() {
       <AppSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex-1 min-w-0 h-full relative">
         <OutlineView onGenerateBook={handleGenerateBook} />
+        <AccountOverlay />
       </div>
     </div>
   );

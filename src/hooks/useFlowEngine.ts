@@ -150,6 +150,7 @@ export function useFlowEngine() {
     const outline = useFlowStore.getState().generatedOutline;
     if (!outline) return;
 
+    useFlowStore.getState().incrementManuscriptGenerations();
     setStep(7);
     setTransitioning(true, 'book');
 

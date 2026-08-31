@@ -1,11 +1,13 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useId } from 'react';
 import type { ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useFlowEngine } from '@/hooks/useFlowEngine';
+import { useFlowStore, MANUSCRIPT_GENERATION_LIMIT, PRESENTATION_GENERATION_LIMIT } from '@/stores/flowStore';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { SettingsPillRow } from '@/components/presentation/SettingsPillRow';
+import { UpgradePlanModal } from '@/components/account/MyAccountView';
 
 interface WordgenieInputProps {
   onSubmit?: (value: string) => void;
@@ -16,6 +18,189 @@ interface WordgenieInputProps {
   selectedMode?: { label: string; icon: ReactNode; onRemove: () => void };
   topRow?: ReactNode;
   borderless?: boolean;
+  /** Presentations get their own free-generation pool, separate from manuscripts — a
+   *  genuinely different, more premium output, not a shared count. Only meaningful
+   *  alongside a custom `onSubmit`; book flow (no onSubmit) always uses the book pool. */
+  presentationMode?: boolean;
+}
+
+/* Copy differences between the book and presentation free-generation gates — everything
+   else (layout, buttons, dismiss behavior) is identical, so this is the only thing that
+   varies by flowKind rather than duplicating all three modals. Standard Wordgenie is a
+   book-only fallback (no presentation equivalent exists), so presentation copy never
+   mentions it. */
+const FLOW_COPY = {
+  book: {
+    noun: 'book',
+    introHeadline: (limit: number) => `You've got ${limit} free book generations.`,
+    introBody: (limit: number) => `New Wordgenie writes a full manuscript from your idea — ${limit} free books, no strings attached. Need more later?`,
+    proBenefitIntro: 'Upgrade your plan to keep creating books with Wordgenie — compare Pro, Premium, and Agency Premium below.',
+    showStandardFallback: true,
+  },
+  presentation: {
+    noun: 'presentation',
+    introHeadline: (limit: number) => `You've got ${limit} free presentation generations.`,
+    introBody: (limit: number) => `New Wordgenie turns your idea into a full slide deck — ${limit} free presentations, no strings attached. Need more later?`,
+    proBenefitIntro: 'Upgrade your plan to keep creating presentations with Wordgenie — compare Pro, Premium, and Agency Premium below.',
+    showStandardFallback: false,
+  },
+} as const;
+type FlowKind = keyof typeof FLOW_COPY;
+
+/* Entry-point choice shown above the input for the book-creation mode: v4 is the
+   flow this whole app already is, Standard Wordgenie is the older multi-step
+   generator (sub-niches → title → tone → doc) that standard-tier users fall back
+   to once they've used their 5 free v4 generations. Only the toggle ships here —
+   the Standard flow itself is a stub pending a real spec. */
+export function WordgenieModeToggle() {
+  const [showStub, setShowStub] = useState(false);
+  const sparkleGradientId = useId();
+
+  // The parent wraps topRow in overflow:hidden (to keep its rounded top corners),
+  // so an absolutely-positioned popover here would get clipped — swap the row's
+  // content in place instead.
+  if (showStub) {
+    return (
+      <div className="flex items-center justify-between" style={{ padding: '10px 16px', gap: 12 }}>
+        <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 13, color: '#52637A' }}>
+          <span style={{ fontWeight: 700, color: '#15191F' }}>Standard Wordgenie</span> — the classic sub-niches → title → tone flow isn&apos;t wired up in this preview yet.
+        </p>
+        <button
+          type="button"
+          onClick={() => setShowStub(false)}
+          style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 12.5, fontWeight: 700, color: '#006EFE', background: 'none', border: 'none', cursor: 'pointer', padding: 0, flexShrink: 0 }}
+        >
+          Got it
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between" style={{ padding: '10px 16px', gap: 20 }}>
+      {/* Not a control — this is what's already active below (the prompt box + AI chat) —
+          but it's the flagship AI mode, so it gets the same brand gradient as the send
+          button below rather than being muted into a plain caption. Still no button
+          semantics: no cursor pointer, no hover state, so it doesn't imply a click. */}
+      <div className="flex items-center" style={{ gap: 6 }}>
+        <svg width="15" height="15" viewBox="0 0 24 24">
+          <defs>
+            <linearGradient id={sparkleGradientId} x1="0%" y1="100%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#006EFE" />
+              <stop offset="100%" stopColor="#5326BD" />
+            </linearGradient>
+          </defs>
+          <path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" fill={`url(#${sparkleGradientId})`} />
+        </svg>
+        <span style={{
+          fontFamily: "'Nunito Sans', sans-serif", fontSize: 13.5, fontWeight: 800,
+          background: 'linear-gradient(259.1deg, #006EFE -2.17%, #5326BD 103.16%)',
+          WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent', WebkitTextFillColor: 'transparent',
+        }}>
+          New Wordgenie
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={() => setShowStub(true)}
+        className="flex items-center cursor-pointer"
+        style={{ gap: 6, fontFamily: "'Nunito Sans', sans-serif", fontSize: 13.5, fontWeight: 700, color: '#006EFE', background: 'none', border: 'none', padding: 0, textDecoration: 'none' }}
+        onMouseEnter={(e) => { e.currentTarget.style.textDecoration = 'underline'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.textDecoration = 'none'; }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L11 16l-4 1 1-4 10.5-10.5z" />
+        </svg>
+        Use Standard Wordgenie
+      </button>
+    </div>
+  );
+}
+
+const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
+
+function ModalHeader({ headline, id }: { headline: ReactNode; id?: string }) {
+  return (
+    <div style={{ padding: '26px 32px 4px' }}>
+      <div className="flex items-center" style={{ gap: 8, marginBottom: 14 }}>
+        <div style={{ width: 34, height: 34, borderRadius: 9, background: '#EAF1FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="#006EFE"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" /></svg>
+        </div>
+        <span style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#8596AD' }}>Wordgenie AI v4</span>
+      </div>
+      <p id={id} style={{ ...ns, fontSize: 21, fontWeight: 800, color: '#001633', margin: 0, lineHeight: 1.3 }}>{headline}</p>
+    </div>
+  );
+}
+
+/* Shared shell for the three gating modals below: dialog semantics, Escape-to-close and
+   backdrop-click-to-close match the convention already used by ImportDocxModal/ShareLinkModal
+   elsewhere in this app — these three just hadn't picked it up yet. */
+function ModalShell({
+  onClose,
+  labelId,
+  initialFocusRef,
+  children,
+}: {
+  onClose: () => void;
+  labelId: string;
+  initialFocusRef?: React.RefObject<HTMLElement | null>;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    initialFocusRef?.current?.focus();
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose, initialFocusRef]);
+
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center"
+      style={{ background: 'rgba(20,25,31,0.40)', zIndex: 9999 }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelId}
+        initial={{ opacity: 0, scale: 0.96, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="bg-white relative"
+        style={{ width: 480, borderRadius: 16, boxShadow: '0 16px 48px rgba(0,64,180,0.1), 0 2px 8px rgba(0,0,0,0.06)', overflow: 'hidden' }}
+      >
+        {children}
+      </motion.div>
+    </div>
+  );
+}
+
+/* States the actual consequence plainly and points at the comparison table rather than
+   naming Pro's specific perks — the button below opens every tier (Pro just highlighted),
+   so listing Pro-only features here would anchor the reader to Pro when Premium or Agency
+   might genuinely fit them better. */
+/* standardFallback: near-limit has no dedicated "Use Standard Wordgenie" button (unlike the
+   exhausted modal), so its only mention of that path lives here — kept second, after the
+   upgrade pitch, so upgrading reads as the first encouragement and Standard as the fallback. */
+function ProBenefitList({ flowKind = 'book', standardFallback = false }: { flowKind?: FlowKind; standardFallback?: boolean }) {
+  // Presentations have no Standard fallback (see FLOW_COPY), so the second line never
+  // renders there even if a caller passes standardFallback — book is the only flow with
+  // an "instead" path to offer.
+  const showFallback = standardFallback && FLOW_COPY[flowKind].showStandardFallback;
+  return (
+    <>
+      <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#52637A', margin: showFallback ? '0 0 8px' : '0 0 20px', lineHeight: 1.6 }}>
+        {FLOW_COPY[flowKind].proBenefitIntro}
+      </p>
+      {showFallback && (
+        <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#52637A', margin: '0 0 20px', lineHeight: 1.6 }}>
+          Or switch to Standard Wordgenie anytime.
+        </p>
+      )}
+    </>
+  );
 }
 
 function SelectedModeChip({ label, icon, onRemove }: { label: string; icon: ReactNode; onRemove: () => void }) {
@@ -60,7 +245,7 @@ function SelectedModeChip({ label, icon, onRemove }: { label: string; icon: Reac
   );
 }
 
-export default function WordgenieInput({ onSubmit, hideHeader, showSettings, excludeSettings, placeholder, selectedMode, topRow, borderless }: WordgenieInputProps) {
+export default function WordgenieInput({ onSubmit, hideHeader, showSettings, excludeSettings, placeholder, selectedMode, topRow, borderless, presentationMode }: WordgenieInputProps) {
   const [value, setValue] = useState('');
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -76,6 +261,37 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileMenuRef = useRef<HTMLDivElement>(null);
   const { handleHeroSubmit } = useFlowEngine();
+  const manuscriptsUsed = useFlowStore((s) => s.manuscriptGenerationsUsed);
+  const manuscriptsRemaining = Math.max(MANUSCRIPT_GENERATION_LIMIT - manuscriptsUsed, 0);
+  const presentationsUsed = useFlowStore((s) => s.presentationGenerationsUsed);
+  const presentationsRemaining = Math.max(PRESENTATION_GENERATION_LIMIT - presentationsUsed, 0);
+
+  // Which pool this instance gates against — book flow (no onSubmit) always uses the
+  // book pool; a caller opts into the presentation pool via presentationMode. Plain
+  // landing submits (onSubmit set, presentationMode unset) still skip gating entirely,
+  // unchanged from before.
+  const flowKind: FlowKind = presentationMode ? 'presentation' : 'book';
+  const GENERATION_LIMIT = flowKind === 'presentation' ? PRESENTATION_GENERATION_LIMIT : MANUSCRIPT_GENERATION_LIMIT;
+  const generationsRemaining = flowKind === 'presentation' ? presentationsRemaining : manuscriptsRemaining;
+
+  // v4 intro — gated behind the first actual submit, not mode-selection, so someone
+  // heading for "Use Standard Wordgenie" instead never sees v4-specific copy meant
+  // for the flow they didn't choose. Three states beyond that first welcome: a near-limit
+  // nudge at 80% used (still fully optional — "Continue" stays primary), and an exhausted
+  // stop at 100% (the only point where "Upgrade to Pro" earns to be the prominent choice).
+  const [showV4Intro, setShowV4Intro] = useState(false);
+  const [showNearLimitModal, setShowNearLimitModal] = useState(false);
+  const [showExhaustedModal, setShowExhaustedModal] = useState(false);
+  const [showExhaustedStandardStub, setShowExhaustedStandardStub] = useState(false);
+  const [showUpgradeFromIntro, setShowUpgradeFromIntro] = useState(false);
+  // Keyed per flow kind — dismissing the book intro shouldn't silently suppress the
+  // presentation one too, since a single instance can switch flowKind across renders
+  // (e.g. HomePage's mode chips) without remounting.
+  const [seenIntroThisSession, setSeenIntroThisSession] = useState<Record<FlowKind, boolean>>({ book: false, presentation: false });
+  const [pendingSubmitText, setPendingSubmitText] = useState<string | null>(null);
+  const v4IntroCtaRef = useRef<HTMLButtonElement>(null);
+  const nearLimitCtaRef = useRef<HTMLButtonElement>(null);
+  const exhaustedCtaRef = useRef<HTMLButtonElement>(null);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -105,17 +321,93 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
     };
   }, []);
 
-  const handleSubmit = () => {
-    if (!value.trim() || submittingRef.current) return;
+  const introKey = (kind: FlowKind) => kind === 'presentation' ? 'dsgn_wordgenie_presentation_intro_seen' : 'dsgn_wordgenie_v4_intro_seen';
+
+  const proceedWithSubmit = (text: string) => {
     submittingRef.current = true;
-    const trimmed = value.trim();
     setValue('');
     setAttachedFiles([]);
     if (onSubmit) {
-      onSubmit(trimmed);
+      onSubmit(text);
     } else {
-      handleHeroSubmit(trimmed);
+      handleHeroSubmit(text);
     }
+  };
+
+  const handleSubmit = () => {
+    if (!value.trim() || submittingRef.current) return;
+    const trimmed = value.trim();
+
+    // Book flow (no onSubmit override) and presentation flow (onSubmit + presentationMode)
+    // both gate on their own free-generation pool. Plain landing submits (onSubmit set,
+    // presentationMode unset) still skip straight through, unchanged from before.
+    const isGatedFlow = !onSubmit || presentationMode;
+    if (isGatedFlow) {
+      if (generationsRemaining <= 0) {
+        // Exhausted: starting the chat flow would only dead-end several steps later,
+        // after the user's already invested the time. Catch it here instead.
+        setShowExhaustedModal(true);
+        return;
+      }
+      const alreadySeenIntro = seenIntroThisSession[flowKind]
+        || (typeof window !== 'undefined' && localStorage.getItem(introKey(flowKind)) === 'true');
+      if (!alreadySeenIntro) {
+        setPendingSubmitText(trimmed);
+        setShowV4Intro(true);
+        return;
+      }
+      const usedRatio = (GENERATION_LIMIT - generationsRemaining) / GENERATION_LIMIT;
+      if (usedRatio >= 0.8) {
+        setPendingSubmitText(trimmed);
+        setShowNearLimitModal(true);
+        return;
+      }
+    }
+
+    proceedWithSubmit(trimmed);
+  };
+
+  const markV4IntroSeen = () => {
+    setSeenIntroThisSession((prev) => ({ ...prev, [flowKind]: true }));
+    if (typeof window !== 'undefined') localStorage.setItem(introKey(flowKind), 'true');
+    setShowV4Intro(false);
+  };
+
+  // Primary CTA: acknowledge the intro and submit the prompt that triggered it.
+  const resolveV4Intro = () => {
+    markV4IntroSeen();
+    const text = pendingSubmitText;
+    setPendingSubmitText(null);
+    if (text) proceedWithSubmit(text);
+    else textareaRef.current?.focus();
+  };
+
+  // X / Escape / backdrop: acknowledge the intro but don't submit — the user gets their
+  // prompt back to reconsider, matching what a close control means everywhere else.
+  const dismissV4Intro = () => {
+    markV4IntroSeen();
+    setPendingSubmitText(null);
+    textareaRef.current?.focus();
+  };
+
+  const resolveNearLimitModal = () => {
+    setShowNearLimitModal(false);
+    const text = pendingSubmitText;
+    setPendingSubmitText(null);
+    if (text) proceedWithSubmit(text);
+    else textareaRef.current?.focus();
+  };
+
+  const dismissNearLimitModal = () => {
+    setShowNearLimitModal(false);
+    setPendingSubmitText(null);
+    textareaRef.current?.focus();
+  };
+
+  const dismissExhaustedModal = () => {
+    setShowExhaustedModal(false);
+    setShowExhaustedStandardStub(false);
+    textareaRef.current?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -186,6 +478,7 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   const hasContent = value.trim().length > 0 || attachedFiles.length > 0;
 
   return (
+    <>
     <motion.div
       initial={borderless ? false : { y: 16 }}
       animate={borderless ? false : { y: 0 }}
@@ -222,39 +515,6 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
             <div style={{ height: 1, backgroundColor: '#E0E5EB' }} />
           </>
         )}
-
-        {/* ── Header row ── */}
-        <div className="flex flex-col" style={{ gap: 12 }}>
-          {!hideHeader && (
-            <div className="flex items-start justify-between" style={{ paddingLeft: 16, paddingRight: 16 }}>
-              {/* Left: icon + "by New Wordgenie" */}
-              <div className="flex items-center" style={{ gap: 6 }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src="/assets/wordgenie-icon.svg"
-                  alt=""
-                  className="shrink-0 overflow-hidden"
-                  style={{ width: 14, height: 14 }}
-                />
-                <span
-                  className="gradient-text shrink-0 whitespace-nowrap font-semibold"
-                  style={{ fontSize: 14, lineHeight: '18px' }}
-                >
-                  by New Wordgenie
-                </span>
-              </div>
-              {/* Right: "Generate up to 10 books with AI" */}
-              <span
-                className="shrink-0 whitespace-nowrap font-normal"
-                style={{ fontSize: 14, lineHeight: '18px', color: '#667C98' }}
-              >
-                Generate up to 10 books with AI
-              </span>
-            </div>
-          )}
-
-          {!hideHeader && <div style={{ height: 1, backgroundColor: '#E0E5EB' }} />}
-        </div>
 
         {/* ── Textarea ── */}
         <div style={{ padding: '10px 20px 4px' }}>
@@ -407,6 +667,162 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
           </div>
         </div>
     </motion.div>
+
+    {/* One-time welcome — first submit only, per flow (book and presentation each get their
+        own, since they're separate pools). A true first encounter, before any usage exists
+        to point back to, so there's no stat and no Pro pitch here — just what Wordgenie is
+        and that the 5 generations are a no-strings gift. */}
+    {showV4Intro && (
+      <ModalShell onClose={dismissV4Intro} labelId="v4-intro-heading" initialFocusRef={v4IntroCtaRef}>
+        <button
+          onClick={dismissV4Intro}
+          className="absolute flex items-center justify-center hover:opacity-60 transition-opacity cursor-pointer"
+          style={{ top: 20, right: 20, width: 24, height: 24, background: 'none', border: 'none', padding: 0 }}
+          aria-label="Close"
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M14 4L4 14M4 4l10 10" stroke="#29323D" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+        </button>
+
+        <ModalHeader id="v4-intro-heading" headline={FLOW_COPY[flowKind].introHeadline(GENERATION_LIMIT)} />
+
+        <div style={{ padding: '8px 32px 24px' }}>
+          <p style={{ ...ns, fontSize: 14, color: '#29323D', lineHeight: 1.6, margin: 0 }}>
+            {FLOW_COPY[flowKind].introBody(GENERATION_LIMIT)}{' '}
+            <button
+              onClick={() => { markV4IntroSeen(); setShowUpgradeFromIntro(true); }}
+              style={{ color: '#006EFE', fontWeight: 600, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline' }}
+            >
+              Upgrade your plan
+            </button>
+            {FLOW_COPY[flowKind].showStandardFallback && <>, or switch to Standard Wordgenie anytime.</>}
+          </p>
+
+          <div className="flex items-center justify-end" style={{ marginTop: 22 }}>
+            <button
+              ref={v4IntroCtaRef}
+              onClick={resolveV4Intro}
+              style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '10px 20px', cursor: 'pointer' }}
+            >
+              Get started
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+    )}
+
+    {/* 80% used — a real generation is still available, so "Continue" stays primary.
+        The upgrade path is visible but stays secondary until it's the only option left. */}
+    {showNearLimitModal && (
+      <ModalShell onClose={dismissNearLimitModal} labelId="near-limit-heading" initialFocusRef={nearLimitCtaRef}>
+        <button
+          onClick={dismissNearLimitModal}
+          className="absolute flex items-center justify-center hover:opacity-60 transition-opacity cursor-pointer"
+          style={{ top: 20, right: 20, width: 24, height: 24, background: 'none', border: 'none', padding: 0 }}
+          aria-label="Close"
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M14 4L4 14M4 4l10 10" stroke="#29323D" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+        </button>
+
+        <ModalHeader id="near-limit-heading" headline={`You've used ${GENERATION_LIMIT - generationsRemaining} of your ${GENERATION_LIMIT} free ${FLOW_COPY[flowKind].noun} generations.`} />
+
+        <div style={{ padding: '8px 32px 24px' }}>
+          <p style={{ ...ns, fontSize: 13, color: '#52637A', margin: '0 0 20px' }}>
+            <b style={{ color: '#B8860B' }}>{generationsRemaining} free {FLOW_COPY[flowKind].noun} generation{generationsRemaining === 1 ? '' : 's'}</b> left.
+          </p>
+          <ProBenefitList flowKind={flowKind} standardFallback />
+          <div className="flex items-center justify-end" style={{ gap: 14 }}>
+            <button
+              onClick={() => { setShowNearLimitModal(false); setPendingSubmitText(null); setShowUpgradeFromIntro(true); }}
+              style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+            >
+              Upgrade to Pro
+            </button>
+            <button
+              ref={nearLimitCtaRef}
+              onClick={resolveNearLimitModal}
+              style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '10px 20px', cursor: 'pointer' }}
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+    )}
+
+    {/* 100% used — the only state where "Continue" genuinely isn't an option, so
+        "Upgrade to Pro" earns to be the prominent choice. "Use Standard Wordgenie instead"
+        used to silently dismiss (identical to the X button) even though that flow isn't
+        wired up — same honest stub WordgenieModeToggle already shows elsewhere, so this
+        doesn't quietly promise a working alternative that doesn't exist. */}
+    {showExhaustedModal && (
+      <ModalShell onClose={dismissExhaustedModal} labelId="exhausted-heading" initialFocusRef={exhaustedCtaRef}>
+        <button
+          onClick={dismissExhaustedModal}
+          className="absolute flex items-center justify-center hover:opacity-60 transition-opacity cursor-pointer"
+          style={{ top: 20, right: 20, width: 24, height: 24, background: 'none', border: 'none', padding: 0 }}
+          aria-label="Close"
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M14 4L4 14M4 4l10 10" stroke="#29323D" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+        </button>
+
+        <ModalHeader id="exhausted-heading" headline={`You've used all ${GENERATION_LIMIT} free ${FLOW_COPY[flowKind].noun} generations.`} />
+
+        {showExhaustedStandardStub ? (
+          <div style={{ padding: '8px 32px 24px' }}>
+            <p style={{ ...ns, fontSize: 13, color: '#52637A', lineHeight: 1.6, margin: '0 0 20px' }}>
+              <span style={{ fontWeight: 700, color: '#15191F' }}>Standard Wordgenie</span> — the classic sub-niches → title → tone flow isn&apos;t wired up in this preview yet.
+            </p>
+            <div className="flex items-center justify-end">
+              <button
+                onClick={() => setShowExhaustedStandardStub(false)}
+                style={{ ...ns, fontSize: 13.5, fontWeight: 700, color: '#006EFE', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        ) : (
+        <div style={{ padding: '8px 32px 24px' }}>
+          <ProBenefitList flowKind={flowKind} />
+          <div className="flex items-center justify-end" style={{ gap: 14 }}>
+            {FLOW_COPY[flowKind].showStandardFallback && (
+              <button
+                onClick={() => setShowExhaustedStandardStub(true)}
+                style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+              >
+                Use Standard Wordgenie
+              </button>
+            )}
+            <button
+              ref={exhaustedCtaRef}
+              onClick={() => { setShowExhaustedModal(false); setShowUpgradeFromIntro(true); }}
+              style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '10px 20px', cursor: 'pointer' }}
+            >
+              Upgrade to Pro
+            </button>
+          </div>
+        </div>
+        )}
+      </ModalShell>
+    )}
+
+    {showUpgradeFromIntro && (
+      <UpgradePlanModal
+        onClose={() => setShowUpgradeFromIntro(false)}
+        currentPlanId="standard"
+        contextMessage={generationsRemaining <= 0
+          ? `You've used all your ${FLOW_COPY[flowKind].noun} generations this month.`
+          : `Unlock unlimited Wordgenie ${FLOW_COPY[flowKind].noun} generations`}
+        highlightPlanId="pro"
+      />
+    )}
+    </>
   );
 }
 

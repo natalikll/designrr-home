@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Variants } from 'framer-motion';
+import { useRouter } from 'next/navigation';
 import Logo from './Logo';
 import HomeWordgenieInput from './WordgenieInput';
 import { RecentBooks } from './RecentProjects';
@@ -14,11 +15,12 @@ import { useFlowStore } from '@/stores/flowStore';
 import { UpgradePlanModal } from '../account/MyAccountView';
 
 /**
- * Standard-plan hub. Presentation and Landing page are Pro/Premium features —
- * Standard only ever creates books, so mode never leaves 'book' | null.
+ * Standard-plan hub. Landing page is a Pro/Premium-only feature with no free trial.
+ * Presentations now have their own 5-free-generation pool (same shape as books), gated
+ * inside WordgenieInput itself rather than at the chip — so Standard can select and try it.
  */
-type CreationMode = 'book' | null;
-type LockedMode = 'presentation' | 'landing';
+type CreationMode = 'book' | 'presentation' | null;
+type LockedMode = 'landing';
 
 const slideUp: Variants = {
   hidden: { opacity: 0, y: 12 },
@@ -26,18 +28,18 @@ const slideUp: Variants = {
 };
 
 const LOCKED_LABELS: Record<LockedMode, string> = {
-  presentation: 'Create presentation',
-  landing:      'Create landing page',
+  landing: 'Create landing page',
 };
 
+const PRESENTATION_ICON: ReactNode = (
+  <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
+    <rect x="2" y="3" width="16" height="11" rx="2" stroke="currentColor" strokeWidth="1.6"/>
+    <path d="M8 14v3M12 14v3M6 17h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+    <path d="M7 9l2.5 1.5L13 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>
+);
+
 const LOCKED_ICONS: Record<LockedMode, ReactNode> = {
-  presentation: (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
-      <rect x="2" y="3" width="16" height="11" rx="2" stroke="currentColor" strokeWidth="1.6"/>
-      <path d="M8 14v3M12 14v3M6 17h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-      <path d="M7 9l2.5 1.5L13 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  ),
   landing: (
     <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
       <rect x="2" y="2" width="16" height="16" rx="2" stroke="currentColor" strokeWidth="1.6"/>
@@ -134,6 +136,7 @@ function HubChipLocked({ label, icon, onClick }: { label: string; icon: ReactNod
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
 export default function HomePageStandard() {
+  const router = useRouter();
   const [mode, setMode]               = useState<CreationMode>(null);
   const [isFirstLoad, setIsFirstLoad] = useState(true);
   const [showUpgrade, setShowUpgrade] = useState(false);
@@ -145,6 +148,10 @@ export default function HomePageStandard() {
     setMode(next);
   };
 
+  const handlePresentationSubmit = (text: string) => {
+    router.push(`/presentation/chat?prompt=${encodeURIComponent(text)}`);
+  };
+
   const hubStagger = {
     initial: isFirstLoad ? 'hidden' : (false as const),
     animate: 'show' as const,
@@ -154,6 +161,10 @@ export default function HomePageStandard() {
   const selectedModeData = mode === 'book' ? {
     label:    'Book',
     icon:     BOOK_ICON,
+    onRemove: () => select(null),
+  } : mode === 'presentation' ? {
+    label:    'Presentation',
+    icon:     PRESENTATION_ICON,
     onRemove: () => select(null),
   } : undefined;
 
@@ -199,8 +210,12 @@ export default function HomePageStandard() {
                 <div className="w-full">
                   <HomeWordgenieInput
                     hideHeader={mode !== 'book'}
+                    showSettings={mode === 'presentation'}
+                    excludeSettings={mode === 'presentation' ? ['tone', 'density'] : undefined}
                     selectedMode={selectedModeData}
-                    placeholder={mode ? 'Describe your book idea…' : 'What would you like to create today?'}
+                    placeholder={mode === 'presentation' ? 'What should your presentation be about?' : mode ? 'Describe your book idea…' : 'What would you like to create today?'}
+                    onSubmit={mode === 'presentation' ? handlePresentationSubmit : undefined}
+                    presentationMode={mode === 'presentation'}
                   />
                 </div>
 
@@ -217,7 +232,7 @@ export default function HomePageStandard() {
                       style={{ gap: 8 }}
                     >
                       <HubChip label="Create book" icon={BOOK_ICON} iconColor="#006EFE" onClick={() => select('book')} />
-                      <HubChipLocked label={LOCKED_LABELS.presentation} icon={LOCKED_ICONS.presentation} onClick={() => setShowUpgrade(true)} />
+                      <HubChip label="Create presentation" icon={PRESENTATION_ICON} iconColor="#006EFE" onClick={() => select('presentation')} />
                       <HubChipLocked label={LOCKED_LABELS.landing} icon={LOCKED_ICONS.landing} onClick={() => setShowUpgrade(true)} />
                     </motion.div>
                   )}

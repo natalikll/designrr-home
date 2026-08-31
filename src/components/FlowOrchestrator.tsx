@@ -12,7 +12,7 @@ import { BookView } from './book/BookView';
 import { BookFormatView } from './book/BookFormatView';
 import { GenerationTransition } from './transition/GenerationTransition';
 import { AppSidebar } from './sidebar/AppSidebar';
-import { MyAccountView } from './account/MyAccountView';
+import { AccountOverlay } from './account/AccountOverlay';
 
 function HomePageWithKey({ plan }: { plan: 1 | 2 }) {
   const homeKey = useFlowStore((s) => s.homeKey);
@@ -24,7 +24,6 @@ export function FlowOrchestrator() {
   const currentStep = useFlowStore((s) => s.currentStep);
   const sidebarOpen = useFlowStore((s) => s.sidebarOpen);
   const setSidebarOpen = useFlowStore((s) => s.setSidebarOpen);
-  const showAccount = useFlowStore((s) => s.showAccount);
   const { handleHeroSubmit, handleGenerateBook } = useFlowEngine();
   const [homePlan, setHomePlan] = React.useState<1 | 2>(() => {
     if (typeof window !== 'undefined') {
@@ -48,20 +47,7 @@ export function FlowOrchestrator() {
       {/* Main content — takes remaining space */}
       <div className="flex-1 min-w-0 h-full relative">
         {/* My Account overlay */}
-        <AnimatePresence>
-          {showAccount && (
-            <motion.div
-              key="account"
-              className="absolute inset-0 z-20"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <MyAccountView />
-            </motion.div>
-          )}
-        </AnimatePresence>
+        <AccountOverlay />
 
         <AnimatePresence mode="wait">
           {/* Step 0: Home page with book creation options */}

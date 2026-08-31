@@ -4,6 +4,7 @@ import { Suspense } from 'react';
 import NarrationViewV4 from '@/components/presentation/NarrationViewV4';
 import { useFlowStore } from '@/stores/flowStore';
 import { AppSidebar } from '@/components/sidebar/AppSidebar';
+import { AccountOverlay } from '@/components/account/AccountOverlay';
 
 function NarrationPage() {
   const sidebarOpen = useFlowStore(s => s.sidebarOpen);
@@ -14,6 +15,7 @@ function NarrationPage() {
       <AppSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex-1 min-w-0 h-full relative">
         <NarrationViewV4 />
+        <AccountOverlay />
       </div>
     </div>
   );

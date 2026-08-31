@@ -280,7 +280,7 @@ function StudioTooltip({ label, children }: { label: string; children: React.Rea
     setPos(p => (p && !p.ready ? { ...p, left, ready: true } : p));
   }, [pos]);
   return (
-    <div ref={ref} onMouseEnter={handleEnter} onMouseLeave={() => setPos(null)} className="relative inline-flex">
+    <div ref={ref} onMouseEnter={handleEnter} onMouseLeave={() => setPos(null)} className="relative inline-flex h-full">
       {children}
       {pos && typeof document !== 'undefined' && createPortal(
         <span ref={tipRef} className="pointer-events-none" style={{ position: 'fixed',
@@ -293,6 +293,41 @@ function StudioTooltip({ label, children }: { label: string; children: React.Rea
         document.body
       )}
     </div>
+  );
+}
+
+// Review-only A/B switcher — compares the shipped flow (drop straight into slide 1) against the
+// Wordgenie-guided alternative ('b': script-drafting fork → optional bulk assign-narration grid).
+// Deliberately the opposite of every real control in this file: near-invisible at rest, fixed to
+// a screen corner rather than docked in the studio's own layout, resolves into something legible
+// only on hover — a real settings toggle would look and behave like the rest of this chrome;
+// this is meant to look like neither.
+function LayoutVariantSwitcher({ value, onChange }: { value: 'a' | 'b'; onChange: (v: 'a' | 'b') => void }) {
+  const [hover, setHover] = useState(false);
+  // Portaling unconditionally on `typeof document !== 'undefined'` mismatches SSR hydration —
+  // that check is true the instant the client's first render runs, but the server render had
+  // nothing there. mounted flips true only after hydration completes (in an effect), so the
+  // first client render still matches the server's (nothing) before the portal appears.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+  return createPortal(
+    <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      className="flex items-center"
+      style={{ position: 'fixed', bottom: 10, right: 10, zIndex: 50, gap: 3, padding: 4, borderRadius: 20,
+        background: hover ? 'rgba(0,0,0,0.55)' : 'transparent',
+        opacity: hover ? 1 : 0.14, transition: 'opacity 0.25s ease, background 0.25s ease' }}>
+      {(['a', 'b'] as const).map(v => (
+        <button key={v} onClick={() => onChange(v)} className="cursor-pointer"
+          style={{ width: 16, height: 16, borderRadius: '50%', border: 'none', outline: 'none', padding: 0,
+            ...ns, fontSize: 9, fontWeight: 700, lineHeight: '16px', textAlign: 'center',
+            background: value === v ? 'rgba(255,255,255,0.85)' : 'transparent',
+            color: value === v ? '#121212' : 'rgba(255,255,255,0.55)' }}>
+          {v.toUpperCase()}
+        </button>
+      ))}
+    </div>,
+    document.body
   );
 }
 
@@ -423,79 +458,155 @@ function SlideThumb({ slide, theme, width = 132, rounded = true }: { slide: Pres
 }
 
 /* ════════════════════════════════════════════════════════════════
-   Clone-voice quick setup
+   Clone-voice quick setup — dark-mode port of the audiobook flow's
+   "Record your voice" popup (Figma: Audiobook file, node 7415:6228),
+   re-skinned for the studio instead of pasted as light-mode chrome.
+   Multi-take + passage-swap + a real device chip are straight from
+   that design; the step counter isn't — this studio's clone setup is
+   one screen, not a 4-step wizard, so "N of 4" had nothing to count.
    ════════════════════════════════════════════════════════════════ */
-const CLONE_PASSAGE = `Hello, and welcome. I'm excited to share something with you today. Great ideas deserve to be heard clearly, and that's exactly what we're going to work on together.`;
+const CLONE_PASSAGES = [
+  `Great audiobooks don't just tell stories — they breathe life into them. Every pause, every rise in tone, and every quiet moment shapes how your listener feels.`,
+  `Hello, and welcome. I'm excited to share something with you today. Great ideas deserve to be heard clearly, and that's exactly what we're going to work on together.`,
+  `The best voices aren't the loudest ones — they're the ones that sound like they mean it. Read this like you're talking to one person, not a room.`,
+];
 
 function CloneScreen({ onDone, onBack }: { onDone: (name: string) => void; onBack: () => void }) {
   const [phase, setPhase] = useState<'idle' | 'recording' | 'training' | 'done'>('idle');
   const [secs, setSecs] = useState(0);
+  const [passageIdx, setPassageIdx] = useState(0);
+  const [takes, setTakes] = useState<{ id: number; duration: number }[]>([]);
+  const nextTakeId = useRef(1);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
   const start = () => {
     setPhase('recording');
+    setSecs(0);
     timerRef.current = setInterval(() => setSecs(s => s + 1), 1000);
   };
+  // Stopping banks the take instead of jumping straight to training — matches the source
+  // design's "1–3 takes per passage, more takes = a truer clone" framing, which needs
+  // somewhere to land between takes rather than each one ending the whole flow.
   const stop = () => {
-    clearInterval(timerRef.current!);
+    if (timerRef.current) clearInterval(timerRef.current);
+    setTakes(prev => [...prev, { id: nextTakeId.current++, duration: secs }]);
+    setSecs(0);
+    setPhase('idle');
+  };
+  const removeTake = (id: number) => setTakes(prev => prev.filter(t => t.id !== id));
+  const generate = () => {
+    if (takes.length === 0) return;
     setPhase('training');
     setTimeout(() => setPhase('done'), 2200);
   };
 
   return (
-    <div className="h-full flex items-center justify-center" style={{ background: '#F8F9FC', padding: 24 }}>
+    <div className="h-full flex items-center justify-center" style={{ background: '#121212', padding: 24 }}>
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
-        style={{ background: '#fff', borderRadius: 20, boxShadow: '0 20px 60px rgba(15,23,51,0.12)', maxWidth: 560, width: '100%', padding: '40px 44px', textAlign: 'center' }}>
-        <h2 style={{ ...ns, fontSize: 21, fontWeight: 700, color: '#15191F', marginBottom: 8 }}>Clone your voice</h2>
-        <p style={{ ...ns, fontSize: 13.5, color: '#52637A', marginBottom: 24, lineHeight: 1.6 }}>
-          Read the passage below for ~30 seconds. We&rsquo;ll create a voice that sounds like you.
-        </p>
-        <div style={{ background: '#F8F9FC', border: '1px solid #E8EBF2', borderRadius: 12, padding: '18px 20px', marginBottom: 24 }}>
-          <p style={{ ...ns, fontSize: 14, color: '#334155', lineHeight: 1.7, margin: 0, textAlign: 'left' }}>{CLONE_PASSAGE}</p>
-        </div>
-        {phase === 'idle' && (
-          <button onClick={start} className="cursor-pointer"
-            style={{ height: 44, padding: '0 28px', borderRadius: 12, border: 'none', background: '#0FA47C', ...ns, fontSize: 14, fontWeight: 700, color: '#fff' }}>
-            ● Start recording
-          </button>
-        )}
-        {phase === 'recording' && (
-          <div className="flex flex-col items-center" style={{ gap: 14 }}>
-            <div className="flex items-center" style={{ gap: 10 }}>
-              <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#E5484D', animation: 'v2blink 1s infinite' }} />
-              <span style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#15191F', fontVariantNumeric: 'tabular-nums' }}>{formatTime(secs)}</span>
-            </div>
-            <Waveform seed={7} width={220} height={32} color="#0FA47C" playing />
-            <button onClick={stop} className="cursor-pointer"
-              style={{ height: 42, padding: '0 26px', borderRadius: 12, border: 'none', background: '#E5484D', ...ns, fontSize: 14, fontWeight: 700, color: '#fff' }}>
-              ■ Stop &amp; create voice
+        style={{ background: '#1E1E1E', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16,
+          boxShadow: '0 24px 80px rgba(0,0,0,0.5)', maxWidth: 640, width: '100%', padding: '24px 24px 28px' }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: phase === 'done' ? 0 : 16 }}>
+          <span style={{ ...ns, fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>Clone your voice</span>
+          <StudioTooltip label="Close">
+            <button onClick={onBack} className="cursor-pointer flex items-center justify-center" aria-label="Close"
+              style={{ width: 24, height: 24, borderRadius: '50%', background: 'transparent', border: 'none', transition: 'opacity 0.15s' }}
+              onMouseEnter={e => { e.currentTarget.style.opacity = '0.6'; }}
+              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
             </button>
-          </div>
+          </StudioTooltip>
+        </div>
+
+        {phase !== 'done' && (
+          <>
+            <h2 style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#fff', margin: '0 0 4px' }}>Record your voice</h2>
+            <p style={{ ...ns, fontSize: 14, color: 'rgba(255,255,255,0.55)', margin: '0 0 20px', lineHeight: 1.5 }}>
+              Record 10 seconds minimum, 1–3 takes per passage. More takes = the AI picks the best and averages them for a truer clone.
+            </p>
+
+            <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: 20, marginBottom: 16 }}>
+              <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+                <span style={{ ...ns, fontSize: 14, fontWeight: 600, color: 'rgba(255,255,255,0.45)' }}>Read this passage while recording</span>
+                <button onClick={() => setPassageIdx(i => (i + 1) % CLONE_PASSAGES.length)} className="cursor-pointer flex items-center"
+                  style={{ ...ns, gap: 5, fontSize: 13, fontWeight: 600, color: '#4C8DFF', background: 'none', border: 'none', padding: 0 }}>
+                  Use different text
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4C8DFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/></svg>
+                </button>
+              </div>
+              <p style={{ ...ns, fontSize: 18, fontWeight: 600, color: '#fff', lineHeight: 1.5, margin: 0 }}>&ldquo;{CLONE_PASSAGES[passageIdx]}&rdquo;</p>
+            </div>
+
+            <div className="flex items-center justify-between" style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '16px 20px', marginBottom: takes.length ? 10 : 20 }}>
+              <div className="flex items-center" style={{ gap: 10 }}>
+                {phase === 'recording' && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#E5484D', animation: 'v2blink 1s infinite', flexShrink: 0 }} />}
+                <span style={{ ...ns, fontSize: 14, color: 'rgba(255,255,255,0.5)' }}>
+                  {takes.length === 0 ? 'Take 1' : `Add take ${takes.length + 1} — optional but recommended`}
+                </span>
+                <span style={{ ...ns, fontSize: 14, color: 'rgba(255,255,255,0.5)', fontVariantNumeric: 'tabular-nums' }}>{formatTime(secs)}/0:30</span>
+              </div>
+              {phase === 'recording' ? (
+                <button onClick={stop} className="cursor-pointer flex items-center"
+                  style={{ ...ns, height: 40, padding: '0 20px', borderRadius: 8, border: 'none', gap: 8, background: '#D62929', color: '#fff', fontSize: 14, fontWeight: 600 }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="white"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
+                  Stop
+                </button>
+              ) : (
+                <button onClick={start} className="cursor-pointer flex items-center"
+                  style={{ ...ns, height: 40, padding: '0 20px', borderRadius: 8, border: 'none', gap: 8, background: '#D62929', color: '#fff', fontSize: 14, fontWeight: 600 }}>
+                  <span style={{ width: 10, height: 10, borderRadius: '50%', border: '2px solid #fff', flexShrink: 0 }} />
+                  Record
+                </button>
+              )}
+            </div>
+
+            {takes.map(t => (
+              <div key={t.id} className="flex items-center" style={{ gap: 16, background: 'rgba(76,141,255,0.08)', border: '1px solid rgba(76,141,255,0.22)', borderRadius: 8, padding: '14px 20px', marginBottom: 8 }}>
+                <span style={{ ...ns, fontSize: 14, color: '#fff', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{formatTime(t.duration)}</span>
+                <Waveform seed={t.id} width={380} height={28} color="#4C8DFF" />
+                <button onClick={() => removeTake(t.id)} className="cursor-pointer flex items-center justify-center" title="Delete take"
+                  style={{ width: 24, height: 24, border: 'none', background: 'transparent', color: 'rgba(255,255,255,0.5)', flexShrink: 0, transition: 'color 0.15s' }}
+                  onMouseEnter={e => { e.currentTarget.style.color = '#E5484D'; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.5)'; }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+                  </svg>
+                </button>
+              </div>
+            ))}
+
+            <div className="flex items-center justify-between" style={{ marginTop: 20 }}>
+              <button onClick={onBack} className="cursor-pointer flex items-center"
+                style={{ ...ns, gap: 6, height: 38, padding: '0 16px', borderRadius: 9, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.85)', fontSize: 13.5, fontWeight: 600 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+                Back
+              </button>
+              <button onClick={generate} disabled={takes.length === 0} className={takes.length === 0 ? 'flex items-center' : 'cursor-pointer flex items-center'}
+                style={{ ...ns, height: 38, padding: '0 18px', borderRadius: 10, border: 'none', gap: 6,
+                  background: takes.length === 0 ? 'rgba(0,110,254,0.3)' : '#006EFE', color: '#fff', fontSize: 13.5, fontWeight: 700 }}>
+                Generate my voice
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
+              </button>
+            </div>
+          </>
         )}
         {phase === 'training' && (
-          <div className="flex flex-col items-center" style={{ gap: 12 }}>
-            <div style={{ width: 28, height: 28, border: '3px solid #E8EBF2', borderTopColor: '#0FA47C', borderRadius: '50%', animation: 'v2spin 0.8s linear infinite' }} />
-            <p style={{ ...ns, fontSize: 13.5, color: '#52637A' }}>Training your voice…</p>
+          <div className="flex flex-col items-center" style={{ gap: 12, padding: '28px 0 8px' }}>
+            <div style={{ width: 28, height: 28, border: '3px solid rgba(255,255,255,0.12)', borderTopColor: '#4C8DFF', borderRadius: '50%', animation: 'v2spin 0.8s linear infinite' }} />
+            <p style={{ ...ns, fontSize: 13.5, color: 'rgba(255,255,255,0.55)' }}>Training your voice…</p>
           </div>
         )}
         {phase === 'done' && (
-          <motion.div initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center" style={{ gap: 14 }}>
-            <div style={{ width: 44, height: 44, borderRadius: '50%', background: '#EDFBF6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <motion.div initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center" style={{ gap: 14, padding: '20px 0 8px' }}>
+            <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'rgba(15,164,124,0.16)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0FA47C" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
             </div>
-            <p style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#15191F', margin: 0 }}>&ldquo;Your voice&rdquo; is ready</p>
+            <p style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: '#fff', margin: 0 }}>&ldquo;Your voice&rdquo; is ready</p>
             <button onClick={() => onDone('Your voice')} className="cursor-pointer"
-              style={{ height: 42, padding: '0 26px', borderRadius: 12, border: 'none', background: '#006EFE', ...ns, fontSize: 14, fontWeight: 700, color: '#fff' }}>
+              style={{ height: 42, padding: '0 26px', borderRadius: 10, border: 'none', background: '#006EFE', ...ns, fontSize: 14, fontWeight: 700, color: '#fff' }}>
               Continue to slides
             </button>
           </motion.div>
-        )}
-        {phase !== 'done' && (
-          <button onClick={onBack} className="cursor-pointer"
-            style={{ display: 'block', margin: '20px auto 0', border: 'none', background: 'transparent', ...ns, fontSize: 12.5, color: '#8596AD' }}>
-            ← Back to slides
-          </button>
         )}
       </motion.div>
     </div>
@@ -538,7 +649,7 @@ function LiveCamera({ style, deviceId }: { style?: React.CSSProperties; deviceId
    here already looking at the slide; recording just starts capturing what's already on
    screen. Record / AI voice / Upload are a small mode rail, not separate destinations —
    switching modes swaps the bottom panel without ever leaving this canvas. */
-function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio, onNavigate, cloneName, isGeneratingScript, onGenerateScript, onOpenAiChat, onAudioChange, onClone, onRecordDone, onRecordingStart, onTakeInProgressChange, showToast, scriptVisible, onScriptVisibleChange, scriptMode, onScriptModeChange: setScriptMode, promptPos, onPromptPosChange: setPromptPos, promptSize, onPromptSizeChange: setPromptSize, scrollSpeed, onScrollSpeedChange: setScrollSpeed, otherTakeSlideNumbers }: {
+function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio, onNavigate, cloneName, isGeneratingScript, onGenerateScript, onOpenAiChat, onAudioChange, onClone, onRecordDone, onRecordingStart, onTakeInProgressChange, showToast, scriptVisible, onScriptVisibleChange, scriptMode, onScriptModeChange: setScriptMode, promptPos, onPromptPosChange: setPromptPos, promptSize, onPromptSizeChange: setPromptSize, scrollSpeed, onScrollSpeedChange: setScrollSpeed, otherTakeSlideNumbers, layoutVariant, narrationPlan, onNarrationPlanChange, onGenerateNarrationPlan }: {
   slides: PresentationSlide[]; theme: MockTheme; scripts: string[]; onScriptChange: (idx: number, value: string) => void;
   startIdx: number; audio: SlideAudio; onNavigate: (idx: number) => void; cloneName: string | null;
   isGeneratingScript: boolean; onGenerateScript: () => void; onOpenAiChat: () => void;
@@ -564,6 +675,17 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
   // means there's nothing to ask about, so Record just starts immediately, same as before this
   // existed.
   otherTakeSlideNumbers: number[];
+  // Gates the record-transport experiment below (see LayoutVariantSwitcher) — 'a' keeps the
+  // shipped center record button + right-side slide nav untouched, 'b' swaps that whole cluster
+  // for the right-side Start recording/Add AI voice → Stop/Pause/Redo buttons.
+  layoutVariant: 'a' | 'b';
+  // Whole-deck voice assignment — previously only reachable through a Wordgenie chat fork
+  // (AssignNarrationList still lives there for variant A). Variant B surfaces the same plan/
+  // generate state as a chevron off "Use AI voice" instead, since it's a scope variant of that
+  // same action, not a chat-only capability.
+  narrationPlan?: Record<number, string>;
+  onNarrationPlanChange?: (next: Record<number, string>) => void;
+  onGenerateNarrationPlan?: () => void;
 }) {
   const [idx, setIdx] = useState(startIdx);
   const [elapsed, setElapsed] = useState(0);
@@ -579,39 +701,41 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
   // Left-side panel now, not a bottom pill — resizes by width (drag the right edge). Used to
   // simply fill the row's full height regardless of how much script there was, which left a
   // one-line take with a wall of dead card below it (confirmed live in a critique pass) — now
-  // the card sizes to its own content instead, via the auto-grow effect below.
+  // the card sizes to its own content instead, via the CSS grid auto-grow below (see
+  // scriptMaxH's own comment). That's a pure CSS reflow, so dragging this handle
+  // reflows the height live, the same as a font-size or content change would — there's no JS
+  // measurement step left to defer or skip mid-drag. Teleprompter mode isn't part of any of
+  // this — it's a fixed performance-reading surface, not a content-driven card, so its size
+  // stays under the user's own drag-resize entirely.
   const [scriptWidth, setScriptWidth] = useState(300);
-  // Auto-grows the docked textarea to fit its content (clamped) instead of the card always
-  // claiming full studio height — only one of these is ever mounted at a time (docked mode is
-  // 'left' xor 'right', never both), so a single ref/effect pair covers both sides. Re-measures
-  // on font-size changes too, since that reflows how many lines the same text takes. Deliberately
-  // NOT re-measured on scriptWidth: dragging the resize handle should only change width — if
-  // width changes were also allowed to reflow and resize the height, height would silently
-  // drift mid-drag as a side effect of a resize the user didn't ask for. A width change can
-  // still leave a long script needing its own internal scroll until the next real content edit
-  // re-measures it, which is the same "overflow, don't distort layout" behavior a fixed-height
-  // textarea already had. Teleprompter mode isn't part of any of this — it's a fixed
-  // performance-reading surface, not a content-driven card, so its size stays under the user's
-  // own drag-resize entirely.
   const scriptTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const scriptToolbarRef = useRef<HTMLDivElement>(null);
+  const scriptWrapRef = useRef<HTMLDivElement>(null);
   const SCRIPT_TEXTAREA_MIN_H = 100;
-  const SCRIPT_TEXTAREA_MAX_H = 390;
-  useLayoutEffect(() => {
-    const el = scriptTextareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(Math.max(el.scrollHeight, SCRIPT_TEXTAREA_MIN_H), SCRIPT_TEXTAREA_MAX_H)}px`;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scripts[idx], scriptFontSize, scriptMode]);
-  // A long script hitting SCRIPT_TEXTAREA_MAX_H used to just cut the last visible line off
+  // Was a flat 390, then a JS-measured value re-derived from slideBox.h on every content edit,
+  // every font-size toggle, and every resize-drag release — three separate triggers, each one
+  // more place a future change could forget to re-fire it (and each already had, at least once).
+  // Fixed for real this time by not measuring text height in JS at all: the textarea now sits in
+  // a CSS grid cell stacked with an invisible ::after that mirrors its own text (the standard
+  // "grid auto-grow textarea" technique — see .script-grow-wrap in the stylesheet below). The
+  // grid row sizes itself to that mirror's real wrapped height, which the *browser* recomputes
+  // on every layout pass — width change, font-size change, content edit — with nothing for JS to
+  // trigger or forget. The only thing that still needs JS is the *ceiling* itself (scriptMaxH):
+  // how tall the dock actually has room for, which only moves when the slide's own box does.
+  const SCRIPT_TEXTAREA_WRAPPER_PADDING = 26; // '10px 16px 16px' — top + bottom
+  const [scriptMaxH, setScriptMaxH] = useState(390);
+  // A long script hitting the height ceiling used to just cut the last visible line off
   // mid-glyph with nothing to say "scroll for more" — read as broken rather than scrollable.
   // These fade the card's own background in over the top/bottom couple of lines, only when
-  // there's actually more to scroll to on that side (driven off the textarea's real scroll
-  // position, not just "is this panel tall enough to ever scroll").
+  // there's actually more to scroll to on that side. Tracks scriptWrapRef when it's mounted
+  // (the grid wrapper is what actually scrolls in that mode — see .script-grow-wrap; the
+  // textarea itself is always exactly as tall as its own full content there, unclipped), falling
+  // back to the textarea directly for the fixed side panel (renderFixedScriptPanel), which has
+  // no grid wrapper and just scrolls itself.
   const scriptFadeTopRef = useRef<HTMLDivElement>(null);
   const scriptFadeBottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const el = scriptTextareaRef.current;
+    const el = scriptWrapRef.current || scriptTextareaRef.current;
     const top = scriptFadeTopRef.current;
     const bottom = scriptFadeBottomRef.current;
     if (!el || !top || !bottom) return;
@@ -621,8 +745,15 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
     };
     update();
     el.addEventListener('scroll', update);
-    return () => el.removeEventListener('scroll', update);
-  }, [scripts[idx], scriptFontSize, scriptMode]);
+    // Also re-check after layout changes that don't touch scrollTop but do change whether
+    // there's anything to scroll to (e.g. the ceiling itself moving) — a ResizeObserver instead
+    // of a dependency array, since the CSS grid can now change this element's real scrollHeight
+    // without any of scripts[idx]/scriptFontSize/scriptMode necessarily having changed (a window
+    // resize moving scriptMaxH, for one).
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', update); ro.disconnect(); };
+  }, []);
   const resizeRef = useRef<{ startX: number; startWidth: number; side: 'left' | 'right' } | null>(null);
   // Three fixed positions, not a freeform drag — 'left'/'right' dock the panel to that side of
   // the slide (still just width-resizable), 'teleprompter' pulls it out into a draggable/
@@ -768,6 +899,18 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
   // lose this take") doesn't depend on which method replaces it, so there's nothing to gain by
   // waiting until a specific tab is clicked to say so.
   const [confirmChangeType, setConfirmChangeType] = useState(false);
+  const [assignModalOpen, setAssignModalOpen] = useState(false);
+  // "Use AI voice" opens this menu regardless of where on the button you click — a split
+  // button (main face = per-slide, chevron = whole-deck) meant the two zones did different
+  // things depending on pixel-precise click location, which read as arbitrary. One trigger,
+  // one menu, both real choices spelled out — picking either is what actually acts.
+  const [assignMenuOpen, setAssignMenuOpen] = useState(false);
+  const { ref: assignMenuRef, style: assignMenuStyle } = useMenuPlacement(assignMenuOpen, { width: 260, height: 170, preferV: 'bottom', preferH: 'right' });
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (!assignMenuRef.current?.contains(e.target as Node)) setAssignMenuOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [assignMenuRef]);
   // Asked once per Record press, only when otherTakesCount > 0 — nothing to ask about
   // otherwise, so Record just starts immediately in that case, same as always. Resets to false
   // after each take (see handleDone) rather than staying sticky, so a later, unrelated session
@@ -1049,21 +1192,11 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
   // The side-by-side camera claims a fixed slice of the row so the slide sits directly next to
   // it, not centered independently with an arbitrary gap between them.
   const sideBySideVisible = entryMode === 'record' && captureMode === 'video' && cameraLayout === 'sideBySide';
-  // Viewfinder framing — what's actually inside this border is what ends up in the recording,
-  // camera-app convention (a red frame around the live capture bounds). Bubble mode never needed
-  // this: the camera circle already draws inside the slide's own box, so the slide's border was
-  // always the true capture edge. Side-by-side was the real gap — its "backing panel" (below)
-  // exists purely to size the combined slide+camera shape, with a background that's the exact
-  // same #121212 as the canvas behind it, so the region meant to say "these two are composited
-  // into one output" had no visible edge of its own; nothing distinguished "the recording" from
-  // "empty studio". Same red-while-live treatment as the record button itself now applies to
-  // whichever container actually represents the true output bounds for the current layout, so
-  // the two connect visually even though Record itself sits far away in the top bar now.
-  const captureFrameLive = phase === 'recording' || phase === 'paused';
-  const captureFrameBorder = captureFrameLive ? '2px solid #E5484D' : '1px solid rgba(255,255,255,0.14)';
-  const captureFrameShadow = captureFrameLive
-    ? '0 0 0 5px rgba(229,72,77,0.16), 0 20px 60px rgba(0,0,0,0.5)'
-    : '0 20px 60px rgba(0,0,0,0.5)';
+  // Viewfinder framing — what's actually inside this border is what ends up in the recording.
+  // No longer red while live (that read as a focus/error ring, not "this is the capture
+  // bounds") — same neutral border/shadow whether or not a take is in progress.
+  const captureFrameBorder = '1px solid rgba(255,255,255,0.14)';
+  const captureFrameShadow = '0 20px 60px rgba(0,0,0,0.5)';
   // Fixed slice of the combined 16:9 frame the camera claims — see fit() below, which sizes
   // the *combined* slide+camera box to 16:9 (matching what an actual composited recording
   // would look like) and gives the camera this much of it, rather than sizing the slide alone
@@ -1075,14 +1208,24 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
   // const isn't declared until further down) since this feeds the width reserved for it below.
   const nextSlide = slides[idx + 1] ?? null;
   const hasTakeForSizing = audio.methodSet && !redoing && phase === 'idle';
-  // Record-only — this is about framing/continuity while about to go live (what am I cutting to
-  // next), which doesn't mean anything on the AI voice or Upload tabs where nothing's being
-  // filmed. The toggle that controls it (DisplayOptionsMenu) is already record-only; this
-  // condition just wasn't, so the preview kept rendering on the other two tabs regardless.
-  const showNextPreview = entryMode === 'record' && nextPreviewEnabled && phase !== 'preview' && !!nextSlide && !hasTakeForSizing;
+  // Record-only — this is about framing/continuity, which doesn't mean anything on the AI voice
+  // or Upload tabs where nothing's being filmed. The toggle that controls it (DisplayOptionsMenu)
+  // is already record-only; this condition just wasn't, so the preview kept rendering on the
+  // other two tabs regardless. Available once a take already exists too, not just pre-take —
+  // reviewing what you just recorded is also a natural moment to glance at what's coming next.
+  const showNextPreview = entryMode === 'record' && nextPreviewEnabled && phase !== 'preview' && !!nextSlide;
 
   const slideCellRef = useRef<HTMLDivElement>(null);
   const [slideBox, setSlideBox] = useState({ w: stageMaxWidth, h: stageMaxWidth * 9 / 16 });
+  // scriptMaxH tracks the dock's real available height — the card's own floor (minHeight below)
+  // is slideBox.h, so the script textarea's growth ceiling needs to match that, not some
+  // independent guess. Recomputed whenever the slide box changes (window resize included, not
+  // just this component's own drag-resize handle), from the toolbar's real measured height so
+  // it stays correct even if the toolbar's own content ever changes.
+  useEffect(() => {
+    const toolbarH = scriptToolbarRef.current?.offsetHeight ?? 0;
+    setScriptMaxH(Math.max(390, slideBox.h - toolbarH - SCRIPT_TEXTAREA_WRAPPER_PADDING));
+  }, [slideBox.h]);
   useEffect(() => {
     const el = slideCellRef.current;
     if (!el) return;
@@ -1240,6 +1383,12 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
   // default back on is one click away instead of impossible — just scriptVisible, unfiltered.
   const showScriptDock = scriptVisible;
   const showRecordFrame = !hasTake && entryMode === 'record' && phase !== 'preview';
+  // Variant B only — instead of a card floating beside the slide (auto-growing/shrinking with
+  // content, recentering as it does), the script becomes a fixed panel like Wordgenie's: full
+  // height, edge-anchored, sized by the studio around it rather than by its own text. Only when
+  // actually docked (teleprompter stays the same free-floating box in both variants — it was
+  // never part of this "floating card next to the slide" complaint to begin with).
+  const fixedPanelSide = layoutVariant === 'b' && showScriptDock && scriptMode !== 'teleprompter' ? scriptMode : null;
 
   // Docked script panel — same card shell for either side, just mirrored (padding, resize
   // handle, which edge grows) depending on which one it's parked on. A function rather than a
@@ -1293,7 +1442,7 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
             being squeezed up against the mode-switch chevron — two dropdown carets sitting
             shoulder to shoulder read as one cluttered thing even though they open different
             menus. */}
-        <div className="flex items-center justify-between"
+        <div ref={scriptToolbarRef} className="flex items-center justify-between"
           style={{ flexShrink: 0, padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           <div className="flex items-center" style={{ gap: 8 }}>
             <div className="flex items-center" style={{ gap: 1 }}>
@@ -1324,18 +1473,23 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
             )}
           </div>
         </div>
-        {/* Height is JS-managed (see the auto-grow effect above) between
-            SCRIPT_TEXTAREA_MIN_H and SCRIPT_TEXTAREA_MAX_H, not flex:1-filled — the textarea's
-            own overflow-y handles the rare script that hits the max, same as it always did for
-            "exceeds the available height" before, just with a real ceiling now instead of
-            "however tall the studio happens to be." */}
+        {/* CSS-only auto-grow (see scriptMaxH's own comment above for the history here) — the
+            textarea and an invisible ::after mirroring its own text share one grid cell, so the
+            row's real height always exactly matches the wrapped text, recomputed by the browser
+            on every layout pass. minHeight/maxHeight bound the *wrapper*, and the wrapper (not
+            the textarea) scrolls once a script is genuinely longer than the dock has room for —
+            the textarea itself is always exactly as tall as its own content. */}
         <div style={{ padding: '10px 16px 16px', position: 'relative' }}>
-          <textarea ref={scriptTextareaRef} value={scripts[idx]} onChange={e => onScriptChange(idx, e.target.value)} readOnly={phase === 'recording'}
-            placeholder="Write what you'll say over this slide…"
-            style={{ ...ns, display: 'block', width: '100%', resize: 'none', background: 'transparent', border: 'none', outline: 'none',
-              overflowY: 'auto',
-              fontSize: scriptFontSize === 'sm' ? 13 : 17, color: 'rgba(255,255,255,0.9)',
-              lineHeight: 1.7, textAlign: 'left', cursor: phase === 'recording' ? 'default' : 'text' }} />
+          <div ref={scriptWrapRef} className="script-grow-wrap" data-replicated-value={scripts[idx] || ' '}
+            style={{ maxHeight: scriptMaxH, overflowY: 'auto',
+              ...({ '--script-font-size': scriptFontSize === 'sm' ? '13px' : '17px',
+                    '--script-min-height': `${SCRIPT_TEXTAREA_MIN_H}px` } as React.CSSProperties) }}>
+            <textarea ref={scriptTextareaRef} value={scripts[idx]} onChange={e => onScriptChange(idx, e.target.value)} readOnly={phase === 'recording'}
+              placeholder="Write what you'll say over this slide…"
+              style={{ ...ns, display: 'block', width: '100%', resize: 'none', background: 'transparent', border: 'none', outline: 'none',
+                overflowY: 'hidden', fontSize: 'var(--script-font-size)', color: 'rgba(255,255,255,0.9)',
+                lineHeight: 1.7, textAlign: 'left', cursor: phase === 'recording' ? 'default' : 'text' }} />
+          </div>
           <div ref={scriptFadeTopRef} style={{ position: 'absolute', top: 10, left: 16, right: 16, height: 22, opacity: 0,
             background: 'linear-gradient(to bottom, #121212, transparent)', pointerEvents: 'none', transition: 'opacity 0.15s' }} />
           <div ref={scriptFadeBottomRef} style={{ position: 'absolute', bottom: 16, left: 16, right: 16, height: 22, opacity: 0,
@@ -1345,6 +1499,74 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
       {/* Drag to resize — grows toward whichever edge isn't the docked side (see
           startScriptResize's side-aware delta). Rotated 90° from the old bottom pill's
           handle since the panel grows sideways, not vertically. */}
+      <div onPointerDown={e => startScriptResize(e, side)} className="cursor-ew-resize"
+        style={{ position: 'absolute', top: 0, bottom: 0, [side === 'left' ? 'right' : 'left']: -6, width: 13,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2 }}>
+        <div style={{ width: 4, height: 36, borderRadius: 2, background: 'rgba(255,255,255,0.18)' }} />
+      </div>
+    </div>
+  );
+
+  // Variant B's fixed side panel (see fixedPanelSide above) — same toolbar controls as
+  // renderDockedScript, but flat and full-height instead of a rounded card centered on the
+  // slide: no border-radius, no shadow, a single border on the edge facing the slide (the same
+  // language Wordgenie's own panel uses), and the textarea just fills whatever space the panel
+  // already has (flex:1 + overflow-y) rather than auto-growing to its content — the panel's size
+  // no longer comes from the text at all, which is the whole point of trying this. Deliberately
+  // not sharing renderDockedScript's card wrapper: the sizing model is different enough (content-
+  // driven vs. container-driven) that forcing one function to branch between them would be
+  // harder to follow than two short functions with a few shared lines.
+  const renderFixedScriptPanel = (side: 'left' | 'right') => (
+    // marginTop/height cancel the canvas container's own 16px top inset (same trick as
+    // actionZoneRef's negative margins below) — that inset is meant for the rounded studioRef
+    // canvas beside this panel, not this flat edge-to-edge one, and left as-is it stopped this
+    // panel's own border 16px short of the studio's true top edge while the bottom (flush
+    // against the action zone) already lined up correctly.
+    <div style={{ flexShrink: 0, width: scriptWidth, height: 'calc(100% + 16px)', marginTop: -16, position: 'relative',
+      display: 'flex', flexDirection: 'column', background: '#121212',
+      [side === 'left' ? 'borderRight' : 'borderLeft']: '1px solid rgba(255,255,255,0.14)' }}>
+      <div ref={scriptToolbarRef} className="flex items-center justify-between"
+        style={{ flexShrink: 0, padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <div className="flex items-center" style={{ gap: 1 }}>
+            <button onClick={() => setScriptFontSize('sm')} aria-label="Smaller script text" aria-pressed={scriptFontSize === 'sm'}
+              className="sp-focus cursor-pointer flex items-center justify-center"
+              style={{ width: 19, height: 22, borderRadius: 5, border: 'none', outline: 'none', background: 'transparent',
+                ...ns, fontWeight: 700, fontSize: 10, color: scriptFontSize === 'sm' ? '#fff' : 'rgba(255,255,255,0.35)' }}>
+              A
+            </button>
+            <button onClick={() => setScriptFontSize('lg')} aria-label="Larger script text" aria-pressed={scriptFontSize === 'lg'}
+              className="sp-focus cursor-pointer flex items-center justify-center"
+              style={{ width: 21, height: 22, borderRadius: 5, border: 'none', outline: 'none', background: 'transparent',
+                ...ns, fontWeight: 700, fontSize: 14, color: scriptFontSize === 'lg' ? '#fff' : 'rgba(255,255,255,0.35)' }}>
+              A
+            </button>
+          </div>
+          <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.1)', flexShrink: 0 }} />
+          <ScriptModeMenu mode={scriptMode} onChange={switchScriptMode} hideTeleprompter={entryMode === 'ai'} />
+        </div>
+        <div className="flex items-center" style={{ gap: 10 }}>
+          {isGeneratingScript ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 11, height: 11, border: '2px solid rgba(255,255,255,0.2)', borderTopColor: WG_TO, borderRadius: '50%', display: 'inline-block', animation: 'v2spin 0.8s linear infinite' }} />
+              <span style={{ ...ns, fontSize: 10.5, background: WG_GRADIENT, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>Generating…</span>
+            </div>
+          ) : (
+            <GenerateScriptMenu onThisSlide={onGenerateScript} onOpenChat={onOpenAiChat} disabled={phase === 'recording'} />
+          )}
+        </div>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, padding: '10px 16px 16px', position: 'relative' }}>
+        <textarea ref={scriptTextareaRef} value={scripts[idx]} onChange={e => onScriptChange(idx, e.target.value)} readOnly={phase === 'recording'}
+          placeholder="Write what you'll say over this slide…"
+          style={{ ...ns, display: 'block', width: '100%', height: '100%', resize: 'none', background: 'transparent', border: 'none', outline: 'none',
+            overflowY: 'auto', fontSize: scriptFontSize === 'sm' ? 13 : 17, color: 'rgba(255,255,255,0.9)',
+            lineHeight: 1.7, textAlign: 'left', cursor: phase === 'recording' ? 'default' : 'text' }} />
+        <div ref={scriptFadeTopRef} style={{ position: 'absolute', top: 10, left: 16, right: 16, height: 22, opacity: 0,
+          background: 'linear-gradient(to bottom, #121212, transparent)', pointerEvents: 'none', transition: 'opacity 0.15s' }} />
+        <div ref={scriptFadeBottomRef} style={{ position: 'absolute', bottom: 16, left: 16, right: 16, height: 22, opacity: 0,
+          background: 'linear-gradient(to top, #121212, transparent)', pointerEvents: 'none', transition: 'opacity 0.15s' }} />
+      </div>
       <div onPointerDown={e => startScriptResize(e, side)} className="cursor-ew-resize"
         style={{ position: 'absolute', top: 0, bottom: 0, [side === 'left' ? 'right' : 'left']: -6, width: 13,
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2 }}>
@@ -1364,7 +1586,17 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
   );
 
   return (
+    // Always column at this level — the action-zone bar further down is a sibling of studioRef
+    // right here, not nested inside it (its negative margins break it out of studioRef's own
+    // overflow:hidden box to reach the *grandparent's* padding — see actionZoneRef's own
+    // comment), specifically so it stacks as a bottom bar under studioRef regardless of what
+    // studioRef itself is doing. Making *this* level a row would have turned that bar into a
+    // third column sitting beside the studio box instead — which is exactly what happened the
+    // first time this shipped. The fixed side panel gets its own row-wrapper one level in,
+    // scoped to just [panel, studioRef], so it doesn't drag the footer along with it.
     <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: fixedPanelSide ? 'row' : 'column' }}>
+    {fixedPanelSide === 'left' && renderFixedScriptPanel('left')}
     {/* Script panel's icon-only controls (mode picker, font size, resize) have no visible
         label — StudioTooltip is hover-only and gives keyboard/screen-reader users nothing, so
         those controls carry their own aria-label plus this focus ring instead. Same convention
@@ -1410,10 +1642,10 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
       </AnimatePresence>,
       document.body
     )}
-    <div ref={studioRef} style={{ position: 'relative', width: '100%', flex: 1, minHeight: 0, background: '#121212', borderRadius: 20,
+    <div ref={studioRef} style={{ position: 'relative', width: '100%', flex: 1, minHeight: 0, minWidth: 0, background: '#121212', borderRadius: 20,
       overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
 
-      <div ref={topRowRef} style={{ position: 'relative', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 24px 0' }}>
+      <div ref={topRowRef} style={{ position: 'relative', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
         <div style={{ minWidth: 32 }} />
         {/* Presenter-view style: a large timer reads clearly from across the room the way the
             small pill floating over the record button didn't. Centered on the studio's own top
@@ -1433,11 +1665,17 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
             </div>
           )}
         </AnimatePresence>
-        {phase !== 'idle' ? (
-          <button onClick={requestDiscard} className="cursor-pointer flex items-center justify-center flex-shrink-0"
-            style={{ width: 32, height: 32, borderRadius: 9, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.05)', outline: 'none' }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
-          </button>
+        {/* Variant 'b' drops this floating discard X entirely — recording/paused already has
+            Redo doing the same reset in the bottom-right cluster, and preview gets its own
+            trash-icon button down there instead (see below), so nothing needs a second,
+            differently-styled way to do the same thing floating up here. */}
+        {phase !== 'idle' && layoutVariant === 'a' ? (
+          <StudioTooltip label="Discard take">
+            <button onClick={requestDiscard} className="cursor-pointer flex items-center justify-center flex-shrink-0" aria-label="Discard take"
+              style={{ width: 32, height: 32, borderRadius: 9, border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.05)', outline: 'none' }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </StudioTooltip>
         ) : (
           <div style={{ minWidth: 32 }} />
         )}
@@ -1466,7 +1704,14 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
           swaps this straight to the plain three-tab picker below — the same one an empty slide
           gets, no second confirmation once a method is actually picked. Re-recording with the
           same method never touches any of this — that's the separate Re-record button below. */}
-      {showModeRail && !aiPreview && (
+      {/* Variant A only now, both branches — variant 'b' already drops the plain three-tab
+          picker (Record/AI voice/Upload) once nothing's been captured yet (the right-side Start
+          recording/Add AI voice buttons cover that), and the post-take "Change" pill has since
+          become redundant there too: the Wordgenie assign-list's own per-row voice picker
+          ("Clear" to revert, pick a different voice to reassign) now does that same job for
+          variant B, so this canvas-level pill was a second, competing way to do it. Variant A
+          has no assign-list — this stays its only path to swap an existing take's source. */}
+      {showModeRail && !aiPreview && layoutVariant === 'a' && (
         <div ref={modeRailRef} className="flex items-center justify-center" style={{ flexShrink: 0, padding: '0 28px 10px' }}>
           {hasTake ? (
             <button onClick={() => setConfirmChangeType(true)} className="flex items-center cursor-pointer"
@@ -1490,7 +1735,7 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                 before this is ever reached, so every tab here is just picking fresh. */
             <div className="flex items-center" style={{ background: 'rgba(255,255,255,0.05)',
               border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: 4, gap: 2 }}>
-              {([['record', 'Record'], ['ai', 'AI voice'], ['upload', 'Upload']] as const).map(([id, label]) => (
+              {([['record', 'Record your voice'], ['ai', 'Use AI voice']] as const).map(([id, label]) => (
                 <button key={id} onClick={() => setEntryMode(id)} className="flex items-center cursor-pointer"
                   style={{ height: 34, padding: '0 16px', borderRadius: 9, border: 'none', gap: 9, ...ns, fontSize: 13.5, fontWeight: 700,
                     transition: 'background 0.15s, color 0.15s',
@@ -1514,7 +1759,7 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
           from forcing the row wider/taller than intended); the hidden was only ever catching
           this one popover as collateral. */}
       <div style={{ flex: 1, display: 'flex', minHeight: 0, minWidth: 0, overflow: 'visible' }}>
-        {showScriptDock && scriptMode === 'left' && renderDockedScript('left')}
+        {showScriptDock && scriptMode === 'left' && !fixedPanelSide && renderDockedScript('left')}
         {/* Portal, not a normal child — it needs to sit above the whole app in a fixed,
             viewport-anchored box regardless of where in the tree it's rendered from, and any
             transformed ancestor (framer-motion animates via transform) would otherwise turn
@@ -1633,7 +1878,7 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
           instead of a top edge. Center holds up better than top once the script grows past
           slideBox.h (its minHeight): the extra height splits evenly above/below instead of
           pushing everything down from a shared top. */}
-      <div ref={slideCellRef} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 28px', minHeight: 200, minWidth: 0, overflow: 'hidden', gap: 24 }}>
+      <div ref={slideCellRef} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px 28px', minHeight: 200, minWidth: 0, overflow: 'hidden', gap: 24 }}>
         {/* The backing panel behind side-by-side (below) already reads as "these two go
             together" — each panel keeps its own normal rounded corners and a real gap, rather
             than flattening into one merged shape. */}
@@ -1750,8 +1995,10 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
           </div>
         )}
       </div>
-      {showScriptDock && scriptMode === 'right' && renderDockedScript('right')}
+      {showScriptDock && scriptMode === 'right' && !fixedPanelSide && renderDockedScript('right')}
       </div>
+    </div>
+    {fixedPanelSide === 'right' && renderFixedScriptPanel('right')}
     </div>
 
       {/* Primary action zone. Record mode gets a real 3-column bar — settings on the left,
@@ -1760,7 +2007,7 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
           single centered block; they don't have a left/right pairing to balance against.
           Sits outside the rounded card as a full-bleed bar (negative margins cancel the
           parent's 16px inset) instead of being clipped to the card's rounded corners. */}
-      <div ref={actionZoneRef} style={{ flexShrink: 0, margin: '10px -16px -16px', padding: '16px 24px',
+      <div ref={actionZoneRef} style={{ flexShrink: 0, margin: '0 -16px -16px', padding: '16px 24px',
         // minHeight: 46 below (shared by all three branches of this bar — hasTake, record,
         // ai/upload/preview) is what actually keeps the bar's height identical across every
         // mode, not this padding alone — it matches the record button's own 46px diameter,
@@ -1802,6 +2049,15 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                   </svg>
                 </button>
               </StudioTooltip>
+              {/* Same settings menu the record row uses — reviewing an already-recorded take is
+                  still a good moment to glance at what's coming up next, so "Next slide preview"
+                  shouldn't only be reachable pre-take. Not disabled here: there's no in-progress
+                  capture in this state to lock the setting against. */}
+              <div style={{ marginLeft: 4, borderRadius: 9, background: 'rgba(255,255,255,0.06)' }}>
+                <DisplayOptionsMenu showCountdown={false}
+                  countdownEnabled={countdownEnabled} onCountdownChange={setCountdownEnabled}
+                  nextPreviewEnabled={nextPreviewEnabled} onNextPreviewChange={setNextPreviewEnabled} />
+              </div>
             </div>
             <div className="flex items-center" style={{ gap: 8, position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>
               {/* Plain, always-visible icon button — no menu, no hover-to-reveal. Every hidden
@@ -1817,54 +2073,109 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                   bordered button next to one unbordered icon chip. Toggles (script/settings/
                   camera/mic, in the row above) are the ones that stay borderless — see those for
                   the reasoning; this row is actions, not state. */}
-              <StudioTooltip label="Remove take">
-                <button onClick={requestDeleteTake} className="cursor-pointer flex items-center justify-center"
-                  style={{ width: 40, height: 40, borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)', flexShrink: 0,
-                    background: 'transparent', color: 'rgba(255,255,255,0.6)',
-                    transition: 'background 0.15s, color 0.15s, border-color 0.15s' }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(229,72,77,0.14)'; e.currentTarget.style.color = '#E5484D'; e.currentTarget.style.borderColor = 'rgba(229,72,77,0.4)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.6)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)'; }}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
-                  </svg>
+              {layoutVariant === 'a' && (
+                <StudioTooltip label="Remove take">
+                  <button onClick={requestDeleteTake} className="cursor-pointer flex items-center justify-center"
+                    style={{ width: 40, height: 40, borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', flexShrink: 0,
+                      background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.6)',
+                      transition: 'background 0.15s, color 0.15s, border-color 0.15s' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(229,72,77,0.14)'; e.currentTarget.style.color = '#E5484D'; e.currentTarget.style.borderColor = 'rgba(229,72,77,0.4)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'rgba(255,255,255,0.6)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'; }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+                    </svg>
+                  </button>
+                </StudioTooltip>
+              )}
+              {layoutVariant === 'a' && (
+                <button onClick={handleRedo} className="cursor-pointer flex items-center"
+                  style={{ gap: 8, height: 40, padding: '0 18px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)',
+                    background: 'rgba(255,255,255,0.05)', ...ns, fontSize: 13.5, fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
+                  {/* Icon now matches what each label actually means, instead of one redo-arrow
+                      glyph doing duty for all three — a "redo" arrow next to "Adjust voice" read
+                      as this reopening the last take, when it actually opens the voice picker.
+                      A gauge, not a mic — the mic reads as "record/capture," but this opens the
+                      voice picker's Speed tuning slider, same glyph that control already uses for
+                      scroll speed in the teleprompter, so the icon means "adjust a dial" here too. */}
+                  {audio.source === 'ai' ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                      <path d="M12 15l3.5-3.5"/><path d="M20.3 18c.4-1 .6-2 .6-3a9 9 0 1 0-18 0c0 1 .2 2 .6 3"/>
+                    </svg>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                      <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/>
+                    </svg>
+                  )}
+                  {audio.source === 'ai' ? 'Adjust voice' : audio.source === 'upload' ? 'Replace file' : 'Re-record'}
                 </button>
-              </StudioTooltip>
-              <button onClick={handleRedo} className="cursor-pointer flex items-center"
-                style={{ gap: 8, height: 40, padding: '0 18px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)',
-                  background: 'transparent', ...ns, fontSize: 13.5, fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
-                {/* Icon now matches what each label actually means, instead of one redo-arrow
-                    glyph doing duty for all three — a "redo" arrow next to "Adjust voice" read
-                    as this reopening the last take, when it actually opens the voice picker.
-                    A gauge, not a mic — the mic reads as "record/capture," but this opens the
-                    voice picker's Speed tuning slider, same glyph that control already uses for
-                    scroll speed in the teleprompter, so the icon means "adjust a dial" here too. */}
-                {audio.source === 'ai' ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                    <path d="M12 15l3.5-3.5"/><path d="M20.3 18c.4-1 .6-2 .6-3a9 9 0 1 0-18 0c0 1 .2 2 .6 3"/>
-                  </svg>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                    <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/>
-                  </svg>
-                )}
-                {audio.source === 'ai' ? 'Adjust voice' : audio.source === 'upload' ? 'Replace file' : 'Re-record'}
-              </button>
+              )}
             </div>
             {/* Routed through the parent's activeIdx (not local idx) — this state reviews a
                 saved take, and each slide's own recorded/idle status lives on the parent, so
-                switching slides here has to actually change slide, not just what's on screen. */}
+                switching slides here has to actually change slide, not just what's on screen.
+                Variant 'b' drops the nav in favor of the take actions themselves (re-record,
+                change type, delete) — same right-side-is-the-transport idea as every other
+                phase in this variant, and it also folds in "Change type" (previously only
+                reachable via the pill above the slide) so all three take decisions live in one
+                place instead of being split across two rows. */}
             <div className="flex items-center" style={{ gap: 8 }}>
-              <button onClick={() => onNavigate(Math.max(0, idx - 1))} disabled={idx === 0}
-                className="cursor-pointer flex items-center justify-center"
-                style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', opacity: idx === 0 ? 0.3 : 1 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
-              </button>
-              <span style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{idx + 1} / {slides.length}</span>
-              <button onClick={() => onNavigate(Math.min(slides.length - 1, idx + 1))} disabled={idx === slides.length - 1}
-                className="cursor-pointer flex items-center justify-center"
-                style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', opacity: idx === slides.length - 1 ? 0.3 : 1 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
-              </button>
+              {layoutVariant === 'b' ? (
+                <>
+                  <StudioTooltip label="Delete take">
+                    <button onClick={requestDeleteTake} className="cursor-pointer flex items-center justify-center" aria-label="Delete take"
+                      style={{ width: 34, height: 34, borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)',
+                        background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.7)', transition: 'color 0.15s, border-color 0.15s' }}
+                      onMouseEnter={e => { e.currentTarget.style.color = '#E5484D'; e.currentTarget.style.borderColor = 'rgba(229,72,77,0.4)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'; }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+                      </svg>
+                    </button>
+                  </StudioTooltip>
+                  <StudioTooltip label={audio.source === 'ai' ? 'Adjust voice' : audio.source === 'upload' ? 'Replace file' : 'Re-record'}>
+                    <button onClick={handleRedo} className="cursor-pointer flex items-center justify-center"
+                      aria-label={audio.source === 'ai' ? 'Adjust voice' : audio.source === 'upload' ? 'Replace file' : 'Re-record'}
+                      style={{ width: 34, height: 34, borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)',
+                        background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.85)' }}>
+                      {audio.source === 'ai' ? (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                          <path d="M12 15l3.5-3.5"/><path d="M20.3 18c.4-1 .6-2 .6-3a9 9 0 1 0-18 0c0 1 .2 2 .6 3"/>
+                        </svg>
+                      ) : (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                          <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/>
+                        </svg>
+                      )}
+                    </button>
+                  </StudioTooltip>
+                  <button onClick={() => setConfirmChangeType(true)} className="cursor-pointer flex items-center"
+                    style={{ ...ns, gap: 6, height: 34, padding: '0 16px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)',
+                      background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.85)', fontSize: 13.5, fontWeight: 600 }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                      <path d="M16 3l4 4-4 4"/><path d="M20 7H4"/><path d="M8 21l-4-4 4-4"/><path d="M4 17h16"/>
+                    </svg>
+                    Change audio type
+                  </button>
+                </>
+              ) : (
+                <>
+                  <StudioTooltip label="Previous slide">
+                    <button onClick={() => onNavigate(Math.max(0, idx - 1))} disabled={idx === 0} aria-label="Previous slide"
+                      className="cursor-pointer flex items-center justify-center"
+                      style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', opacity: idx === 0 ? 0.3 : 1 }}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+                    </button>
+                  </StudioTooltip>
+                  <span style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{idx + 1} / {slides.length}</span>
+                  <StudioTooltip label="Next slide">
+                    <button onClick={() => onNavigate(Math.min(slides.length - 1, idx + 1))} disabled={idx === slides.length - 1} aria-label="Next slide"
+                      className="cursor-pointer flex items-center justify-center"
+                      style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', opacity: idx === slides.length - 1 ? 0.3 : 1 }}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
+                    </button>
+                  </StudioTooltip>
+                </>
+              )}
             </div>
           </div>
         ) : entryMode === 'record' && phase !== 'preview' ? (
@@ -1937,15 +2248,17 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                     the control at all. */}
                 <div ref={micPillRef} className="flex items-center" style={{ height: 34, borderRadius: 9, flexShrink: 0,
                   background: 'rgba(255,255,255,0.06)' }}>
-                  <button onClick={() => setMicMuted(m => !m)}
-                    title={micMuted ? 'Unmute microphone' : 'Mute microphone'}
-                    className="cursor-pointer flex items-center justify-center"
-                    style={{ width: 34, height: '100%', border: 'none', background: 'transparent', transition: 'background 0.12s',
-                      borderTopLeftRadius: 8, borderBottomLeftRadius: 8 }}
-                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
-                    {micMuted ? <MicOffIcon color="rgba(255,255,255,0.6)" /> : <MicIcon color="rgba(255,255,255,0.85)" />}
-                  </button>
+                  <StudioTooltip label={micMuted ? 'Unmute microphone' : 'Mute microphone'}>
+                    <button onClick={() => setMicMuted(m => !m)}
+                      aria-label={micMuted ? 'Unmute microphone' : 'Mute microphone'}
+                      className="cursor-pointer flex items-center justify-center"
+                      style={{ width: 34, height: '100%', border: 'none', background: 'transparent', transition: 'background 0.12s',
+                        borderTopLeftRadius: 8, borderBottomLeftRadius: 8 }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+                      {micMuted ? <MicOffIcon color="rgba(255,255,255,0.6)" /> : <MicIcon color="rgba(255,255,255,0.85)" />}
+                    </button>
+                  </StudioTooltip>
                   <div style={{ width: 1, height: 18, background: 'rgba(255,255,255,0.16)', flexShrink: 0 }} />
                   {/* Stays live through the whole take, same as the mute toggle it's attached to. */}
                   <DeviceMenu kind="audioinput" value={micDeviceId} onChange={setMicDeviceId} rounded="right" openRight={deviceMenuOpensRight} />
@@ -1955,17 +2268,19 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                 <div className="flex items-center" style={{ height: 34, borderRadius: 9, flexShrink: 0,
                   background: 'rgba(255,255,255,0.06)',
                   opacity: showModeRail ? 1 : 0.4 }}>
-                  <button onClick={() => showModeRail && setCaptureMode(m => m === 'audio' ? 'video' : 'audio')}
-                    title={captureMode === 'video' ? 'Turn camera off' : 'Turn camera on'}
-                    className={showModeRail ? 'cursor-pointer flex items-center justify-center' : 'flex items-center justify-center'}
-                    style={{ width: 34, height: '100%', border: 'none', background: 'transparent', transition: 'background 0.12s',
-                      borderTopLeftRadius: 8, borderBottomLeftRadius: 8 }}
-                    onMouseEnter={e => { if (showModeRail) e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
-                    {captureMode === 'video'
-                      ? <VideoIcon color="rgba(255,255,255,0.85)" />
-                      : <VideoOffIcon color="rgba(255,255,255,0.6)" />}
-                  </button>
+                  <StudioTooltip label={captureMode === 'video' ? 'Turn camera off' : 'Turn camera on'}>
+                    <button onClick={() => showModeRail && setCaptureMode(m => m === 'audio' ? 'video' : 'audio')}
+                      aria-label={captureMode === 'video' ? 'Turn camera off' : 'Turn camera on'}
+                      className={showModeRail ? 'cursor-pointer flex items-center justify-center' : 'flex items-center justify-center'}
+                      style={{ width: 34, height: '100%', border: 'none', background: 'transparent', transition: 'background 0.12s',
+                        borderTopLeftRadius: 8, borderBottomLeftRadius: 8 }}
+                      onMouseEnter={e => { if (showModeRail) e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+                      {captureMode === 'video'
+                        ? <VideoIcon color="rgba(255,255,255,0.85)" />
+                        : <VideoOffIcon color="rgba(255,255,255,0.6)" />}
+                    </button>
+                  </StudioTooltip>
                   <div style={{ width: 1, height: 18, background: 'rgba(255,255,255,0.16)', flexShrink: 0 }} />
                   {/* Real, unlike the mic chevron: picking a device here actually swaps
                       LiveCamera's getUserMedia constraints, so the preview (and the composited
@@ -1981,10 +2296,121 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
               </div>
             </div>
 
-            {/* Redo/record/stop, centered as one group — symmetric by construction (redo-slot and
-                stop-slot are equal-size reserved slots either side of the button), so centering
-                the whole group also centers the button itself. */}
-            <div className="flex items-center" style={{ gap: 18, position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }}>
+            {layoutVariant === 'b' ? (
+              /* Right-side cluster doubles as the record transport in this variant, replacing
+                 both the shipped center record button and the slide-nav pair that sit here in
+                 variant 'a' — one control doing the job instead of two overlapping ones. Idle
+                 offers the same two ways to add narration as the top mode rail (Record/AI
+                 voice); recording or paused swaps to Stop/Pause/Redo. Slide-to-slide movement
+                 still works via the filmstrip and the arrow-key shortcut either way — this
+                 cluster is only ever about the current slide's take. */
+              <div className="flex items-center" style={{ gap: 8, position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)' }}>
+                {phase === 'recording' || phase === 'paused' ? (
+                  <>
+                    {/* Icon-only + tooltip for these two — a transport toolbar (skip/pause,
+                        same as any media player) reads fine without labels once you're mid-take
+                        and already looking at it; Stop keeps its label since it's the one
+                        decisive action that ends the take. */}
+                    <StudioTooltip label="Redo take">
+                      <button onClick={handleRerecord} className="cursor-pointer flex items-center justify-center" aria-label="Redo take"
+                        style={{ width: 34, height: 34, borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.85)' }}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/>
+                        </svg>
+                      </button>
+                    </StudioTooltip>
+                    <StudioTooltip label={phase === 'recording' ? 'Pause' : 'Resume'}>
+                      <button onClick={handlePauseResume} className="cursor-pointer flex items-center justify-center" aria-label={phase === 'recording' ? 'Pause' : 'Resume'}
+                        style={{ width: 34, height: 34, borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.85)' }}>
+                        {phase === 'recording' ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1.5" /><rect x="14" y="4" width="4" height="16" rx="1.5" /></svg>
+                        ) : (
+                          // Resuming is still capture, not media playback, so it borrows the
+                          // record dot rather than a play triangle (matches variant A).
+                          <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#E5484D', display: 'block' }} />
+                        )}
+                      </button>
+                    </StudioTooltip>
+                    <button onClick={handleStop} className="cursor-pointer flex items-center"
+                      style={{ ...ns, height: 34, padding: '0 18px', borderRadius: 10, border: 'none', gap: 8,
+                        background: '#E5484D', color: '#fff', fontSize: 13.5, fontWeight: 700 }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="white"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
+                      Stop
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {/* One uniform trigger, not a split button — clicking anywhere on "Use AI
+                        voice" opens the same menu of both real choices (this slide vs. the whole
+                        deck), regardless of where on the button you click. A split button (main
+                        face = one action, chevron = a different one) meant the two zones acted
+                        differently depending on pixel-precise click location, which read as
+                        arbitrary rather than intentional. */}
+                    <div ref={assignMenuRef} style={{ position: 'relative', flexShrink: 0 }}>
+                      <button onClick={() => setAssignMenuOpen(o => !o)} aria-haspopup="menu" aria-expanded={assignMenuOpen}
+                        className="cursor-pointer flex items-center"
+                        style={{ ...ns, height: 34, padding: '0 14px', borderRadius: 10, border: 'none', gap: 8,
+                          background: assignMenuOpen ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.12)', color: '#fff', fontSize: 13.5, fontWeight: 700, transition: 'background 0.12s' }}
+                        onMouseEnter={e => { if (!assignMenuOpen) e.currentTarget.style.background = 'rgba(255,255,255,0.16)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = assignMenuOpen ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.12)'; }}>
+                        <WordgenieIcon size={14} color="#fff" />
+                        Use AI voice
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                      </button>
+                      <AnimatePresence>
+                        {assignMenuOpen && (
+                          <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }}
+                            style={{ ...assignMenuStyle, zIndex: 50, background: '#1E1E1E', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12,
+                              boxShadow: '0 20px 50px rgba(0,0,0,0.5)', padding: 6, width: 260 }}>
+                            <button onClick={() => { setAssignMenuOpen(false); setEntryMode('ai'); }}
+                              className="w-full flex items-start cursor-pointer text-left" style={{ gap: 10, padding: '9px 10px', borderRadius: 8, border: 'none', background: 'transparent', transition: 'background 0.1s' }}
+                              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+                              <div className="flex items-center justify-center flex-shrink-0" style={{ width: 26, height: 26, borderRadius: 7, background: 'rgba(255,255,255,0.08)', marginTop: 1 }}>
+                                <WordgenieIcon size={12} color="rgba(255,255,255,0.7)" />
+                              </div>
+                              <div className="flex flex-col" style={{ gap: 2 }}>
+                                <span style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: '#fff' }}>Use AI voice for this slide</span>
+                                <span style={{ ...ns, fontSize: 11, color: 'rgba(255,255,255,0.45)', lineHeight: 1.4 }}>Pick a voice and generate audio for the slide you're on.</span>
+                              </div>
+                            </button>
+                            <button onClick={() => { setAssignMenuOpen(false); setAssignModalOpen(true); }}
+                              className="w-full flex items-start cursor-pointer text-left" style={{ gap: 10, padding: '9px 10px', borderRadius: 8, border: 'none', background: 'transparent', transition: 'background 0.1s' }}
+                              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+                              <div className="flex items-center justify-center flex-shrink-0" style={{ width: 26, height: 26, borderRadius: 7,
+                                background: 'linear-gradient(135deg, rgba(76,141,255,0.28), rgba(139,111,240,0.28))', marginTop: 1 }}>
+                                <WordgenieIcon size={12} />
+                              </div>
+                              <div className="flex flex-col" style={{ gap: 2 }}>
+                                <span style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: '#fff' }}>Assign voices for the whole deck</span>
+                                <span style={{ ...ns, fontSize: 11, color: 'rgba(255,255,255,0.45)', lineHeight: 1.4 }}>Set a voice per slide in one pass, then generate.</span>
+                              </div>
+                            </button>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                    <button onClick={handleRecordButtonClick}
+                      // Countdown ignores clicks entirely — handleRecordButtonClick's own
+                      // handlePauseResume branch no-ops for phase 'countdown', so it can't be
+                      // clicked away and skipped early.
+                      className={phase === 'countdown' ? 'flex items-center' : 'cursor-pointer flex items-center'}
+                      style={{ ...ns, height: 34, padding: '0 18px', borderRadius: 10, border: 'none', gap: 8,
+                        background: 'rgba(255,255,255,0.12)', color: '#fff', fontSize: 13.5, fontWeight: 700,
+                        cursor: phase === 'countdown' ? 'default' : 'pointer', opacity: phase === 'countdown' ? 0.7 : 1 }}>
+                      <MicIcon size={14} color="#fff" />
+                      {phase === 'countdown' ? `Starting in ${countdownN}…` : 'Record yourself'}
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : (
+              <>
+                {/* Redo/record/stop, centered as one group — symmetric by construction (redo-slot and
+                    stop-slot are equal-size reserved slots either side of the button), so centering
+                    the whole group also centers the button itself. */}
+                <div className="flex items-center" style={{ gap: 18, position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }}>
                     {/* Reserved-size slot (not conditionally in the flex flow) — a plain
                         conditional mount would widen this group when Redo appears, shifting the
                         record button off the 50% center point this whole group is pinned to. */}
@@ -2038,36 +2464,43 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                         )}
                       </AnimatePresence>
                     </div>
-            </div>
+                </div>
 
-            {/* Slide nav — its own cluster on the right, opposite the left-side
-                controls, with the record button centered independently between them. */}
-            <div className="flex items-center" style={{ gap: 8 }}>
-              {/* Still idle (nothing captured yet this session) → route through the parent so
-                  the destination slide's own recorded/idle status loads correctly, same as the
-                  hasTake nav. Once actually recording/paused, stay on local idx — remounting
-                  mid-take via the parent would drop the in-progress capture. */}
-              <button onClick={() => { const t = Math.max(0, idx - 1); phase === 'idle' ? onNavigate(t) : setIdx(t); }} disabled={idx === 0}
-                className="cursor-pointer flex items-center justify-center"
-                style={{ width: 34, height: 34, borderRadius: 9, border: 'none', background: 'rgba(255,255,255,0.06)', opacity: idx === 0 ? 0.3 : 1 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
-              </button>
-              <span style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{idx + 1} / {slides.length}</span>
-              {/* "Skip to empty slides" (confirmRecordScope) routes Next around slides that
-                  already had audio before this take, instead of always landing on idx+1 — the
-                  disabled state has to ask the same nextReachableIdx question, or the button
-                  would stay clickable with nothing left to skip to. */}
-              <button onClick={() => {
-                  if (phase === 'idle') { onNavigate(Math.min(slides.length - 1, idx + 1)); return; }
-                  const t = nextReachableIdx(idx + 1); if (t !== -1) setIdx(t);
-                }}
-                disabled={phase === 'idle' ? idx === slides.length - 1 : nextReachableIdx(idx + 1) === -1}
-                className="cursor-pointer flex items-center justify-center"
-                style={{ width: 34, height: 34, borderRadius: 9, border: 'none', background: 'rgba(255,255,255,0.06)',
-                  opacity: (phase === 'idle' ? idx === slides.length - 1 : nextReachableIdx(idx + 1) === -1) ? 0.3 : 1 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
-              </button>
-            </div>
+                {/* Slide nav — its own cluster on the right, opposite the left-side
+                    controls, with the record button centered independently between them. */}
+                <div className="flex items-center" style={{ gap: 8 }}>
+                  {/* Still idle (nothing captured yet this session) → route through the parent so
+                      the destination slide's own recorded/idle status loads correctly, same as the
+                      hasTake nav. Once actually recording/paused, stay on local idx — remounting
+                      mid-take via the parent would drop the in-progress capture. */}
+                  <StudioTooltip label="Previous slide">
+                    <button onClick={() => { const t = Math.max(0, idx - 1); phase === 'idle' ? onNavigate(t) : setIdx(t); }} disabled={idx === 0} aria-label="Previous slide"
+                      className="cursor-pointer flex items-center justify-center"
+                      style={{ width: 34, height: 34, borderRadius: 9, border: 'none', background: 'rgba(255,255,255,0.06)', opacity: idx === 0 ? 0.3 : 1 }}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+                    </button>
+                  </StudioTooltip>
+                  <span style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{idx + 1} / {slides.length}</span>
+                  {/* "Skip to empty slides" (confirmRecordScope) routes Next around slides that
+                      already had audio before this take, instead of always landing on idx+1 — the
+                      disabled state has to ask the same nextReachableIdx question, or the button
+                      would stay clickable with nothing left to skip to. */}
+                  <StudioTooltip label="Next slide">
+                    <button onClick={() => {
+                        if (phase === 'idle') { onNavigate(Math.min(slides.length - 1, idx + 1)); return; }
+                        const t = nextReachableIdx(idx + 1); if (t !== -1) setIdx(t);
+                      }}
+                      disabled={phase === 'idle' ? idx === slides.length - 1 : nextReachableIdx(idx + 1) === -1}
+                      aria-label="Next slide"
+                      className="cursor-pointer flex items-center justify-center"
+                      style={{ width: 34, height: 34, borderRadius: 9, border: 'none', background: 'rgba(255,255,255,0.06)',
+                        opacity: (phase === 'idle' ? idx === slides.length - 1 : nextReachableIdx(idx + 1) === -1) ? 0.3 : 1 }}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
+                    </button>
+                  </StudioTooltip>
+                </div>
+              </>
+            )}
           </div>
           </>
         ) : (
@@ -2115,7 +2548,7 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                    left: keep this voice's take, or go back and pick a different voice. */
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                   <button onClick={changeVoiceFromPreview} className="cursor-pointer"
-                    style={{ height: 42, padding: '0 22px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none' }}>
+                    style={{ height: 42, padding: '0 22px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none' }}>
                     Change voice
                   </button>
                   <button onClick={saveAiTake} className="cursor-pointer"
@@ -2164,12 +2597,14 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                   <input ref={fileInputRef} type="file" accept="audio/*" onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) handleFile(file); }} style={{ display: 'none' }} />
                 </div>
               )
-            ) : (
+            ) : layoutVariant === 'a' ? (
               /* Player already lives on the slide above (scrim + play + scrubber) — this row
-                 is just the two decisions left: keep it or start over. */
+                 is just the two decisions left: keep it or start over. Variant 'b' moves this
+                 pair to the right-side cluster instead (see below), replacing the slide nav
+                 there the same way the idle/recording states already do for that variant. */
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <button onClick={handleRerecord} className="cursor-pointer"
-                  style={{ height: 42, padding: '0 22px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none' }}>
+                  style={{ height: 42, padding: '0 22px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none' }}>
                   Re-record
                 </button>
                 <button onClick={handleDone} className="cursor-pointer"
@@ -2177,20 +2612,60 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                   Save
                 </button>
               </div>
-            )}
+            ) : null}
             </div>
             <div className="flex items-center" style={{ gap: 8 }}>
-              <button onClick={() => onNavigate(Math.max(0, idx - 1))} disabled={idx === 0}
-                className="cursor-pointer flex items-center justify-center"
-                style={{ width: 34, height: 34, borderRadius: 9, border: 'none', background: 'rgba(255,255,255,0.06)', opacity: idx === 0 ? 0.3 : 1 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
-              </button>
-              <span style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{idx + 1} / {slides.length}</span>
-              <button onClick={() => onNavigate(Math.min(slides.length - 1, idx + 1))} disabled={idx === slides.length - 1}
-                className="cursor-pointer flex items-center justify-center"
-                style={{ width: 34, height: 34, borderRadius: 9, border: 'none', background: 'rgba(255,255,255,0.06)', opacity: idx === slides.length - 1 ? 0.3 : 1 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
-              </button>
+              {/* Variant 'b', record mode, reviewing a take: Re-record/Save replace the slide
+                  nav here instead of sitting centered above it — same right-side-is-the-
+                  transport idea as the idle/recording states. AI voice and Upload (and variant
+                  'a' generally) keep the plain nav, since they don't have this same pair. */}
+              {layoutVariant === 'b' && entryMode === 'record' ? (
+                <>
+                  {/* Discard-and-exit — the same job the floating top-right X used to do (see
+                      requestDiscard above), relocated here as a plain icon instead of a
+                      separately-styled floating control. Still opens the same confirm dialog. */}
+                  <StudioTooltip label="Discard take">
+                    <button onClick={requestDiscard} className="cursor-pointer flex items-center justify-center" aria-label="Discard take"
+                      style={{ width: 34, height: 34, borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.7)', transition: 'color 0.15s, border-color 0.15s' }}
+                      onMouseEnter={e => { e.currentTarget.style.color = '#E5484D'; e.currentTarget.style.borderColor = 'rgba(229,72,77,0.4)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'; }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+                      </svg>
+                    </button>
+                  </StudioTooltip>
+                  <StudioTooltip label="Re-record">
+                    <button onClick={handleRerecord} className="cursor-pointer flex items-center justify-center" aria-label="Re-record"
+                      style={{ width: 34, height: 34, borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.85)' }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/>
+                      </svg>
+                    </button>
+                  </StudioTooltip>
+                  <button onClick={handleDone} className="cursor-pointer flex items-center"
+                    style={{ ...ns, height: 34, padding: '0 16px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.85)', fontSize: 13.5, fontWeight: 600 }}>
+                    Save
+                  </button>
+                </>
+              ) : (
+                <>
+                  <StudioTooltip label="Previous slide">
+                    <button onClick={() => onNavigate(Math.max(0, idx - 1))} disabled={idx === 0} aria-label="Previous slide"
+                      className="cursor-pointer flex items-center justify-center"
+                      style={{ width: 34, height: 34, borderRadius: 9, border: 'none', background: 'rgba(255,255,255,0.06)', opacity: idx === 0 ? 0.3 : 1 }}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+                    </button>
+                  </StudioTooltip>
+                  <span style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{idx + 1} / {slides.length}</span>
+                  <StudioTooltip label="Next slide">
+                    <button onClick={() => onNavigate(Math.min(slides.length - 1, idx + 1))} disabled={idx === slides.length - 1} aria-label="Next slide"
+                      className="cursor-pointer flex items-center justify-center"
+                      style={{ width: 34, height: 34, borderRadius: 9, border: 'none', background: 'rgba(255,255,255,0.06)', opacity: idx === slides.length - 1 ? 0.3 : 1 }}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
+                    </button>
+                  </StudioTooltip>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -2223,13 +2698,13 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                 </p>
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                   <button onClick={() => setConfirmDiscard(false)} className="sp-focus cursor-pointer"
-                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none', transition: 'background 0.12s, border-color 0.12s' }}
+                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none', transition: 'background 0.12s, border-color 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.32)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)'; }}>
+                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'; }}>
                     Keep editing
                   </button>
                   <button onClick={confirmedDiscard} className="sp-focus cursor-pointer"
-                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#E5484D', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none', boxShadow: '0 6px 18px rgba(229,72,77,0.35)', transition: 'filter 0.12s' }}
+                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#E5484D', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none', transition: 'filter 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
                     onMouseLeave={e => { e.currentTarget.style.filter = 'brightness(1)'; }}>
                     Discard
@@ -2259,13 +2734,13 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                 </p>
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                   <button onClick={cancelChangeType} className="sp-focus cursor-pointer"
-                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none', transition: 'background 0.12s, border-color 0.12s' }}
+                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none', transition: 'background 0.12s, border-color 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.32)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)'; }}>
+                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'; }}>
                     Cancel
                   </button>
                   <button onClick={confirmedChangeType} className="sp-focus cursor-pointer"
-                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#E5484D', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none', boxShadow: '0 6px 18px rgba(229,72,77,0.35)', transition: 'filter 0.12s' }}
+                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#E5484D', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none', transition: 'filter 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
                     onMouseLeave={e => { e.currentTarget.style.filter = 'brightness(1)'; }}>
                     Change
@@ -2291,18 +2766,60 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                 </p>
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                   <button onClick={() => setConfirmDeleteTake(false)} className="sp-focus cursor-pointer"
-                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none', transition: 'background 0.12s, border-color 0.12s' }}
+                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none', transition: 'background 0.12s, border-color 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.32)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)'; }}>
+                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'; }}>
                     Cancel
                   </button>
                   <button onClick={confirmedDeleteTake} className="sp-focus cursor-pointer"
-                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#E5484D', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none', boxShadow: '0 6px 18px rgba(229,72,77,0.35)', transition: 'filter 0.12s' }}
+                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#E5484D', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none', transition: 'filter 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
                     onMouseLeave={e => { e.currentTarget.style.filter = 'brightness(1)'; }}>
                     Remove
                   </button>
                 </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
+
+      {/* Whole-deck voice assignment — reached from the "Use AI voice" split button's chevron
+          (see the right-side action cluster above). Same AssignNarrationList used inside the
+          Wordgenie chat fork for variant A, just given a real modal instead of a 300px chat
+          column — wider card, so the list gets some room, capped at 80vh since a long deck
+          would otherwise push the Generate button off-screen with nothing to scroll it back. */}
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {assignModalOpen && narrationPlan && onNarrationPlanChange && onGenerateNarrationPlan && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              style={{ position: 'fixed', inset: 0, background: 'rgba(5,7,14,0.65)', backdropFilter: 'blur(4px)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <motion.div initial={{ opacity: 0, scale: 0.96, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }}
+                style={{ position: 'relative', background: '#1E1E1E', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16,
+                  padding: '26px 26px 22px', width: 440, maxHeight: '80vh', overflowY: 'auto', textAlign: 'left', boxShadow: '0 24px 60px rgba(0,0,0,0.5)' }}>
+                {/* Plain wrapper carries the absolute positioning, not StudioTooltip's own div
+                    directly — that div is itself position:relative with no in-flow content once
+                    its button child goes position:absolute, so it collapses to a zero-width box
+                    and the button's top/right end up resolving against that collapsed point
+                    instead of the card (see FilmstripRail's own comment on this same footgun). */}
+                <div style={{ position: 'absolute', top: 14, right: 14 }}>
+                  <StudioTooltip label="Close">
+                    <button onClick={() => setAssignModalOpen(false)} className="sp-focus cursor-pointer flex items-center justify-center" aria-label="Close"
+                      style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,0.08)', outline: 'none', transition: 'background 0.15s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.14)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2.4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  </StudioTooltip>
+                </div>
+                <p style={{ ...ns, fontSize: 16, fontWeight: 700, color: '#fff', margin: '0 26px 4px 0' }}>Assign voices</p>
+                <p style={{ ...ns, fontSize: 13, color: 'rgba(255,255,255,0.55)', margin: '0 0 18px', lineHeight: 1.5 }}>
+                  Select slides and assign a voice. Anything you leave alone, you'll record yourself.
+                </p>
+                <AssignNarrationList slides={slides} plan={narrationPlan} onPlanChange={onNarrationPlanChange}
+                  onGenerate={() => { onGenerateNarrationPlan(); setAssignModalOpen(false); }}
+                  cloneName={cloneName} onClone={onClone} />
               </motion.div>
             </motion.div>
           )}
@@ -2323,12 +2840,21 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                     neither Override nor Skip is a no-op "cancel" — both are real proceed
                     actions, so dismissing without deciding needs its own affordance. Same 28px
                     close button as the voice picker's, not a smaller one-off. */}
-                <button onClick={() => setConfirmRecordScope(false)} className="sp-focus cursor-pointer flex items-center justify-center"
-                  style={{ position: 'absolute', top: 14, right: 14, width: 28, height: 28, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,0.08)', outline: 'none', transition: 'background 0.15s' }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.14)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2.4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
+                {/* Plain wrapper carries the absolute positioning, not StudioTooltip's own div
+                    directly — same footgun as FilmstripRail's expand button: that div is itself
+                    position:relative with no in-flow content once its button child goes
+                    position:absolute, so it collapses to a zero-width box and the button's
+                    top/right end up resolving against that collapsed point instead of the card. */}
+                <div style={{ position: 'absolute', top: 14, right: 14 }}>
+                  <StudioTooltip label="Close">
+                    <button onClick={() => setConfirmRecordScope(false)} className="sp-focus cursor-pointer flex items-center justify-center" aria-label="Close"
+                      style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,0.08)', outline: 'none', transition: 'background 0.15s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.14)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2.4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  </StudioTooltip>
+                </div>
                 <p style={{ ...ns, fontSize: 16, fontWeight: 700, color: '#fff', margin: '0 26px 8px 0' }}>
                   Skip slides that already have audio?
                 </p>
@@ -2337,13 +2863,13 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                 </p>
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                   <button onClick={() => confirmedRecordScope(true)} className="sp-focus cursor-pointer"
-                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none', transition: 'background 0.12s, border-color 0.12s' }}
+                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)', cursor: 'pointer', outline: 'none', transition: 'background 0.12s, border-color 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.32)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)'; }}>
+                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'; }}>
                     Override
                   </button>
                   <button onClick={() => confirmedRecordScope(false)} className="sp-focus cursor-pointer"
-                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#006EFE', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none', boxShadow: '0 6px 18px rgba(0,110,254,0.35)', transition: 'filter 0.12s' }}
+                    style={{ height: 40, padding: '0 20px', borderRadius: 10, border: 'none', background: '#006EFE', ...ns, fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer', outline: 'none', transition: 'filter 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
                     onMouseLeave={e => { e.currentTarget.style.filter = 'brightness(1)'; }}>
                     Skip
@@ -2370,19 +2896,21 @@ function StudioCanvas({ slides, theme, scripts, onScriptChange, startIdx, audio,
                     <p style={{ ...ns, fontSize: 16, fontWeight: 700, color: '#fff', margin: '0 0 8px' }}>Choose a voice</p>
                     <p style={{ ...ns, fontSize: 13, color: 'rgba(255,255,255,0.55)', margin: 0, lineHeight: 1.5 }}>Pick a voice, then tune its pace below</p>
                   </div>
-                  <button onClick={() => setVoicePickerOpen(false)} className="sp-focus cursor-pointer flex items-center justify-center"
-                    style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,0.08)', outline: 'none', flexShrink: 0, transition: 'background 0.15s' }}
-                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.14)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                  </button>
+                  <StudioTooltip label="Close">
+                    <button onClick={() => setVoicePickerOpen(false)} className="sp-focus cursor-pointer flex items-center justify-center" aria-label="Close"
+                      style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,0.08)', outline: 'none', flexShrink: 0, transition: 'background 0.15s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.14)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
+                  </StudioTooltip>
                 </div>
                 <VoiceList value={audio.voiceId} cloneName={cloneName} onChange={id => onAudioChange({ voiceId: id })} onClone={onClone} dark layout="grid" />
                 <div style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: '14px', marginTop: 16, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)' }}>
                   <TuningSlider label="Speed" value={voiceSpeed} onChange={setVoiceSpeed} leftLabel="Slower" rightLabel="Faster" />
                 </div>
                 <button onClick={() => setVoicePickerOpen(false)} className="sp-focus cursor-pointer"
-                  style={{ width: '100%', height: 42, borderRadius: 10, border: 'none', background: '#006EFE', ...ns, fontSize: 13.5, fontWeight: 700, color: '#fff', marginTop: 16, boxShadow: '0 6px 18px rgba(0,110,254,0.35)', cursor: 'pointer', outline: 'none', transition: 'filter 0.12s' }}
+                  style={{ width: '100%', height: 42, borderRadius: 10, border: 'none', background: '#006EFE', ...ns, fontSize: 13.5, fontWeight: 700, color: '#fff', marginTop: 16, cursor: 'pointer', outline: 'none', transition: 'filter 0.12s' }}
                   onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
                   onMouseLeave={e => { e.currentTarget.style.filter = 'brightness(1)'; }}>
                   Done
@@ -2870,13 +3398,15 @@ function ReviewScreen({ slides, theme, audios, onContinue, onBack, sidebarOpen, 
       <div className="flex-shrink-0 flex items-center justify-between"
         style={{ height: 54, padding: '0 20px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
         <div className="flex items-center" style={{ gap: 4 }}>
-          <button onClick={onToggleSidebar}
-            className="flex-shrink-0 rounded-lg cursor-pointer flex items-center justify-center"
-            style={{ width: 40, height: 40, filter: 'invert(1) grayscale(1) brightness(1.7)' }}>
-            <SideMenuIcon active={sidebarOpen} />
-          </button>
+          <StudioTooltip label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}>
+            <button onClick={onToggleSidebar} aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+              className="flex-shrink-0 rounded-lg cursor-pointer flex items-center justify-center"
+              style={{ width: 40, height: 40, filter: 'invert(1) grayscale(1) brightness(1.7)' }}>
+              <SideMenuIcon active={sidebarOpen} />
+            </button>
+          </StudioTooltip>
           <button onClick={onBack} className="flex items-center cursor-pointer"
-            style={{ gap: 6, height: 34, padding: '0 14px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
+            style={{ gap: 6, height: 34, padding: '0 14px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
             Studio
           </button>
@@ -2925,20 +3455,25 @@ function ReviewScreen({ slides, theme, audios, onContinue, onBack, sidebarOpen, 
                 <div style={{ position: 'absolute', top: '50%', left: `${progress * 100}%`, transform: 'translate(-50%, -50%)', width: 11, height: 11, borderRadius: '50%', background: bgIsDark ? '#fff' : '#15191F', boxShadow: '0 1px 3px rgba(0,0,0,0.3)', transition: 'left 0.5s linear' }} />
               </div>
               <div className="flex items-center" style={{ gap: 10 }}>
-                <button onClick={() => { if (currentTime >= totalDuration) setCurrentTime(0); setPlaying(v => !v); }}
-                  style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', outline: 'none', background: bgIsDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.08)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  {playing
-                    ? <svg width="9" height="9" viewBox="0 0 24 24" fill={bgIsDark ? 'white' : '#15191F'}><rect x="5" y="4" width="4" height="16" rx="1.5"/><rect x="15" y="4" width="4" height="16" rx="1.5"/></svg>
-                    : <svg width="9" height="9" viewBox="0 0 24 24" fill={bgIsDark ? 'white' : '#15191F'}><path d="M6 4l14 8-14 8V4z"/></svg>}
-                </button>
+                <StudioTooltip label={playing ? 'Pause' : 'Play'}>
+                  <button onClick={() => { if (currentTime >= totalDuration) setCurrentTime(0); setPlaying(v => !v); }}
+                    aria-label={playing ? 'Pause' : 'Play'}
+                    style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', outline: 'none', background: bgIsDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.08)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    {playing
+                      ? <svg width="9" height="9" viewBox="0 0 24 24" fill={bgIsDark ? 'white' : '#15191F'}><rect x="5" y="4" width="4" height="16" rx="1.5"/><rect x="15" y="4" width="4" height="16" rx="1.5"/></svg>
+                      : <svg width="9" height="9" viewBox="0 0 24 24" fill={bgIsDark ? 'white' : '#15191F'}><path d="M6 4l14 8-14 8V4z"/></svg>}
+                  </button>
+                </StudioTooltip>
                 <span style={{ ...ns, fontSize: 11, color: bgIsDark ? 'rgba(255,255,255,0.85)' : '#52637A', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
                   {formatTime(currentTime)} / {formatTime(totalDuration)}
                 </span>
                 <div style={{ flex: 1 }} />
-                <button onClick={toggleFullscreen}
-                  style={{ width: 28, height: 28, borderRadius: 6, border: 'none', outline: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={bgIsDark ? 'rgba(255,255,255,0.8)' : '#8596AD'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-                </button>
+                <StudioTooltip label="Fullscreen">
+                  <button onClick={toggleFullscreen} aria-label="Fullscreen"
+                    style={{ width: 28, height: 28, borderRadius: 6, border: 'none', outline: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={bgIsDark ? 'rgba(255,255,255,0.8)' : '#8596AD'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                  </button>
+                </StudioTooltip>
               </div>
             </div>
           </div>
@@ -3029,13 +3564,15 @@ function ExportScreen({ slides, theme, totalSecs, onBack, sidebarOpen, onToggleS
       {/* Header */}
       <div className="flex-shrink-0 flex items-center justify-between" style={{ height: 54, padding: '0 20px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
         <div className="flex items-center" style={{ gap: 4 }}>
-          <button onClick={onToggleSidebar}
-            className="flex-shrink-0 rounded-lg cursor-pointer flex items-center justify-center"
-            style={{ width: 40, height: 40, filter: 'invert(1) grayscale(1) brightness(1.7)' }}>
-            <SideMenuIcon active={sidebarOpen} />
-          </button>
+          <StudioTooltip label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}>
+            <button onClick={onToggleSidebar} aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+              className="flex-shrink-0 rounded-lg cursor-pointer flex items-center justify-center"
+              style={{ width: 40, height: 40, filter: 'invert(1) grayscale(1) brightness(1.7)' }}>
+              <SideMenuIcon active={sidebarOpen} />
+            </button>
+          </StudioTooltip>
           <button onClick={onBack} className="flex items-center cursor-pointer"
-            style={{ gap: 6, height: 34, padding: '0 14px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.22)', background: 'transparent', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
+            style={{ gap: 6, height: 34, padding: '0 14px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.05)', ...ns, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
             Studio
           </button>
@@ -3250,12 +3787,23 @@ function FilmstripRail({ slides, theme, audios, activeIdx, onSelect, onExpand }:
   return (
     <div style={{ width: 44, flexShrink: 0, background: '#121212', borderRight: '1px solid rgba(255,255,255,0.08)',
       display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 0', gap: 9, overflowY: 'auto' }}>
-      <button onClick={onExpand} title="Show all slides" className="cursor-pointer flex items-center justify-center flex-shrink-0"
+      {/* Plain wrapper, not StudioTooltip's own div directly — that div carries an `h-full`
+          class that's harmless in the horizontal button rows it's normally used in (matches
+          the row's own height), but in this vertical rail it resolves against the whole
+          column's height instead, stretching the expand button's wrapper to fill the entire
+          rail and shoving every slide thumbnail below it down to the bottom. This wrapper
+          (auto height, sized to its own content) breaks that percentage chain before it
+          reaches StudioTooltip. */}
+      <div style={{ flexShrink: 0 }}>
+        <StudioTooltip label="Show all slides">
+      <button onClick={onExpand} aria-label="Show all slides" className="cursor-pointer flex items-center justify-center flex-shrink-0"
         style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.06)', marginBottom: 5, transition: 'background 0.12s' }}
         onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.12)'; }}
         onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}>
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
       </button>
+        </StudioTooltip>
+      </div>
       {slides.map((s, i) => {
         const audio = audios[i];
         // Plain light-gray rectangles, not abstract numbered dots and not real content either —
@@ -3408,18 +3956,20 @@ function DeviceMenu({ kind, value, onChange, disabled, rounded, openRight }: {
 
   return (
     <div ref={ref} style={{ position: 'relative', height: '100%' }}>
-      <button onClick={() => !disabled && setOpen(o => !o)}
-        title={kind === 'audioinput' ? 'Choose microphone' : 'Choose camera'}
-        className={disabled ? 'flex items-center justify-center' : 'cursor-pointer flex items-center justify-center'}
-        style={{ width: 22, height: '100%', border: 'none', background: open ? 'rgba(255,255,255,0.12)' : 'transparent', transition: 'background 0.12s',
-          borderTopRightRadius: rounded === 'right' ? 9 : 0, borderBottomRightRadius: rounded === 'right' ? 9 : 0 }}
-        onMouseEnter={e => { if (!open && !disabled) e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
-        onMouseLeave={e => { if (!open) e.currentTarget.style.background = 'transparent'; }}>
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
-          style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>
-          <path d="M6 9l6 6 6-6"/>
-        </svg>
-      </button>
+      <StudioTooltip label={kind === 'audioinput' ? 'Choose microphone' : 'Choose camera'}>
+        <button onClick={() => !disabled && setOpen(o => !o)}
+          aria-label={kind === 'audioinput' ? 'Choose microphone' : 'Choose camera'}
+          className={disabled ? 'flex items-center justify-center' : 'cursor-pointer flex items-center justify-center'}
+          style={{ width: 22, height: '100%', border: 'none', background: open ? 'rgba(255,255,255,0.12)' : 'transparent', transition: 'background 0.12s',
+            borderTopRightRadius: rounded === 'right' ? 9 : 0, borderBottomRightRadius: rounded === 'right' ? 9 : 0 }}
+          onMouseEnter={e => { if (!open && !disabled) e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+          onMouseLeave={e => { if (!open) e.currentTarget.style.background = 'transparent'; }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+            style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>
+            <path d="M6 9l6 6 6-6"/>
+          </svg>
+        </button>
+      </StudioTooltip>
       <AnimatePresence>
         {open && (
           <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }}
@@ -3464,16 +4014,19 @@ function DeviceMenu({ kind, value, onChange, disabled, rounded, openRight }: {
    preferences (set once, not per-slide), so they share one popover instead of two more icons
    competing for space in the row. Transcript used to live here too but got pulled back out to
    its own single-click icon — it's reached for far more often than these two. */
-function DisplayOptionsMenu({ countdownEnabled, onCountdownChange, nextPreviewEnabled, onNextPreviewChange, disabled }: {
+function DisplayOptionsMenu({ countdownEnabled, onCountdownChange, nextPreviewEnabled, onNextPreviewChange, disabled, showCountdown = true }: {
   countdownEnabled: boolean; onCountdownChange: (v: boolean) => void;
   nextPreviewEnabled: boolean; onNextPreviewChange: (v: boolean) => void;
   // Stays mounted once recording starts (rather than unmounting) so the row's width — and with
   // it, the record button's position — doesn't shift between idle and recording. Disabled rather
   // than hidden: these are locked-in-for-this-take settings, same story as camera/layout below.
   disabled?: boolean;
+  // Off for the recorded-state row — countdown only means something right before a fresh take
+  // starts, and this state is reviewing one that already exists, not about to record.
+  showCountdown?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const { ref, style: menuStyle } = useMenuPlacement(open, { width: 195, height: 90, preferV: 'top', preferH: 'left' });
+  const { ref, style: menuStyle } = useMenuPlacement(open, { width: 195, height: showCountdown ? 110 : 72, preferV: 'top', preferH: 'left' });
   useEffect(() => {
     const h = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
     document.addEventListener('mousedown', h);
@@ -3481,7 +4034,7 @@ function DisplayOptionsMenu({ countdownEnabled, onCountdownChange, nextPreviewEn
   }, [ref]);
 
   const rows = [
-    { label: 'Countdown', checked: countdownEnabled, onChange: () => onCountdownChange(!countdownEnabled) },
+    ...(showCountdown ? [{ label: 'Countdown', checked: countdownEnabled, onChange: () => onCountdownChange(!countdownEnabled) }] : []),
     { label: 'Next slide preview', checked: nextPreviewEnabled, onChange: () => onNextPreviewChange(!nextPreviewEnabled) },
   ];
 
@@ -3499,7 +4052,7 @@ function DisplayOptionsMenu({ countdownEnabled, onCountdownChange, nextPreviewEn
           <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }}
             style={{ ...menuStyle, zIndex: 50,
               background: '#1E1E1E', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12,
-              boxShadow: '0 20px 50px rgba(0,0,0,0.5)', padding: 6, minWidth: 195 }}>
+              boxShadow: '0 20px 50px rgba(0,0,0,0.5)', padding: '16px 6px', minWidth: 195 }}>
             {rows.map(r => (
               <button key={r.label} onClick={r.onChange} className="w-full flex items-center cursor-pointer"
                 style={{ gap: 9, padding: '8px 9px', borderRadius: 8, border: 'none', background: 'transparent', transition: 'background 0.1s' }}
@@ -3974,6 +4527,224 @@ function WordgenieChatPanel({ open, messages, typing, input, onInputChange, onSe
   );
 }
 
+// Version B only — what "Assign voices for the deck" renders inline, in place of the earlier
+// full-page grid. The chat column is 300px wide (minus this message's own 29px avatar indent),
+// nowhere near enough for thumbnails, so this is a compact selectable list, not a grid: same
+// multi-select + bulk-action mechanics as before (Descript's per-line speaker assignment is the
+// closer reference here than a file-manager grid), just rows instead of cards, and no separate
+// page to navigate to or back out of — it's part of the conversation. Same rule as the grid
+// version: doesn't touch `audios` until Generate actually fires, so nothing here can look like
+// it already happened before it did.
+//
+// Only tracks AI assignments (index → voiceId) — a slide's *absence* from the plan is its
+// "will be recorded" state, not a third value alongside it. The studio's own default entry mode
+// is already Record, so "unassigned" and "marked for recording" were the same state wearing two
+// names; the only real decision this widget needs is which slides get an AI voice. Reverting an
+// already-assigned slide back to recording lives inside the same voice dropdown ("Record
+// instead"), not a second competing button.
+function AssignNarrationList({ slides, plan, onPlanChange, onGenerate, cloneName, onClone }: {
+  slides: PresentationSlide[];
+  plan: Record<number, string>;
+  onPlanChange: (next: Record<number, string>) => void;
+  onGenerate: () => void;
+  cloneName: string | null;
+  onClone: () => void;
+}) {
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
+  const aiCount = Object.keys(plan).length;
+  const allSelected = selected.size > 0 && selected.size === slides.length;
+  const someSelected = selected.size > 0 && !allSelected;
+
+  const toggle = (i: number) => setSelected(prev => {
+    const next = new Set(prev);
+    next.has(i) ? next.delete(i) : next.add(i);
+    return next;
+  });
+
+  const toggleSelectAll = () => setSelected(prev =>
+    prev.size === slides.length ? new Set() : new Set(slides.map((_, i) => i)));
+
+  const assignSelected = (voiceId: string) => {
+    const next = { ...plan };
+    selected.forEach(i => { next[i] = voiceId; });
+    onPlanChange(next);
+    setSelected(new Set());
+    setVoiceMenuOpen(false);
+  };
+
+  const clearOne = (i: number) => {
+    const next = { ...plan };
+    delete next[i];
+    onPlanChange(next);
+  };
+
+  return (
+    <div className="flex flex-col" style={{ gap: 10, borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', padding: 12 }}>
+      {/* Header + divider as one unit, spaced tighter internally (8px) than the 10px the parent
+          gap gives every other section below — the header and rule belong together; what the
+          rule separates is everything that follows it. Previously header and rows read as one
+          undifferentiated block (just a font-size change inside the same flat card); this hairline
+          gives the row list its own bounded region. */}
+      <div>
+        <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+          <button onClick={toggleSelectAll} className="sp-focus flex items-center cursor-pointer" style={{ gap: 7, background: 'transparent', border: 'none', padding: 0, outline: 'none' }}>
+            {/* Same checkbox as each row below, at header scale — indeterminate (dash) when some
+                but not all rows are selected, same convention as Gmail/Notion table headers. */}
+            <span style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0,
+              border: (allSelected || someSelected) ? 'none' : '1.5px solid rgba(255,255,255,0.4)',
+              background: (allSelected || someSelected) ? '#006EFE' : 'transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {allSelected && <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 12 9 17 20 6"/></svg>}
+              {someSelected && <span style={{ width: 7, height: 1.5, background: '#fff', borderRadius: 1 }} />}
+            </span>
+            <span style={{ ...ns, fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.5)' }}>Your deck</span>
+          </button>
+          <span style={{ ...ns, fontSize: 10.5, fontWeight: 600, color: 'rgba(255,255,255,0.4)', fontVariantNumeric: 'tabular-nums' }}>
+            {aiCount} AI-voiced · {slides.length - aiCount} to record
+          </span>
+        </div>
+        <div style={{ height: 1, background: 'rgba(255,255,255,0.08)' }} />
+      </div>
+
+      <div className="flex flex-col" style={{ gap: 2 }}>
+        {slides.map((slide, i) => {
+          const voiceId = plan[i];
+          const isSelected = selected.has(i);
+          return (
+            // A <div>, not a <button> — the per-row remove control below is a real <button> of
+            // its own, and buttons can't nest inside buttons.
+            <div key={slide.id} onClick={() => toggle(i)} className="flex items-start cursor-pointer text-left"
+              style={{ gap: 9, padding: '8px 9px', borderRadius: 8,
+                // Lighter wash — the checkbox already fills solid blue and unambiguously carries
+                // "selected"; the row tint doesn't need to compete for that job. At 0.10 it read
+                // as a heavy solid block dropped into an otherwise-plain list, especially with
+                // two lines of text inside it.
+                background: isSelected ? 'rgba(0,110,254,0.06)' : 'transparent',
+                border: '1px solid transparent', transition: 'background 0.12s' }}
+              onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.035)'; }}
+              onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}>
+              <div style={{ width: 15, height: 15, marginTop: 2, borderRadius: 4, flexShrink: 0,
+                border: isSelected ? 'none' : '1.5px solid rgba(255,255,255,0.4)',
+                background: isSelected ? '#006EFE' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.12s, border-color 0.12s' }}>
+                {isSelected && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 12 9 17 20 6"/></svg>}
+              </div>
+              <div className="flex flex-col" style={{ gap: 4, minWidth: 0, flex: 1 }}>
+                <span style={{ ...ns, fontSize: 11.5, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {i + 1}. {slide.title || `Slide ${i + 1}`}
+                </span>
+                {voiceId ? (
+                  // Plain caption, not a badge — a bold pill made sense to distinguish AI vs.
+                  // record, but once most/all rows are AI-voiced, five bordered violet pills in
+                  // a row is just noise repeating what the header count already says. The pill
+                  // treatment is saved for "No audio" below, the one state actually worth flagging.
+                  // "Clear" lives on this same line, at the row's trailing edge — keeping it off
+                  // the title's own line (where it previously fought the title for top-right
+                  // corner and broke alignment with rows that have no action to show at all).
+                  <div className="flex items-center justify-between">
+                    <span style={{ ...ns, fontSize: 10.5, fontWeight: 500, color: 'rgba(255,255,255,0.4)' }}>
+                      AI voice — {voiceName(voiceId, cloneName)}
+                    </span>
+                    <button onClick={e => { e.stopPropagation(); clearOne(i); }}
+                      className="sp-focus cursor-pointer flex-shrink-0"
+                      style={{ ...ns, fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.4)',
+                        background: 'transparent', border: 'none', padding: '2px 0 2px 8px', outline: 'none' }}
+                      onMouseEnter={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.85)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.4)'; }}>
+                      Clear
+                    </button>
+                  </div>
+                ) : (
+                  <span className="flex items-center" style={{ gap: 4, alignSelf: 'flex-start', fontSize: 9.5, fontWeight: 700, padding: '2px 7px', borderRadius: 20,
+                    color: 'rgba(255,255,255,0.45)', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)' }}>
+                    <span style={{ width: 4, height: 4, borderRadius: '50%', background: 'currentColor', flexShrink: 0 }} />
+                    No audio
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Bulk-action region — hidden until something's selected. No longer a boxed card: it was
+          a bordered #1c1c20 rectangle nested inside this list's own bordered card, with the
+          "Assign voice" button then bordered again inside *that* — three levels of box-in-a-box.
+          Same hairline-divider language as the header above instead, so this reads as another
+          section of one continuous panel, not a card stacked on a card. Count + dismiss on their
+          own top line, primary action full-width below — at 300px wide, cramming "N selected" +
+          "Assign voice" + "Cancel" into one row was what forced Cancel to wrap onto an orphan line. */}
+      <AnimatePresence>
+        {selected.size > 0 && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+            style={{ overflow: 'visible' }}>
+            <div style={{ height: 1, background: 'rgba(255,255,255,0.08)', marginBottom: 10 }} />
+            {/* Tight gap here (6) pairs the count with its own action; Generate below gets extra
+                top margin instead of this same rhythm — without that contrast the two buttons
+                read as one undifferentiated stack, when "Assign voice" only acts on the current
+                selection and Generate is the deck's permanent, unrelated commit action. */}
+            <div className="flex flex-col" style={{ gap: 6 }}>
+              <div className="flex items-center justify-between">
+                {/* Softer than solid white — this line is transient status, not something that
+                    needs to compete with the row titles or the Generate button for attention. */}
+                <span style={{ ...ns, fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{selected.size} selected</span>
+                <button onClick={() => { setSelected(new Set()); setVoiceMenuOpen(false); }} aria-label="Clear selection"
+                  className="sp-focus flex items-center justify-center cursor-pointer"
+                  style={{ width: 18, height: 18, borderRadius: 5, border: 'none', background: 'transparent', color: 'rgba(255,255,255,0.4)', outline: 'none' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#fff'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.4)'; }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="4" y1="4" x2="20" y2="20"/><line x1="20" y1="4" x2="4" y2="20"/></svg>
+                </button>
+              </div>
+              <div style={{ position: 'relative' }}>
+                {/* Same flat/bordered treatment as the per-slide voice-picker trigger elsewhere
+                    in this studio (the "Change voice" button in the AI-voice row) — not a new
+                    color. Violet lives on the chip/pill content this opens, same as the pills
+                    above in this same chat, never on the trigger's own fill. Lighter fill/border
+                    and 600 weight (not 700) than before — Generate is the deck's one real commit
+                    action; this only acts on the current selection and shouldn't read as equally
+                    heavy. */}
+                <button onClick={() => setVoiceMenuOpen(v => !v)} className="sp-focus w-full flex items-center justify-center cursor-pointer"
+                  style={{ ...ns, gap: 6, fontWeight: 600, fontSize: 11.5, color: 'rgba(255,255,255,0.85)', background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.10)', padding: '7px 10px', borderRadius: 7, whiteSpace: 'nowrap', outline: 'none' }}>
+                  <WordgenieIcon size={11} color="rgba(255,255,255,0.6)" />
+                  Assign voice
+                  {/* Drawn chevron, not the "▾" glyph this used to be — a Unicode character next
+                      to a real vector icon (the sparkle above) renders at a different weight and
+                      never sits on the same optical baseline. Same stroke chevron already used
+                      for the source-picker caret elsewhere in this file. */}
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                {voiceMenuOpen && (
+                  <div className="flex flex-col" style={{ position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, width: 224, padding: 6, borderRadius: 10,
+                    background: '#1c1c20', border: '1px solid rgba(255,255,255,0.14)', boxShadow: '0 16px 40px rgba(0,0,0,0.5)', zIndex: 30 }}>
+                    {/* Same VoiceList used for the per-slide picker elsewhere in this studio —
+                        preview and "Clone your voice…" come for free instead of being rebuilt
+                        as a bare text menu. value="" so nothing here reads as pre-selected: this
+                        menu assigns to N selected slides at once, not one slide's current voice. */}
+                    <VoiceList value="" cloneName={cloneName} onChange={id => assignSelected(id)} onClone={onClone} dark />
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Always enabled — "0 AI-voiced" is a real, complete choice (record the whole deck
+          yourself), not an incomplete form waiting on a required field. Extra top margin while
+          the bulk-action region is showing — see the comment on that region's inner gap: the
+          contrast is what tells you Generate isn't part of that selection flow. */}
+      <button onClick={onGenerate} className="sp-focus cursor-pointer"
+        style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: '#fff', height: 34, borderRadius: 8, border: 'none', background: '#006EFE',
+          marginTop: selected.size > 0 ? 4 : 0, outline: 'none' }}>
+        Generate
+      </button>
+    </div>
+  );
+}
+
 /* Right panel — script + audio section for the active slide */
 // Only ever rendered once a method is already chosen — studio mode (the workspace's
 // !audio.methodSet branch) owns the "no method yet" case via StudioCanvas instead.
@@ -4262,6 +5033,20 @@ export default function NarrationViewV4() {
   // script visibility is a standing preference, not per-take state. Closing it on slide 1 and
   // switching to slide 2 should leave it closed, not silently reopen it via the remount.
   const [scriptVisible, setScriptVisible] = useState(true);
+  // Review-only comparison, same lift-to-parent reasoning as scriptVisible above — a standing
+  // preference across slide switches, not per-take state. 'a' is shipped; 'b' is the
+  // Wordgenie-guided flow (script-drafting fork → inline assign-narration list). Toggled via
+  // the floating corner switcher rendered near the end of this component's return.
+  const [layoutVariant, setLayoutVariant] = useState<'a' | 'b'>('a');
+  // Planning state for the assign-narration list (version B) — deliberately separate from
+  // `audios` (the real per-slide data model) rather than reusing its methodSet/status fields.
+  // Index → voiceId, AI-assigned slides only; a slide's absence from this map is its "will be
+  // recorded" state (see AssignNarrationList for why that's one state, not two). Never patches
+  // `audios` directly until Generate actually fires — if it did, `hasTakeForSizing`/`hasTake`
+  // downstream in StudioCanvas would read a record-sourced slide as an already-recorded take
+  // (that's what those flags mean today) and show the wrong summary UI before anything was ever
+  // captured.
+  const [narrationPlan, setNarrationPlan] = useState<Record<number, string>>({});
   // Same lift as scriptVisible, same reason — these are standing preferences for how you're
   // reading the script, not per-take state, so they shouldn't reset every time StudioCanvas
   // remounts on a slide switch. Default scroll speed starts slow — the old 50 (out of 100)
@@ -4336,15 +5121,24 @@ export default function NarrationViewV4() {
   // typed against a plain () => void — see GenerateScriptMenu for why.
   const generateAllScripts = useCallback((brief?: string) => {
     const tone = toneFromBrief(brief ?? '');
+    const total = slides.length;
+    let completed = 0;
     slides.forEach((_, i) => {
       setScriptGenerating(prev => prev.map((v, j) => j === i ? true : v));
       setTimeout(() => {
         setScripts(prev => prev.map((s, j) => j === i ? expandScript(s, slides[j], tone, i === 0) : s));
         setScriptGenerating(prev => prev.map((v, j) => j === i ? false : v));
+        // Counted, not keyed off the last index — each slide's timeout has its own random
+        // jitter, so the highest index isn't reliably the last one to actually land.
+        completed += 1;
+        if (completed === total) {
+          setAiChatMessages(prev => [...prev, { role: 'ai',
+            text: `Scripts are ready for all ${total} slide${total === 1 ? '' : 's'}.` }]);
+        }
       }, 600 + i * 300 + Math.random() * 300);
     });
     showToast('Generating scripts for all slides…');
-  }, [slides, showToast]);
+  }, [slides, showToast, setAiChatMessages]);
 
   // Sending a chat message is what actually triggers generation now (both the header icon and
   // the per-slide menu just open this panel) — the whole exchange stays visible afterward, so
@@ -4375,6 +5169,10 @@ export default function NarrationViewV4() {
     setTimeout(() => {
       setAiChatTyping(false);
       setAiChatMessages(prev => [...prev, { role: 'ai', text: `On it — writing your script now, aiming for: "${brief}"` }]);
+      // Used to follow up with a "record vs. assign voices" fork here (version B only) — dropped
+      // now that the assign-voices path has its own always-visible entry point (the "Use AI
+      // voice" split button's chevron in the studio canvas), so asking again inside chat was a
+      // second, competing way to reach the same decision.
     }, 700);
   }, [generateAllScripts, aiChatStep, aiChatContentType]);
 
@@ -4425,6 +5223,30 @@ export default function NarrationViewV4() {
     });
     showToast('Generating audio for slides without narration…');
   }, [slides, scripts, showToast]);
+
+  // Version B only — fires from the assign-narration list's own Generate button, inline in
+  // Wordgenie chat. AI-assigned slides get patched into the real audio pipeline (same staggered
+  // generating→ready shape as generateAllAudio above, just per-slide voiceId instead of one
+  // shared default); every other slide is left untouched — its absence from the plan already
+  // means "record this," so this just closes the chat and lands the user on the first one,
+  // instead of pretending anything happened to it yet.
+  const handleGenerateNarrationPlan = useCallback(() => {
+    const aiEntries = Object.entries(narrationPlan).map(([i, voiceId]) => [Number(i), voiceId] as const);
+    const recordIndices = slides.map((_, i) => i).filter(i => !(i in narrationPlan));
+
+    aiEntries.forEach(([i, voiceId]) => {
+      patchAudio(i, { source: 'ai', methodSet: true, scopeSet: true, scope: 'single', voiceId, status: 'generating', duration: 0 });
+    });
+    aiEntries.forEach(([i], idx) => {
+      setTimeout(() => {
+        setAudios(prev => prev.map((a, j) => j === i && a.status === 'generating' ? { ...a, status: 'ready', duration: estimateSecs(scripts[j]) } : a));
+      }, 900 + idx * 250 + Math.random() * 400);
+    });
+
+    setAiChatOpen(false);
+    if (aiEntries.length > 0) showToast(`Generating audio for ${aiEntries.length} slide${aiEntries.length === 1 ? '' : 's'}…`);
+    if (recordIndices.length > 0) setActiveIdx(recordIndices[0]);
+  }, [narrationPlan, patchAudio, scripts, slides, showToast]);
 
   // Recording finishes right where it started — activeIdx never moves while the studio
   // canvas is mounted (its own internal idx handles multi-slide navigation during a take).
@@ -4565,9 +5387,9 @@ export default function NarrationViewV4() {
           <div className="flex items-center" style={{ gap: 8 }}>
             <button onClick={() => setStep('review')} disabled={includedCount === 0 || takeInProgress}
               title={takeInProgress ? 'Finish or discard the current take first' : includedCount === 0 ? 'Add audio or video to at least one slide first' : undefined}
-              style={{ height: 36, padding: '0 16px', borderRadius: 10,
-                border: studioMode ? '1.5px solid rgba(255,255,255,0.22)' : '1px solid #E0E5EB',
-                background: studioMode ? 'transparent' : '#fff', ...ns, fontSize: 13, fontWeight: 600,
+              style={{ height: 38, padding: '0 16px', borderRadius: 10,
+                border: studioMode ? '1px solid rgba(255,255,255,0.10)' : '1px solid #E0E5EB',
+                background: studioMode ? 'rgba(255,255,255,0.05)' : '#fff', ...ns, fontSize: 13, fontWeight: 600,
                 color: includedCount > 0 && !takeInProgress ? (studioMode ? 'rgba(255,255,255,0.85)' : '#15191F') : (studioMode ? 'rgba(255,255,255,0.3)' : '#B8C0CC'),
                 display: 'flex', alignItems: 'center', gap: 6, cursor: includedCount > 0 && !takeInProgress ? 'pointer' : 'not-allowed',
                 opacity: takeInProgress ? 0.5 : 1 }}>
@@ -4575,7 +5397,7 @@ export default function NarrationViewV4() {
             </button>
             <button onClick={() => setStep('export')} disabled={includedCount === 0 || takeInProgress}
               title={takeInProgress ? 'Finish or discard the current take first' : includedCount === 0 ? 'Add audio or video to at least one slide first' : undefined}
-              style={{ height: 36, padding: '0 16px', borderRadius: 9, border: 'none',
+              style={{ height: 38, padding: '0 16px', borderRadius: 10, border: 'none',
                 background: includedCount > 0 && !takeInProgress ? '#006EFE' : (studioMode ? 'rgba(255,255,255,0.1)' : '#C3CEDE'), ...ns, fontSize: 13, fontWeight: 600, color: '#fff',
                 display: 'flex', alignItems: 'center', gap: 6, cursor: includedCount > 0 && !takeInProgress ? 'pointer' : 'not-allowed',
                 opacity: takeInProgress ? 0.5 : 1 }}>
@@ -4589,7 +5411,6 @@ export default function NarrationViewV4() {
 
       {/* Studio body */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-
         {/* Filmstrip — collapses to a rail while studio mode owns the stage */}
         {studioMode && !filmstripPeek ? (
           <FilmstripRail slides={slides} theme={theme} audios={audios} activeIdx={activeIdx}
@@ -4645,7 +5466,9 @@ export default function NarrationViewV4() {
               promptPos={promptPos} onPromptPosChange={setPromptPos}
               promptSize={promptSize} onPromptSizeChange={setPromptSize}
               scrollSpeed={scrollSpeed} onScrollSpeedChange={setScrollSpeed}
-              otherTakeSlideNumbers={audios.map((a, i) => ({ a, n: i + 1 })).filter(({ a, n }) => n !== activeIdx + 1 && (a.status === 'ready' || a.status === 'stale')).map(({ n }) => n)} />
+              otherTakeSlideNumbers={audios.map((a, i) => ({ a, n: i + 1 })).filter(({ a, n }) => n !== activeIdx + 1 && (a.status === 'ready' || a.status === 'stale')).map(({ n }) => n)}
+              layoutVariant={layoutVariant}
+              narrationPlan={narrationPlan} onNarrationPlanChange={setNarrationPlan} onGenerateNarrationPlan={handleGenerateNarrationPlan} />
           </div>
         ) : (
           <>
@@ -4730,7 +5553,32 @@ export default function NarrationViewV4() {
         @keyframes v2spin  { to { transform: rotate(360deg) } }
         @keyframes v2blink { 0%,100% { opacity: 1 } 50% { opacity: 0.25 } }
         @keyframes v2pulse { from { transform: scaleY(0.6); } to { transform: scaleY(1.15); } }
+        /* Grid auto-grow textarea (see scriptMaxH's own comment above) — textarea and ::after
+           share one grid cell; ::after mirrors the textarea's own text so the row's real height
+           always matches the wrapped content exactly, recomputed by the browser on layout, not
+           by JS reading scrollHeight after the fact. The floor lives on ::after's own min-height,
+           not on .script-grow-wrap itself — min-height on the *grid container* fought the
+           track's own auto-sizing (confirmed live: content that needed more than the floor was
+           getting silently clipped to it instead of growing past it), because it gives the
+           track-sizing algorithm a definite height to stretch-fit against instead of a value to
+           size at least that tall. Applying it to the item that actually drives the row's
+           content-based size avoids that entirely. */
+        .script-grow-wrap { display: grid; }
+        .script-grow-wrap > textarea,
+        .script-grow-wrap::after { grid-area: 1 / 1 / 2 / 2; }
+        .script-grow-wrap::after {
+          content: attr(data-replicated-value);
+          white-space: pre-wrap;
+          word-break: break-word;
+          visibility: hidden;
+          font-family: inherit;
+          font-size: var(--script-font-size);
+          line-height: 1.7;
+          min-height: var(--script-min-height);
+        }
       `}</style>
+
+      <LayoutVariantSwitcher value={layoutVariant} onChange={setLayoutVariant} />
     </div>
   );
 }

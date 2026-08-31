@@ -3,6 +3,7 @@
 import { useFlowStore } from '@/stores/flowStore';
 import { ManuscriptsView } from '@/components/docs/ManuscriptsView';
 import { AppSidebar } from '@/components/sidebar/AppSidebar';
+import { AccountOverlay } from '@/components/account/AccountOverlay';
 
 export default function DocsPage() {
   const { sidebarOpen, setSidebarOpen } = useFlowStore();
@@ -12,6 +13,7 @@ export default function DocsPage() {
       <AppSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex-1 min-w-0 h-full relative">
         <ManuscriptsView />
+        <AccountOverlay />
       </div>
     </div>
   );

@@ -4245,7 +4245,6 @@ export function PresentationEditorView() {
 
       {existingVideoPrompt && (
         <ExistingVideoModal
-          videoTitle={existingVideoPrompt.title}
           onContinue={handleContinueExistingVideo}
           onStartNew={handleStartNewVideo}
           onClose={() => setExistingVideoPrompt(null)}

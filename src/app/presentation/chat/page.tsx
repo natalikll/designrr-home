@@ -4,6 +4,7 @@ import { Suspense } from 'react';
 import { useFlowStore } from '@/stores/flowStore';
 import { PresentationChatContainer } from '@/components/presentation/PresentationChatContainer';
 import { AppSidebar } from '@/components/sidebar/AppSidebar';
+import { AccountOverlay } from '@/components/account/AccountOverlay';
 
 export default function PresentationChatPage() {
   const { sidebarOpen, setSidebarOpen } = useFlowStore();
@@ -15,6 +16,7 @@ export default function PresentationChatPage() {
         <Suspense fallback={null}>
           <PresentationChatContainer />
         </Suspense>
+        <AccountOverlay />
       </div>
     </div>
   );

@@ -3,6 +3,7 @@
 import { useCallback } from 'react';
 import { usePresentationChatStore } from '@/stores/presentationChatStore';
 import { usePresentationFlowStore } from '@/stores/presentationFlowStore';
+import { useFlowStore } from '@/stores/flowStore';
 import { getMockSlidesForTopic } from '@/lib/presentationMocks';
 import { buildPresentationSubtitle, deriveTopicHeadline, extractAudienceFromPrompt, getPresentationQuestion, PRESENTATION_HERO_PLACEHOLDER } from '@/lib/presentationChatMocks';
 
@@ -111,6 +112,7 @@ export function usePresentationFlowEngine() {
         setPresentationTitle(headline);
         setPresentationSubtitle(buildPresentationSubtitle({ audience, goal }));
         setSlides(getMockSlidesForTopic(headline, { audience, goal, style }));
+        useFlowStore.getState().incrementPresentationGenerations();
         setReady(true);
         setStep(6);
       } else {

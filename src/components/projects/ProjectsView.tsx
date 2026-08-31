@@ -11,6 +11,7 @@ import { SAVED_PRESENTATIONS } from '@/lib/presentationMocks';
 import { SAVED_VIDEOS } from '@/lib/videoMocks';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
+import { UpgradePlanModal } from '../account/MyAccountView';
 
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 
@@ -392,24 +393,45 @@ function CardThumbnail({ project }: { project: Project }) {
 }
 
 /* ── Project dropdown items ── */
-const DROPDOWN_ITEMS = [
-  { key: 'cover-creator',   label: 'Cover & Mockup Creator',      icon: 'cover-creator' },
+const DROPDOWN_ITEMS: { key: string; label: string; icon: string; requiredPlan?: 'pro' | 'premium' }[] = [
+  { key: 'cover-creator',   label: 'Cover & Mockup Creator',      icon: 'cover-creator', requiredPlan: 'pro' },
   { key: 'open-pdf',        label: 'Open PDF',                    icon: 'pdf' },
   { key: 'flipbook-pdf',    label: 'Open PDF in flipbook',        icon: 'flipbook' },
   { key: 'edit-live',       label: 'Edit live ebook options',     icon: 'edit' },
   { key: 'embed-code',      label: 'Generate flipbook embed code', icon: 'code' },
   { key: 'qr-code',         label: 'Generate QR code',            icon: 'qr' },
-  { key: 'print-cover',     label: 'Create a Print or Kindle Cover', icon: 'print-cover', info: true },
+  { key: 'print-cover',     label: 'Create a Print or Kindle Cover', icon: 'print-cover', requiredPlan: 'premium' },
   { key: 'share',           label: 'Share',                       icon: 'share' },
 ];
-const DROPDOWN_ITEMS_2 = [
+const DROPDOWN_ITEMS_2: { key: string; label: string; icon: string; requiredPlan?: 'pro' | 'premium' }[] = [
   { key: 'move',            label: 'Move',                        icon: 'move' },
   { key: 'save-template',   label: 'Save as template',            icon: 'save-template' },
   { key: 'duplicate',       label: 'Duplicate',                   icon: 'duplicate' },
-  { key: 'landing',         label: 'Create landing page',         icon: 'landing' },
+  { key: 'landing',         label: 'Create landing page',         icon: 'landing', requiredPlan: 'pro' },
   { key: 'history',         label: 'Version history',             icon: 'history' },
   { key: 'info',            label: 'Project information',         icon: 'info' },
 ];
+
+const TIER_TINT: Record<'pro' | 'premium', { bg: string; fg: string }> = {
+  pro: { bg: '#EAF1FF', fg: '#006EFE' },
+  premium: { bg: '#EAF1FF', fg: '#006EFE' },
+};
+
+/* Mirrors each tier's own icon from the pricing modal (star for Pro, crown for Premium). */
+function TierIcon({ tier, color }: { tier: 'pro' | 'premium'; color: string }) {
+  if (tier === 'premium') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill={color}>
+        <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill={color}>
+      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+    </svg>
+  );
+}
 
 function DropdownIcon({ type }: { type: string }) {
   const s = { width: 20, height: 20, flexShrink: 0 as const };
@@ -436,7 +458,7 @@ function DropdownIcon({ type }: { type: string }) {
 }
 
 /* ── Project card ── */
-function ProjectCard({ project, onOpen, onTurnIntoPresentation }: { project: Project; onOpen: (project: Project) => void; onTurnIntoPresentation: (project: Project) => void }) {
+function ProjectCard({ project, onOpen, onTurnIntoPresentation, onLockedFeature }: { project: Project; onOpen: (project: Project) => void; onTurnIntoPresentation: (project: Project) => void; onLockedFeature: (label: string, planId: 'pro' | 'premium') => void }) {
   const [hovered, setHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -463,26 +485,32 @@ function ProjectCard({ project, onOpen, onTurnIntoPresentation }: { project: Pro
     return () => document.removeEventListener('mousedown', handler);
   }, [menuOpen]);
 
-  const renderItem = (item: { key: string; label: string; icon: string; info?: boolean }) => (
-    <button
-      key={item.key}
-      onClick={() => setMenuOpen(false)}
-      className="flex items-center gap-3 text-left cursor-pointer rounded-lg w-full"
-      style={{ ...ns, fontSize: 15, fontWeight: 500, color: '#15191F', padding: '9px 12px', background: 'transparent', border: 'none' }}
-      onMouseEnter={e => (e.currentTarget.style.background = '#F4F6F9')}
-      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-    >
-      <DropdownIcon type={item.icon} />
-      <span className="flex-1">{item.label}</span>
-      {item.info && (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="9" stroke="#C0C8D6" strokeWidth="1.5"/>
-          <path d="M12 11v6" stroke="#C0C8D6" strokeWidth="1.5" strokeLinecap="round"/>
-          <circle cx="12" cy="7.5" r="1" fill="#C0C8D6"/>
-        </svg>
-      )}
-    </button>
-  );
+  const renderItem = (item: { key: string; label: string; icon: string; requiredPlan?: 'pro' | 'premium' }) => {
+    const tint = item.requiredPlan ? TIER_TINT[item.requiredPlan] : null;
+    return (
+      <button
+        key={item.key}
+        onClick={() => {
+          setMenuOpen(false);
+          if (item.requiredPlan) onLockedFeature(item.label, item.requiredPlan);
+        }}
+        className="flex items-center gap-3 text-left cursor-pointer rounded-lg w-full"
+        style={{ ...ns, fontSize: 15, fontWeight: 500, color: '#15191F', padding: '9px 12px', background: 'transparent', border: 'none' }}
+        onMouseEnter={e => (e.currentTarget.style.background = '#F4F6F9')}
+        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+      >
+        <DropdownIcon type={item.icon} />
+        <span className="flex-1">{item.label}</span>
+        {item.requiredPlan && tint && (
+          <Tooltip label={`Requires ${item.requiredPlan === 'pro' ? 'Pro' : 'Premium'}`} position="top">
+            <div className="flex items-center justify-center flex-shrink-0" style={{ width: 20, height: 20, borderRadius: '50%', background: tint.bg }}>
+              <TierIcon tier={item.requiredPlan} color={tint.fg} />
+            </div>
+          </Tooltip>
+        )}
+      </button>
+    );
+  };
 
   const dropdown = menuOpen && menuPos ? createPortal(
     <motion.div
@@ -600,6 +628,7 @@ export function ProjectsView() {
   const setSelectedManuscriptId = usePresentationFlowStore(s => s.setSelectedManuscriptId);
   const [activeTab, setActiveTab] = useState<ProjectType>('ebook');
   const [search, setSearch] = useState('');
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium' } | null>(null);
 
   const filtered = PROJECTS.filter(p => p.type === activeTab && (!search || p.title.toLowerCase().includes(search.toLowerCase())));
 
@@ -627,7 +656,14 @@ export function ProjectsView() {
     }
   };
 
+  // Presentations are Pro+ — same "always locked" assumption as EbookCreateFlow's identical
+  // nudge, since there's no real plan state yet (every gate in this app hardcodes Standard).
+  const isPresentationLocked = true;
   const handleTurnIntoPresentation = (project: Project) => {
+    if (isPresentationLocked) {
+      setUpgradeCtx({ message: 'Unlock Presentations and Courses', planId: 'pro' });
+      return;
+    }
     setSelectedManuscriptId(project.id);
     router.push('/presentation/sections');
   };
@@ -692,12 +728,21 @@ export function ProjectsView() {
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 24 }}>
               {filtered.map(project => (
-                <ProjectCard key={project.id} project={project} onOpen={handleOpenProject} onTurnIntoPresentation={handleTurnIntoPresentation} />
+                <ProjectCard key={project.id} project={project} onOpen={handleOpenProject} onTurnIntoPresentation={handleTurnIntoPresentation} onLockedFeature={(label, planId) => setUpgradeCtx({ message: `Unlock ${label}`, planId })} />
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {upgradeCtx && (
+        <UpgradePlanModal
+          onClose={() => setUpgradeCtx(null)}
+          currentPlanId="standard"
+          contextMessage={upgradeCtx.message}
+          highlightPlanId={upgradeCtx.planId}
+        />
+      )}
     </div>
   );
 }

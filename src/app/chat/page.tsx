@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useFlowStore } from '@/stores/flowStore';
 import { ChatContainer } from '@/components/chat/ChatContainer';
 import { AppSidebar } from '@/components/sidebar/AppSidebar';
+import { AccountOverlay } from '@/components/account/AccountOverlay';
 import { getStructuredAiResponse } from '@/lib/mockResponses';
 
 export default function ChatPage() {
@@ -36,6 +37,7 @@ export default function ChatPage() {
       <AppSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex-1 min-w-0 h-full relative">
         <ChatContainer />
+        <AccountOverlay />
       </div>
     </div>
   );

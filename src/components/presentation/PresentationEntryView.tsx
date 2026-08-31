@@ -242,6 +242,7 @@ export default function PresentationEntryView() {
                 placeholder="What should your presentation be about?"
                 selectedMode={{ label: 'Presentation', icon: <PresentationChipIcon />, onRemove: () => router.push('/') }}
                 onSubmit={handleSubmit}
+                presentationMode
               />
             </motion.div>
 

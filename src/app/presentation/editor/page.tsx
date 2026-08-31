@@ -3,6 +3,7 @@
 import { useFlowStore } from '@/stores/flowStore';
 import { PresentationEditorView } from '@/components/presentation/PresentationEditorView';
 import { AppSidebar } from '@/components/sidebar/AppSidebar';
+import { AccountOverlay } from '@/components/account/AccountOverlay';
 
 export default function PresentationEditorPage() {
   const { sidebarOpen, setSidebarOpen } = useFlowStore();
@@ -12,6 +13,7 @@ export default function PresentationEditorPage() {
       <AppSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex-1 min-w-0 h-full relative">
         <PresentationEditorView />
+        <AccountOverlay />
       </div>
     </div>
   );

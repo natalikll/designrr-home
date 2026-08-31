@@ -3,6 +3,7 @@
 import { useFlowStore } from '@/stores/flowStore';
 import { AiOutlineReviewView } from '@/components/presentation/AiOutlineReviewView';
 import { AppSidebar } from '@/components/sidebar/AppSidebar';
+import { AccountOverlay } from '@/components/account/AccountOverlay';
 
 export default function PresentationAiOutlinePage() {
   const { sidebarOpen, setSidebarOpen } = useFlowStore();
@@ -12,6 +13,7 @@ export default function PresentationAiOutlinePage() {
       <AppSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex-1 min-w-0 h-full relative">
         <AiOutlineReviewView />
+        <AccountOverlay />
       </div>
     </div>
   );

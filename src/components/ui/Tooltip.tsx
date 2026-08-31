@@ -8,6 +8,9 @@ interface TooltipProps {
   label: string;
   children: ReactNode;
   position?: 'top' | 'bottom' | 'right';
+  /** Wraps the label at this width instead of the default single-line bubble — for
+   *  sentence-length explainers where nowrap would run off the edge of the screen. */
+  maxWidth?: number;
 }
 
 const EDGE_MARGIN = 8;
@@ -25,7 +28,7 @@ type Placement = {
  * everything, with no visual sign anything was wrong until the text ran off the edge. Position
  * is computed from the trigger's actual measured rect in viewport (fixed) coordinates instead.
  */
-export function Tooltip({ label, children, position = 'top' }: TooltipProps) {
+export function Tooltip({ label, children, position = 'top', maxWidth }: TooltipProps) {
   const [placement, setPlacement] = useState<Placement | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -36,7 +39,7 @@ export function Tooltip({ label, children, position = 'top' }: TooltipProps) {
     // No live measurement of the tooltip box itself (it isn't mounted yet) — same estimate
     // approach StudioTooltip already uses elsewhere in this app, good enough to decide whether
     // an edge is at risk without a two-pass measure/reposition render.
-    const estW = Math.max(60, label.length * 6.6 + 32);
+    const estW = maxWidth ?? Math.max(60, label.length * 6.6 + 32);
     const estH = 36;
 
     let effectivePosition = position;
@@ -87,7 +90,8 @@ export function Tooltip({ label, children, position = 'top' }: TooltipProps) {
         fontWeight: 400,
         lineHeight: '20px',
         color: '#FFFFFF',
-        whiteSpace: 'nowrap',
+        whiteSpace: maxWidth ? 'normal' : 'nowrap',
+        width: maxWidth,
       }}
     >
       {label}

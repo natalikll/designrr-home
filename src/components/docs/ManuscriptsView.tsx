@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
+import { useRouter } from 'next/navigation';
 import { useFlowStore } from '@/stores/flowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
@@ -250,6 +251,8 @@ function FormatIcon({ type }: { type: string }) {
 
 /* ── Card ── */
 function DocCard({ doc }: { doc: Doc }) {
+  const router = useRouter();
+  const openManuscript = () => router.push('/book');
   const [hovered, setHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [subOpen, setSubOpen] = useState(false);
@@ -310,6 +313,7 @@ function DocCard({ doc }: { doc: Doc }) {
       <button
         className="flex items-center text-left cursor-pointer rounded-lg"
         style={{ ...ns, fontSize: 15, fontWeight: 500, color: '#15191F', padding: '10px 12px', background: subOpen ? '#F4F6F9' : 'transparent', border: 'none', gap: 10 }}
+        onClick={(e) => e.stopPropagation()}
         onMouseEnter={(e) => { cancelSubClose(); setSubOpen(true); e.currentTarget.style.background = '#F4F6F9'; }}
         onMouseLeave={(e) => { scheduleSubClose(); e.currentTarget.style.background = subOpen ? '#F4F6F9' : 'transparent'; }}
       >
@@ -328,7 +332,7 @@ function DocCard({ doc }: { doc: Doc }) {
       {MENU_ITEMS.map((item) => (
         <button
           key={item.key}
-          onClick={() => { setMenuOpen(false); setSubOpen(false); }}
+          onClick={(e) => { e.stopPropagation(); setMenuOpen(false); setSubOpen(false); if (item.key === 'edit') openManuscript(); }}
           className="flex items-center gap-3 text-left cursor-pointer rounded-lg"
           style={{ ...ns, fontSize: 15, fontWeight: 500, color: '#15191F', padding: '10px 12px', background: 'transparent', border: 'none' }}
           onMouseEnter={(e) => { setSubOpen(false); e.currentTarget.style.background = '#F4F6F9'; }}
@@ -340,7 +344,7 @@ function DocCard({ doc }: { doc: Doc }) {
       ))}
       <div style={{ height: 1, background: '#E8EBF2', margin: '4px 8px' }} />
       <button
-        onClick={() => { setMenuOpen(false); setSubOpen(false); }}
+        onClick={(e) => { e.stopPropagation(); setMenuOpen(false); setSubOpen(false); }}
         className="flex items-center gap-3 text-left cursor-pointer rounded-lg"
         style={{ ...ns, fontSize: 15, fontWeight: 500, color: '#D62929', padding: '10px 12px', background: 'transparent', border: 'none' }}
         onMouseEnter={(e) => { setSubOpen(false); e.currentTarget.style.background = '#FEF2F2'; }}
@@ -371,7 +375,7 @@ function DocCard({ doc }: { doc: Doc }) {
       {FORMATS.map((fmt) => (
         <button
           key={fmt.key}
-          onClick={() => { setMenuOpen(false); setSubOpen(false); }}
+          onClick={(e) => { e.stopPropagation(); setMenuOpen(false); setSubOpen(false); }}
           className="flex items-center gap-3 text-left cursor-pointer rounded-lg"
           style={{ padding: '9px 10px', background: 'transparent', border: 'none' }}
           onMouseEnter={(e) => (e.currentTarget.style.background = '#F4F6F9')}
@@ -392,6 +396,7 @@ function DocCard({ doc }: { doc: Doc }) {
     <div
       className="relative flex flex-col cursor-pointer"
       style={{ gap: 10 }}
+      onClick={openManuscript}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >

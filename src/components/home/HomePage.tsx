@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Variants } from 'framer-motion';
 import Logo from './Logo';
-import HomeWordgenieInput from './WordgenieInput';
+import HomeWordgenieInput, { WordgenieModeToggle } from './WordgenieInput';
 import { RecentProjectsHub, RecentBooks, RecentPresentations } from './RecentProjects';
 import ImportCards from './ImportCards';
 import { PresentationStartCards } from '../presentation/PresentationEntryView';
@@ -170,6 +170,8 @@ export default function HomePage() {
                     selectedMode={selectedModeData}
                     placeholder={mode ? PLACEHOLDERS[mode] : 'What would you like to create today?'}
                     onSubmit={handleSubmit}
+                    presentationMode={mode === 'presentation'}
+                    topRow={mode === 'book' ? <WordgenieModeToggle /> : undefined}
                   />
                 </div>
 

@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useFlowStore } from '@/stores/flowStore';
 import { BookView } from '@/components/book/BookView';
 import { AppSidebar } from '@/components/sidebar/AppSidebar';
+import { AccountOverlay } from '@/components/account/AccountOverlay';
 import { getMockOutline, getMockBook, getMockDirections } from '@/lib/mockResponses';
 
 export default function BookPage() {
@@ -23,6 +24,7 @@ export default function BookPage() {
       <AppSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex-1 min-w-0 h-full relative">
         <BookView />
+        <AccountOverlay />
       </div>
     </div>
   );
