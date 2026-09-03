@@ -76,9 +76,14 @@ export const PRESENTATION_GENERATION_LIMIT = 5;
    Ids and labels match PLANS in MyAccountView. */
 export type PlanId = 'standard' | 'pro' | 'premium' | 'agency';
 export const PLAN_IDS: PlanId[] = ['standard', 'pro', 'premium', 'agency'];
+/* Sentence case throughout. "Pro" was the lone caps entry, which meant TierBadge — which applies
+   no textTransform, deliberately — rendered "PRO" beside "Premium" on the same publish list, and
+   the template gallery showed the same word three ways: "Upgrade to use all Pro templates" in the
+   header, "Pro" in the type filter, "PRO" in the badge. Sentence case was already the majority in
+   user-facing copy, and it is what GitLab, Navattic, ClickUp and Canva all ship. */
 export const PLAN_LABELS: Record<PlanId, string> = {
   standard: 'Standard',
-  pro: 'PRO',
+  pro: 'Pro',
   premium: 'Premium',
   agency: 'Agency Premium',
 };

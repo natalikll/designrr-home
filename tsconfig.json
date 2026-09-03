@@ -30,5 +30,11 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "designrr-home"]
+  "exclude": [
+    "node_modules",
+    "designrr-home",
+    "Designrr-backup-2026-09-03",
+    "Designrr-upgrade-flow-fixes",
+    "_backup"
+  ]
 }

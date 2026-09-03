@@ -948,7 +948,7 @@ const PLANS = [
   },
   {
     id: 'pro',
-    name: 'PRO',
+    name: 'Pro',
     price: '$97',
     period: '/year',
     icon: (

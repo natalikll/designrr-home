@@ -55,7 +55,7 @@ interface Promo {
 export const ACTIVE_PROMO: Promo | null = {
   id: 'autumn-2026',
   kind: 'offer',
-  line: 'Save 20% on PRO and Premium',
+  line: 'Save 20% on Pro and Premium',
   endsOn: '30 September',
   cta: 'Upgrade',
   chip: '20% OFF',

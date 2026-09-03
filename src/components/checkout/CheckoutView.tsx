@@ -46,7 +46,7 @@ const PLAN_DETAILS: Record<'pro' | 'premium', PlanDetails> = {
       'Download subtitles or raw transcription for direct editing.',
       'Automatic scene recognition and extraction technology to insert video frames into your ebooks.',
       'Includes 240 minutes of transcription time every month',
-      'Includes all PRO features (All Templates, Live eBooks, 3D Cover generator, Import from PDF, Publish to Kindle, ePub and Flipbooks)',
+      'Includes all Pro features (All Templates, Live eBooks, 3D Cover generator, Import from PDF, Publish to Kindle, ePub and Flipbooks)',
       'Includes Audiobooks direct from your written content',
       'Cancel & downgrade at anytime',
     ],

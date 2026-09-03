@@ -23,24 +23,38 @@ export type GateTier = Extract<PlanId, 'pro' | 'premium' | 'agency'>;
    4.5:1 this text needs — and at 10px bold it is nowhere near large-text territory, so the
    relaxed threshold doesn't apply. The deeper blue clears 6.05:1 and is the same value the
    composer's alert link and the sidebar's Upgrade button already use. */
+/* One tint for every badge in the system, tier or offer.
+   #DCE9FF rather than the #EAF1FF this started on: the pale version measured 1.13 against white
+   and 1.07 against the near-white template covers, so on a light card the pill vanished and only
+   the text floated. This sits at 1.23 and 1.15 — still quiet, but a shape rather than an absence.
+   Text is #0053C7 at 5.60:1, comfortably over the 4.5 that 10px bold needs. */
+const PILL_TINT = { bg: '#DCE9FF', fg: '#0053C7' } as const;
+
 const TINT: Record<GateTier, { bg: string; fg: string }> = {
-  pro: { bg: '#EAF1FF', fg: '#0053C7' },
-  premium: { bg: '#EAF1FF', fg: '#0053C7' },
-  agency: { bg: '#EAF1FF', fg: '#0053C7' },
+  pro: PILL_TINT,
+  premium: PILL_TINT,
+  agency: PILL_TINT,
 };
 
 /* Shared geometry so anything that has to sit alongside a tier badge reads as the same object.
-   Only the fill and the foreground vary between them. */
-export function pillStyle(sm: boolean): React.CSSProperties {
+   Only the fill and the foreground vary between them.
+   Three sizes rather than two: `lg` exists for the template preview, where the badge sits beside
+   a 20px title rather than inside a dense list and needs to hold its own against it.
+   Side padding is wider than the vertical rhythm would suggest — a pill this pale needs the
+   horizontal run to register as a shape at all, and the extra width costs nothing in a corner. */
+export type PillSize = 'sm' | 'md' | 'lg';
+
+export function pillStyle(size: PillSize): React.CSSProperties {
+  const h = size === 'sm' ? 18 : size === 'lg' ? 24 : 21;
   return {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 4,
-    height: sm ? 18 : 20,
-    padding: sm ? '0 7px' : '0 8px',
+    height: h,
+    padding: size === 'sm' ? '0 9px' : size === 'lg' ? '0 12px' : '0 11px',
     borderRadius: 999,
     fontFamily: "'Nunito Sans', sans-serif",
-    fontSize: sm ? 9.5 : 10,
+    fontSize: size === 'sm' ? 9.5 : size === 'lg' ? 11.5 : 10,
     fontWeight: 700,
     letterSpacing: '0.02em',
     lineHeight: 1,
@@ -48,12 +62,21 @@ export function pillStyle(sm: boolean): React.CSSProperties {
   };
 }
 
-/* Not a tier — the opposite of one. A Pro template you may use without upgrading, so it takes
-   the same pill but inverted: filled where the gate is tinted, because an offer should come
-   forward and a gate should sit back. White on #0053C7 is 6.86:1. */
-export function OfferBadge({ label, size = 'md' }: { label: string; size?: 'sm' | 'md' }) {
+/* Not a tier — the opposite of one. A Pro template you may use without upgrading.
+   Identical to the tier badge in every respect, including colour. Two earlier passes tried to
+   distinguish it by treatment — solid blue, then green — and both were wrong for the same
+   reason: they made the one badge that isn't a tier the loudest thing on the card, and each
+   spent a hue that already means something else here (blue is every button, green was a new
+   signal for one word).
+   This follows the rule TierBadge's own header cites: GitLab holds one badge style constant and
+   varies only the text. The cost is honest — scanning the grid, the two states are the same
+   visual object and you have to read the word. The benefit is that no one has to learn a colour
+   code that exists on exactly one screen.
+   Sentence case, like every label here: "Try for free", not "TRY FOR FREE". PRO only reads as
+   caps because that is literally how the plan is named. */
+export function OfferBadge({ label, size = 'md' }: { label: string; size?: PillSize }) {
   return (
-    <span style={{ ...pillStyle(size === 'sm'), background: '#0053C7', color: '#FFFFFF' }}>
+    <span style={{ ...pillStyle(size), background: PILL_TINT.bg, color: PILL_TINT.fg }}>
       {label}
     </span>
   );
@@ -91,7 +114,7 @@ export function shouldShowTierBadge(currentPlan: PlanId, required?: GateTier): r
  * already concluded doesn't work outside the pricing modal. */
 export function TierBadge({ tier, size = 'md', withIcon = false, withTooltip = false }: {
   tier: GateTier;
-  size?: 'sm' | 'md';
+  size?: PillSize;
   withIcon?: boolean;
   /** GitLab attaches a tooltip to *icon-only* tier badges, because a lone glyph can't name
       the plan. This badge spells the plan out, so a tooltip would only repeat the label —
@@ -100,15 +123,14 @@ export function TierBadge({ tier, size = 'md', withIcon = false, withTooltip = f
 }) {
   const tint = TINT[tier];
   const label = PLAN_LABELS[tier];
-  const sm = size === 'sm';
 
   /* No uppercasing: the labels are the plan names as written, so PRO stays PRO and Premium
      stays Premium. Forcing caps would invent "PREMIUM", a name that appears nowhere else —
      least of all in the pricing modal these badges echo. Sentence case is also what GitLab,
      Navattic, ClickUp and Canva all ship. */
   const pill = (
-      <span style={{ ...pillStyle(sm), background: tint.bg, color: tint.fg }}>
-        {withIcon && <TierIcon tier={tier} color={tint.fg} size={sm ? 11 : 12} />}
+      <span style={{ ...pillStyle(size), background: tint.bg, color: tint.fg }}>
+        {withIcon && <TierIcon tier={tier} color={tint.fg} size={size === 'sm' ? 11 : size === 'lg' ? 14 : 12} />}
         {label}
       </span>
   );

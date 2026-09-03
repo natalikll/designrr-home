@@ -8,7 +8,7 @@ import { usePresentationFlowStore } from '@/stores/presentationFlowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
 import { UpgradePlanModal } from '../account/MyAccountView';
-import { TierBadge, shouldShowTierBadge } from '../ui/TierBadge';
+import { TierBadge, OfferBadge, shouldShowTierBadge } from '../ui/TierBadge';
 
 /* ── constants ──────────────────────────────────────────────────────────────── */
 
@@ -16,23 +16,35 @@ const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 
 const WIZARD_STEPS = ['Generate', 'Writing a content', 'Choose template', 'Review', 'Publish'];
 
-const POPULAR_THEMES = [
-  { emoji: '📊', label: 'Business' },
-  { emoji: '🧘', label: 'Lifestyle' },
-  { emoji: '📚', label: 'Entrepreneurship' },
-  { emoji: '✏️', label: 'Content Creation' },
-  { emoji: '🎓', label: 'Education' },
-  { emoji: '🏆', label: 'Success' },
-  { emoji: '📈', label: 'Marketing' },
-  { emoji: '🎨', label: 'Creative' },
-  { emoji: '💡', label: 'Coaching' },
-  { emoji: '💪', label: 'Health & wellness' },
-  { emoji: '💻', label: 'Tech' },
-  { emoji: '🖼️', label: 'Design' },
-  { emoji: '⚡', label: 'Motivation' },
-  { emoji: '✈️', label: 'Travel' },
-  { emoji: '💰', label: 'Sales' },
+/* One theme vocabulary, taken from the live product. It was previously two — a bespoke list in
+   the modal and a different one in the gallery filter — which meant a theme picked here could
+   not be unpicked there, and the gallery's own options matched no template at all. */
+const ALL_THEMES = [
+  { emoji: '⚡', label: 'Self Development' },
+  { emoji: '📚', label: 'Education' },
+  { emoji: '🥑', label: 'Health & wellness' },
+  { emoji: '💼', label: 'Business' },
+  { emoji: '💡', label: 'Digital Marketing' },
+  { emoji: '⚡', label: 'Spiritual Self Development' },
+  { emoji: '💡', label: 'Life coaching' },
+  { emoji: '🏋️', label: 'Training and Development' },
+  { emoji: '📝', label: 'Writing Non-Fiction' },
+  { emoji: '🎁', label: 'Business Development / Sales' },
+  { emoji: '✍️', label: 'Author' },
+  { emoji: '🔥', label: 'Other' },
+  { emoji: '💻', label: 'E-Commerce' },
+  { emoji: '👩', label: 'Blogging' },
+  { emoji: '👽', label: 'Writing Fiction' },
+  { emoji: '⭐', label: 'Advertising' },
+  { emoji: '🤝', label: 'Marketing coaching' },
+  { emoji: '💬', label: 'Copywriting' },
+  { emoji: '🌐', label: 'Network Marketing' },
 ];
+
+/** The chips the modal surfaces up front; the rest stay reachable through the dropdown. */
+const POPULAR_THEMES = ALL_THEMES.slice(0, 15);
+
+const THEME_EMOJI: Record<string, string> = Object.fromEntries(ALL_THEMES.map(t => [t.label, t.emoji]));
 
 interface Template {
   id: number;
@@ -47,18 +59,18 @@ interface Template {
 }
 
 const TEMPLATES: Template[] = [
-  { id: 1,  name: 'SEO 2-05',                    bg: 'linear-gradient(160deg,#22c55e,#15803d)', textColor: '#fff',     accentColor: '#86efac', themes: ['Marketing', 'Business', 'Tech'] },
-  { id: 2,  name: 'Social Media Marketing 2-05', bg: '#111827',                                 textColor: '#f59e0b', accentColor: '#fbbf24', themes: ['Content Creation', 'Education', 'Creative', 'Design'] },
-  { id: 3,  name: 'Pro Print Book',              bg: '#f8f8f6',                                 textColor: '#111827', accentColor: '#6b7280', themes: ['Business', 'Entrepreneurship'], isPro: true, tryForFree: true },
-  { id: 4,  name: 'Echoes',                      bg: 'linear-gradient(160deg,#a78bfa,#7c3aed)', textColor: '#fff',     accentColor: '#c4b5fd', themes: ['Creative', 'Lifestyle'] },
-  { id: 5,  name: 'Sunset',                      bg: 'linear-gradient(160deg,#fb923c,#dc2626)', textColor: '#fff',     accentColor: '#fcd34d', themes: ['Lifestyle', 'Motivation'] },
-  { id: 6,  name: 'Kamy',                        bg: '#1a1a1a',                                 textColor: '#e5e7eb', accentColor: '#9ca3af', themes: ['Creative', 'Design'], isPro: true },
-  { id: 7,  name: 'Regalia',                     bg: 'linear-gradient(160deg,#d4a574,#b8860b)', textColor: '#1a1a1a', accentColor: '#78350f', themes: ['Business', 'Sales'], isPro: true, tryForFree: true },
-  { id: 8,  name: 'Bestseller',                  bg: '#111',                                    textColor: '#fff',     accentColor: '#d1d5db', themes: ['Business', 'Success'] },
-  { id: 9,  name: 'Minimal Pro',                 bg: '#fff',                                    textColor: '#111827', accentColor: '#4b5563', themes: ['Business', 'Entrepreneurship'], isPro: true },
-  { id: 10, name: 'Business Blue',               bg: 'linear-gradient(160deg,#3b82f6,#1d4ed8)', textColor: '#fff',     accentColor: '#93c5fd', themes: ['Business', 'Marketing'] },
-  { id: 11, name: 'Creative Orange',             bg: 'linear-gradient(160deg,#f97316,#ea580c)', textColor: '#fff',     accentColor: '#fed7aa', themes: ['Creative', 'Motivation'] },
-  { id: 12, name: 'Nature Green',                bg: 'linear-gradient(160deg,#4ade80,#15803d)', textColor: '#fff',     accentColor: '#bbf7d0', themes: ['Health & wellness', 'Lifestyle'] },
+  { id: 1,  name: 'SEO 2-05',                    bg: 'linear-gradient(160deg,#22c55e,#15803d)', textColor: '#fff',     accentColor: '#86efac', themes: ['Digital Marketing', 'Business', 'E-Commerce'] },
+  { id: 2,  name: 'Social Media Marketing 2-05', bg: '#111827',                                 textColor: '#f59e0b', accentColor: '#fbbf24', themes: ['Digital Marketing', 'Advertising', 'Blogging', 'Marketing coaching'] },
+  { id: 3,  name: 'Pro Print Book',              bg: '#f8f8f6',                                 textColor: '#111827', accentColor: '#6b7280', themes: ['Business', 'Writing Non-Fiction', 'Author'], isPro: true, tryForFree: true },
+  { id: 4,  name: 'Echoes',                      bg: 'linear-gradient(160deg,#a78bfa,#7c3aed)', textColor: '#fff',     accentColor: '#c4b5fd', themes: ['Writing Fiction', 'Author'] },
+  { id: 5,  name: 'Sunset',                      bg: 'linear-gradient(160deg,#fb923c,#dc2626)', textColor: '#fff',     accentColor: '#fcd34d', themes: ['Self Development', 'Life coaching'] },
+  { id: 6,  name: 'Kamy',                        bg: '#1a1a1a',                                 textColor: '#e5e7eb', accentColor: '#9ca3af', themes: ['Writing Fiction', 'Blogging'], isPro: true },
+  { id: 7,  name: 'Regalia',                     bg: 'linear-gradient(160deg,#d4a574,#b8860b)', textColor: '#1a1a1a', accentColor: '#78350f', themes: ['Business Development / Sales', 'Copywriting'], isPro: true, tryForFree: true },
+  { id: 8,  name: 'Bestseller',                  bg: '#111',                                    textColor: '#fff',     accentColor: '#d1d5db', themes: ['Author', 'Writing Non-Fiction', 'Business'] },
+  { id: 9,  name: 'Minimal Pro',                 bg: '#fff',                                    textColor: '#111827', accentColor: '#4b5563', themes: ['Business', 'Training and Development', 'Education'], isPro: true },
+  { id: 10, name: 'Business Blue',               bg: 'linear-gradient(160deg,#3b82f6,#1d4ed8)', textColor: '#fff',     accentColor: '#93c5fd', themes: ['Business', 'Business Development / Sales', 'Network Marketing'] },
+  { id: 11, name: 'Creative Orange',             bg: 'linear-gradient(160deg,#f97316,#ea580c)', textColor: '#fff',     accentColor: '#fed7aa', themes: ['Self Development', 'Spiritual Self Development'] },
+  { id: 12, name: 'Nature Green',                bg: 'linear-gradient(160deg,#4ade80,#15803d)', textColor: '#fff',     accentColor: '#bbf7d0', themes: ['Health & wellness', 'Life coaching'] },
 ];
 
 const PUBLISH_FORMATS: { id: string; label: string; sub: string; badgeBg: string; badgeText: string; icon: string; requiredPlan?: 'pro' | 'premium' }[] = [
@@ -148,9 +160,20 @@ function ThemesModal({ docTitle, initial, onSave, onClose }: {
   onClose: () => void;
 }) {
   const [selected, setSelected] = useState<string[]>(initial);
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const toggle = (label: string) =>
     setSelected(prev => prev.includes(label) ? prev.filter(t => t !== label) : [...prev, label]);
   const display = selected.length === 0 ? 'Select your theme' : selected.join(', ');
+
+  const options = ALL_THEMES.filter(o => o.label.toLowerCase().includes(search.toLowerCase()));
+
+  // The consequence of this step, stated while it can still change the answer. Without it the
+  // modal asks for a classification and never says what it buys — so the honest response is to
+  // guess or dismiss.
+  const matchCount = selected.length === 0
+    ? TEMPLATES.length
+    : TEMPLATES.filter(t => t.themes.some(th => selected.includes(th))).length;
 
   return (
     <motion.div
@@ -175,15 +198,54 @@ function ThemesModal({ docTitle, initial, onSave, onClose }: {
         </button>
 
         <h2 style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#15191F', marginBottom: 5 }}>Themes of the doc</h2>
-        <p style={{ ...ns, fontSize: 14, color: '#52637A', lineHeight: 1.5, marginBottom: 22 }}>{docTitle}</p>
+        <p style={{ ...ns, fontSize: 14, color: '#52637A', lineHeight: 1.5, marginBottom: 6 }}>{docTitle}</p>
+        <p style={{ ...ns, fontSize: 13, color: '#8596AD', lineHeight: 1.5, marginBottom: 22 }}>
+          Themes decide which templates we show you next. You can change them there too.
+        </p>
 
         <label style={{ ...ns, fontSize: 14, fontWeight: 500, color: '#15191F', display: 'block', marginBottom: 8 }}>
           Select your theme
         </label>
-        <div className="flex items-center justify-between cursor-pointer"
-          style={{ height: 44, padding: '0 16px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', userSelect: 'none' }}>
-          <span style={{ ...ns, fontSize: 14, color: selected.length ? '#15191F' : '#8596AD' }}>{display}</span>
-          <ChevDown />
+        {/* Was a static div. It looked like the control that held the full vocabulary, so the 15
+            chips below read as shortcuts into it — but nothing opened, and the other themes were
+            unreachable. */}
+        <div className="relative">
+          <button onClick={() => setOpen(o => !o)}
+            className="flex items-center justify-between cursor-pointer w-full text-left"
+            style={{ height: 44, padding: '0 16px', borderRadius: 8, border: `1px solid ${open ? '#006EFE' : '#E0E5EB'}`, background: '#fff' }}>
+            <span style={{ ...ns, fontSize: 14, color: selected.length ? '#15191F' : '#8596AD', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 10 }}>{display}</span>
+            <ChevDown />
+          </button>
+
+          {open && (
+            <>
+              <div className="fixed inset-0" style={{ zIndex: 20 }} onClick={() => setOpen(false)} />
+              <div className="absolute" style={{ top: 50, left: 0, right: 0, zIndex: 30, background: '#fff', borderRadius: 10, border: '1px solid #E0E5EB', boxShadow: '0 12px 32px rgba(0,0,0,0.12)', padding: 12 }}>
+                <div className="flex items-center" style={{ gap: 8, height: 38, padding: '0 12px', borderRadius: 8, border: '1px solid #E0E5EB', marginBottom: 10 }}>
+                  <svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#8E99AB" strokeWidth="1.5"/><path d="M12.5 12.5L16 16" stroke="#8E99AB" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                  <input autoFocus value={search} onChange={e => setSearch(e.target.value)} placeholder="Search themes"
+                    style={{ flex: 1, border: 'none', outline: 'none', ...ns, fontSize: 13, color: '#15191F', background: 'transparent' }} />
+                </div>
+                <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+                  {options.length === 0
+                    ? <p style={{ ...ns, fontSize: 13, color: '#8596AD', padding: '10px 8px' }}>No themes match “{search}”.</p>
+                    : options.map(opt => {
+                        const checked = selected.includes(opt.label);
+                        return (
+                          <button key={opt.label} onClick={() => toggle(opt.label)}
+                            className="flex items-center justify-between cursor-pointer w-full text-left"
+                            style={{ padding: '9px 8px', background: 'none', border: 'none', borderRadius: 6, ...ns, fontSize: 14, color: '#15191F' }}
+                            onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                            <span className="flex items-center" style={{ gap: 8 }}><span>{opt.emoji}</span>{opt.label}</span>
+                            {checked && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </button>
+                        );
+                      })}
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         <div style={{ marginTop: 20 }}>
@@ -201,17 +263,26 @@ function ThemesModal({ docTitle, initial, onSave, onClose }: {
           </div>
         </div>
 
-        <div className="flex items-center justify-end" style={{ gap: 10, marginTop: 24 }}>
-          <button onClick={() => onSave(selected)}
-            style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '10px 24px', cursor: 'pointer' }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
-            Save
-          </button>
-          <button onClick={onClose}
-            style={{ ...ns, fontSize: 14, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '10px 24px', cursor: 'pointer' }}>
-            Cancel
-          </button>
+        <div className="flex items-center justify-between" style={{ gap: 10, marginTop: 24 }}>
+          <span style={{ ...ns, fontSize: 13, color: '#52637A' }}>
+            {selected.length === 0
+              ? `All ${TEMPLATES.length} templates`
+              : `${matchCount} of ${TEMPLATES.length} templates match`}
+          </span>
+          <div className="flex items-center" style={{ gap: 10 }}>
+            {/* Skipping is a real answer — an author who doesn't know their theme shouldn't have
+                to invent one or back out of the flow to reach the gallery. */}
+            <button onClick={() => onSave([])}
+              style={{ ...ns, fontSize: 14, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '10px 20px', cursor: 'pointer' }}>
+              Skip
+            </button>
+            <button onClick={() => onSave(selected)}
+              style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '10px 24px', cursor: 'pointer' }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
+              Save
+            </button>
+          </div>
         </div>
       </motion.div>
     </motion.div>
@@ -252,30 +323,18 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
       <div className="relative overflow-hidden"
         style={{ borderRadius: 8, border: `1.5px solid ${hovered ? '#006EFE' : '#E8EBF2'}`, transition: 'border-color 0.15s, box-shadow 0.15s', boxShadow: hovered ? '0 4px 16px rgba(0,110,254,0.12)' : '0 2px 8px rgba(0,0,0,0.06)' }}>
         <TemplateCover t={t} height={260} />
-        {/* Top-right, off the artwork's focal point. No star: the glyph only decodes inside the
-            pricing modal where the plan name sits beside it, which is why TierBadge makes icons
-            opt-in — and gold-on-dark was a fourth tier treatment competing with the blue pill
-            used by the pricing modal, the format picker and the export menu.
-            The two states are deliberately inverted rather than differing by word alone. "Pro"
-            is a gate and sits back; "Try for free" is an offer and comes forward, because it is
-            the thing that gets someone into a Pro template. A shadow rather than a border keeps
-            both legible on artwork of any colour, including white. */}
+        {/* Positioned exactly as BookTypeSelector places its badge — the platform's existing
+            badge-on-a-card treatment, and the closest analogue to this gallery. 8/8 rather than
+            10/10, no shadow, and lineHeight 0 on the wrapper so the inline-flex pill doesn't sit
+            on a line box and pick up a descender gap above it, which renders an identical
+            top/right offset unequal. An earlier pass here used 10/10 with a drop shadow; the
+            shadow was invented for this one surface and the platform doesn't use one.
+            "Pro" is the tier badge; "Try for free" is its inverted sibling, because an offer is
+            not a tier and shouldn't wear a tier's mark. */}
         {showBadge && (
-          <span
-            className="absolute"
-            style={{
-              ...ns, top: 10, right: 10,
-              fontSize: 11, fontWeight: 700, letterSpacing: '0.01em', lineHeight: 1,
-              padding: '5px 10px', borderRadius: 999,
-              background: t.tryForFree ? '#0053C7' : '#FFFFFF',
-              color: t.tryForFree ? '#FFFFFF' : '#0053C7',
-              boxShadow: t.tryForFree
-                ? '0 1px 5px rgba(0,32,84,0.32)'
-                : '0 1px 5px rgba(15,23,51,0.22)',
-            }}
-          >
-            {t.tryForFree ? 'Try for free' : 'Pro'}
-          </span>
+          <div className="absolute" style={{ top: 8, right: 8, lineHeight: 0 }}>
+            {t.tryForFree ? <OfferBadge label="Try for free" /> : <TierBadge tier="pro" />}
+          </div>
         )}
         {hovered && (
           <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.32)' }}>
@@ -288,12 +347,14 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
   );
 }
 
-function TemplateLightbox({ t, allTemplates, onUse, onClose }: {
+function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
   t: Template;
   allTemplates: Template[];
+  selectedThemes: string[];
   onUse: (template: Template) => void;
   onClose: () => void;
 }) {
+  const currentPlan = useFlowStore((st) => st.currentPlan);
   const [idx, setIdx] = useState(allTemplates.findIndex(x => x.id === t.id));
   const current = allTemplates[idx];
   const prev = () => setIdx(i => (i - 1 + allTemplates.length) % allTemplates.length);
@@ -350,15 +411,20 @@ function TemplateLightbox({ t, allTemplates, onUse, onClose }: {
             </svg>
           </button>
 
-          {/* Title row — small badge inline with the name, matching the live product; badge only
-              appears for Pro templates and carries the tier + price so it's clear at a glance. */}
+          {/* Name first, tier after it. The gold star in a black tile that used to lead this row
+              was the last of the bespoke tier marks — it named no plan, and a glyph only decodes
+              inside the pricing modal where the plan name sits beside it.
+              Only the tier goes here. "Try for free" has its own line below, and stating it twice
+              in two different shapes would be worse than stating it once as a sentence. Unlike a
+              card, this view has room for both facts: that it is a Pro template, and that this
+              particular one can be used without upgrading. */}
           <div className="flex items-center" style={{ gap: 10, marginBottom: 12 }}>
-            {current.isPro && (
-              <div className="flex items-center justify-center flex-shrink-0" style={{ width: 26, height: 26, borderRadius: 6, background: '#15191F' }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="#F5C344"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" /></svg>
-              </div>
-            )}
             <h3 style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#15191F' }}>{current.name}</h3>
+            {current.isPro && shouldShowTierBadge(currentPlan, 'pro') && (
+              // Larger here than in the grid: it sits beside a 20px title rather than in a
+              // corner, and at grid size it read as a stray chip next to the name.
+              <span style={{ lineHeight: 0, flexShrink: 0 }}><TierBadge tier="pro" size="lg" /></span>
+            )}
           </div>
 
           {current.isPro && current.tryForFree && (
@@ -367,9 +433,24 @@ function TemplateLightbox({ t, allTemplates, onUse, onClose }: {
             </p>
           )}
 
-          <p style={{ ...ns, fontSize: 13, color: '#52637A', lineHeight: 1.6, marginBottom: 32 }}>
+          <p style={{ ...ns, fontSize: 13, color: '#52637A', lineHeight: 1.6, marginBottom: 20 }}>
             You&apos;ll be able to play with the template &amp; change covers inside the editor
           </p>
+
+          {/* The themes this template is tagged with — the same vocabulary the author just picked
+              from, so a card's presence in the results is explainable rather than arbitrary.
+              Read-only: this states why the template surfaced, it isn't a second filter control. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 28 }}>
+            {current.themes.map(th => {
+              const matched = selectedThemes.includes(th);
+              return (
+                <span key={th} className="flex items-center"
+                  style={{ gap: 6, padding: '6px 12px', borderRadius: 999, border: `1px solid ${matched ? '#006EFE' : '#E0E5EB'}`, background: matched ? '#F4F8FF' : '#fff', ...ns, fontSize: 13, color: '#15191F', whiteSpace: 'nowrap' }}>
+                  <span>{THEME_EMOJI[th] ?? '🔥'}</span>{th}
+                </span>
+              );
+            })}
+          </div>
 
           <button onClick={() => onUse(current)}
             style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '11px 0', cursor: 'pointer', width: '100%', marginBottom: 10 }}
@@ -399,16 +480,7 @@ function TemplateLightbox({ t, allTemplates, onUse, onClose }: {
 const TYPE_OPTIONS = ['All', 'Standard', 'Two Column', 'User', 'Asian', 'Cyrillic', 'RTL', 'Pro'];
 const PAGE_SIZE_OPTIONS = ['Letter', 'A4', 'A5', '6x9', 'Legal', 'A3', 'Square'];
 const ORIENTATION_OPTIONS = ['Portrait', 'Landscape'];
-const THEME_OPTIONS = [
-  { emoji: '⚡', label: 'Self Development' },
-  { emoji: '📚', label: 'Education' },
-  { emoji: '🥑', label: 'Health & wellness' },
-  { emoji: '💼', label: 'Business' },
-  { emoji: '💡', label: 'Digital Marketing' },
-  { emoji: '⚡', label: 'Spiritual Self Development' },
-  { emoji: '💡', label: 'Life coaching' },
-  { emoji: '🏋️', label: 'Training and Development' },
-];
+const THEME_OPTIONS = ALL_THEMES;
 
 function FilterChevron({ open }: { open: boolean }) {
   return (
@@ -429,6 +501,9 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
   const [typeFilter, setTypeFilter] = useState('All');
   const [themesFilter, setThemesFilter] = useState<string[]>(selectedThemes);
   const [themeSearch, setThemeSearch] = useState('');
+  // On the Wordgenie path the gallery is already mounted when themes are saved, so the initial
+  // state above would keep the stale value.
+  useEffect(() => { setThemesFilter(selectedThemes); }, [selectedThemes]);
   const [openFilter, setOpenFilter] = useState<null | 'type' | 'themes' | 'pageSize' | 'orientation'>(null);
   const [preview, setPreview] = useState<Template | null>(null);
   const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro'; feature: string } | null>(null);
@@ -445,8 +520,11 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-white">
-      {/* Back bar */}
-      <div className="flex-shrink-0 border-b border-[#E0E5EB]" style={{ padding: '14px 32px' }}>
+      {/* One bar, actions at both edges — the shape PresentationStepHeader uses (navigation left,
+          action right) rather than a row that exists only to hold Back while the page's other
+          action floats down beside the h1. Nowhere else in the product puts a button on a title
+          row, and a bar carrying a single control reads as an empty strip. */}
+      <div className="flex-shrink-0 border-b border-[#E0E5EB] flex items-center justify-between" style={{ padding: '14px 32px' }}>
         <button onClick={onBack} className="flex items-center cursor-pointer"
           style={{ gap: 6, ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '7px 14px' }}
           onMouseEnter={e => { e.currentTarget.style.background = '#F4F6F9'; }}
@@ -454,20 +532,26 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
           Back
         </button>
+
+        {/* Same geometry as Back, so the two read as a pair of bar actions; blue rather than
+            filled, because the page's real primary action is choosing a template and an upgrade
+            button shouldn't outrank it. The trailing arrow is gone — it implied leaving the app,
+            and this opens a modal. */}
+        {proCount > 0 && (
+          <button
+            onClick={() => setUpgradeCtx({ message: `Unlock all ${proCount} Pro templates`, planId: 'pro', feature: 'Pro Templates' })}
+            className="flex items-center cursor-pointer"
+            style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#0053C7', background: '#fff', border: '1px solid #C9DCF7', borderRadius: 8, padding: '7px 14px' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#F4F8FF'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
+          >
+            Upgrade to use all Pro templates
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto" style={{ padding: '28px 32px 40px' }}>
-        <div className="flex items-center justify-between" style={{ marginBottom: 22 }}>
-          <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#15191F' }}>Choose a template</h1>
-          {proCount > 0 && (
-            <button
-              onClick={() => setUpgradeCtx({ message: `Unlock all ${proCount} Pro templates`, planId: 'pro', feature: 'Pro Templates' })}
-              style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', cursor: 'pointer' }}
-            >
-              Upgrade to use all Pro templates ↗
-            </button>
-          )}
-        </div>
+        <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#15191F', marginBottom: 22 }}>Choose a template</h1>
 
         {/* Filters */}
         <div className="flex items-center relative" style={{ gap: 12, marginBottom: 24 }}>
@@ -613,6 +697,7 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
           <TemplateLightbox
             t={preview}
             allTemplates={filtered}
+            selectedThemes={themesFilter}
             onUse={(template) => {
               setPreview(null);
               if (template.isPro && !template.tryForFree) {
@@ -1146,7 +1231,10 @@ export function EbookCreateFlow({ startStep = 2 }: { startStep?: 2 | 3 }) {
   const setSidebarOpen = useFlowStore(s => s.setSidebarOpen);
 
   const [step, setStep] = useState<number>(startStep);
-  const [showThemesModal, setShowThemesModal] = useState(false);
+  // Wordgenie hands off straight to the gallery, which used to mean the themes step never ran and
+  // the gallery opened unfiltered. Same step, same modal — it just opens over the gallery here,
+  // because there is no manuscript screen on this path to open it from.
+  const [showThemesModal, setShowThemesModal] = useState(startStep === 3);
   const [selectedThemes, setSelectedThemes] = useState<string[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<Template>(TEMPLATES[1]);
 

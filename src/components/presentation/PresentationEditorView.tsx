@@ -4290,7 +4290,7 @@ export function PresentationEditorView() {
         <UpgradePlanModal
           onClose={() => setUpgradeCtx(null)}
           highlightPlanId="pro"
-          contextMessage={`${upgradeCtx} is available on PRO.`}
+          contextMessage={`${upgradeCtx} is available on Pro.`}
         />
       )}
 
