@@ -15,3 +15,25 @@ src/components/home/HomePageV4.tsx
 src/components/home/HomePageV4B.tsx
 src/components/presentation/NarrationViewV2.tsx
 src/components/presentation/NarrationViewV3.tsx
+
+# Archive material moved into the repo folder 2026-09-03. Research, screenshots, saved
+# artifacts, and a stale duplicate worktree. Kept local on purpose — none of it ships, and
+# pushing it would bloat the repo and trigger a Vercel build over non-code assets.
+Designrr-backup-2026-09-03/
+_backup/
+Designrr - upgrades - screenshots/
+Designrr-charts/
+Designrr-upgrade-flow-fixes/
+Designrr /
+
+# Artifacts saved out of claude.ai (browser "Save Page As" leaves a sidecar _files/ folder)
+*.html
+!ui-hacking-presentations-voiceover.html
+*_files/
+
+# Local research notes and tooling
+deck-sources.md
+skills-lock.json
+.agents/
+.impeccable/
+.claude/skills/
