@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AnimatePresence } from 'framer-motion';
 import { useFlowStore } from '@/stores/flowStore';
@@ -30,12 +30,34 @@ export function PresentationChatContainer() {
 
   const endRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
+  const addMessage = usePresentationChatStore((s) => s.addMessage);
 
+  /* Wordgenie's opening turn when nobody handed us a topic. Uses the same structured message
+     shape as the seeded path so the step rail renders identically either way. */
+  const openWithQuestion = useCallback(() => {
+    addMessage({
+      role: 'ai',
+      content: '',
+      type: 'structured',
+      structured: {
+        heading: 'What should your presentation be about?',
+        body: 'Give me a topic and roughly who it is for, and I will draft the outline.',
+      },
+      stepSlot: 1,
+    });
+  }, [addMessage]);
+
+  /* Two ways in. From the composer, the topic arrives as ?prompt= and the conversation opens
+     already answering it. From the launch strip there is no prompt — the user asked for the
+     conversation itself, not a seeded one — so Wordgenie opens by asking for the topic and the
+     input is live at step 0. Without this branch the container mounted, found no prompt, started
+     nothing and showed no input: a conversation that never began. */
   useEffect(() => {
-    if (startedRef.current || !prompt) return;
+    if (startedRef.current) return;
     startedRef.current = true;
-    handleHeroSubmit(prompt);
-  }, [prompt, handleHeroSubmit]);
+    if (prompt) handleHeroSubmit(prompt);
+    else openWithQuestion();
+  }, [prompt, handleHeroSubmit, openWithQuestion]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -48,7 +70,11 @@ export function PresentationChatContainer() {
   }, [ready, router]);
 
   const placeholder = PRESENTATION_STEP_PLACEHOLDERS[currentStep] || 'Type your response...';
-  const showInput = currentStep >= 2 && currentStep <= 4;
+  // Step 0 is the promptless opening, where the input is the only thing to do.
+  const showInput = currentStep === 0 || (currentStep >= 2 && currentStep <= 4);
+  const placeholderText = currentStep === 0 ? 'Describe your presentation…' : placeholder;
+  // At step 0 the first message is the topic, which is what handleHeroSubmit expects.
+  const onSend = currentStep === 0 ? handleHeroSubmit : handleUserMessage;
 
   return (
     <div className="h-full w-full flex flex-col relative bg-white">
@@ -133,7 +159,7 @@ export function PresentationChatContainer() {
       {/* Input — fixed at bottom, shown while a question is pending */}
       {showInput && (
         <div className="flex-shrink-0 relative z-10">
-          <ChatInput placeholder={placeholder} onSubmit={handleUserMessage} disabled={isAiTyping} />
+          <ChatInput placeholder={placeholderText} onSubmit={onSend} disabled={isAiTyping} />
         </div>
       )}
 

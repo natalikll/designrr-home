@@ -4,64 +4,38 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { BookType } from '@/lib/types';
 import { UpgradePlanModal } from '../account/MyAccountView';
-import { Tooltip } from '../ui/Tooltip';
+import { useFlowStore, type PlanId } from '@/stores/flowStore';
+import { TierBadge, shouldShowTierBadge } from '../ui/TierBadge';
 
 interface BookTypeSelectorProps {
   show: boolean;
   onSelect: (type: BookType) => void;
   onClose: () => void;
-  /** Current account plan — gates which formats are locked. Defaults to the Standard tier. */
-  plan?: 'standard' | 'pro' | 'premium' | 'agency';
+  /** Override the viewer's plan. Omitted, it comes from the store. */
+  plan?: PlanId;
 }
 
-const BOOK_TYPES: { type: BookType; title: string; description: string; requiredPlan?: 'pro' | 'premium' }[] = [
+const BOOK_TYPES: { type: BookType; title: string; requiredPlan?: 'pro' | 'premium' }[] = [
   {
     type: 'ebook',
     title: 'Ebook',
-    description: 'Digital reading across devices',
   },
   {
     type: 'print',
     title: 'Print Book',
-    description: 'Bring your story to life on paper',
     requiredPlan: 'premium',
   },
   {
     type: 'kindle',
     title: 'Kindle Book',
-    description: 'Designed for digital reading',
     requiredPlan: 'pro',
   },
   {
     type: 'audiobook',
     title: 'Audiobook',
-    description: 'Clear listening experience',
     requiredPlan: 'premium',
   },
 ];
-
-const PLAN_RANK: Record<string, number> = { standard: 0, pro: 1, premium: 2, agency: 3 };
-const PLAN_TINT: Record<string, { bg: string; fg: string }> = {
-  pro: { bg: '#EAF1FF', fg: '#006EFE' },
-  premium: { bg: '#EAF1FF', fg: '#006EFE' },
-};
-
-/* Mirrors each tier's own icon from the pricing modal (star for Pro, crown for Premium)
-   so the badge tells you which plan unlocks it without reading the label underneath. */
-function TierIcon({ tier, color }: { tier: 'pro' | 'premium'; color: string }) {
-  if (tier === 'premium') {
-    return (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill={color}>
-        <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill={color}>
-      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-    </svg>
-  );
-}
 
 /* ── Popup header sparkle icon (from Figma) ── */
 function PopupSparkleIcon() {
@@ -186,14 +160,18 @@ const ICONS: Record<BookType, () => React.JSX.Element> = {
   kindle: EbookIcon,
 };
 
-export function BookTypeSelector({ show, onSelect, onClose, plan = 'standard' }: BookTypeSelectorProps) {
+export function BookTypeSelector({ show, onSelect, onClose, plan: planOverride }: BookTypeSelectorProps) {
+  // Falls back to the store so every gated surface agrees on which plan the viewer is on;
+  // the prop stays available for previewing a specific tier.
+  const storePlan = useFlowStore((s) => s.currentPlan);
+  const plan = planOverride ?? storePlan;
   const [hoveredType, setHoveredType] = useState<BookType | null>(null);
-  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium' } | null>(null);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium'; feature: string } | null>(null);
 
   const handleCardClick = (bt: typeof BOOK_TYPES[number]) => {
-    const isLocked = bt.requiredPlan && PLAN_RANK[plan] < PLAN_RANK[bt.requiredPlan];
+    const isLocked = shouldShowTierBadge(plan, bt.requiredPlan);
     if (isLocked && bt.requiredPlan) {
-      setUpgradeCtx({ message: `Unlock the ${bt.title} format`, planId: bt.requiredPlan });
+      setUpgradeCtx({ message: `Unlock the ${bt.title} format`, planId: bt.requiredPlan, feature: `${bt.title} format` });
       return;
     }
     onSelect(bt.type);
@@ -206,6 +184,7 @@ export function BookTypeSelector({ show, onSelect, onClose, plan = 'standard' }:
         currentPlanId={plan}
         contextMessage={upgradeCtx.message}
         highlightPlanId={upgradeCtx.planId}
+        highlightFeature={upgradeCtx.feature}
       />
     );
   }
@@ -265,7 +244,7 @@ export function BookTypeSelector({ show, onSelect, onClose, plan = 'standard' }:
                 {BOOK_TYPES.map((bt, index) => {
                   const Icon = ICONS[bt.type];
                   const isHovered = hoveredType === bt.type;
-                  const isLocked = !!bt.requiredPlan && PLAN_RANK[plan] < PLAN_RANK[bt.requiredPlan];
+                  const isLocked = shouldShowTierBadge(plan, bt.requiredPlan);
 
                   return (
                     <motion.button
@@ -284,7 +263,7 @@ export function BookTypeSelector({ show, onSelect, onClose, plan = 'standard' }:
                       style={{
                         width: 146,
                         minWidth: 146,
-                        height: 170,
+                        height: 168,
                         border: isHovered ? '1.5px solid #006EFE' : '1.5px solid transparent',
                         boxShadow: isHovered
                           ? '0 4px 16px rgba(0, 110, 254, 0.08)'
@@ -294,34 +273,33 @@ export function BookTypeSelector({ show, onSelect, onClose, plan = 'standard' }:
                         transition: 'border-color 0.2s, box-shadow 0.2s',
                       }}
                     >
+                      {/* 8px in from the card's top and right edges. Floating rather than
+                          occupying a reserved row: a row would eat the top of the card, so the
+                          icon and title could never sit optically centred in it. With no
+                          description to reveal, the content no longer moves, so there's nothing
+                          for the badge to collide with. Only shown when the current plan
+                          doesn't already cover this format. */}
                       {isLocked && bt.requiredPlan && (
-                        <div
-                          className="absolute flex items-center justify-center"
-                          style={{ top: 10, right: 10, width: 22, height: 22, borderRadius: '50%', background: PLAN_TINT[bt.requiredPlan].bg }}
-                        >
-                          <Tooltip label={`Requires ${bt.requiredPlan === 'pro' ? 'Pro' : 'Premium'}`} position="top">
-                            <TierIcon tier={bt.requiredPlan} color={PLAN_TINT[bt.requiredPlan].fg} />
-                          </Tooltip>
+                        // lineHeight 0 so the wrapper has no text baseline. Without it the
+                        // inline-flex pill sits on a line box and picks up a descender gap
+                        // above it, so an identical top/right offset renders unequal.
+                        <div className="absolute" style={{ top: 8, right: 8, lineHeight: 0 }}>
+                          <TierBadge tier={bt.requiredPlan} />
                         </div>
                       )}
 
-                      {/* Inner content — shifts up on hover to reveal description */}
-                      <div
-                        className="flex flex-col items-center justify-center flex-1 w-full px-3"
-                        style={{
-                          transform: isHovered ? 'translateY(-10px)' : 'translateY(0)',
-                          transition: 'transform 0.25s ease',
-                        }}
-                      >
+                      {/* Inner content — centred in the whole card */}
+                      <div className="flex flex-col items-center justify-center flex-1 w-full px-3">
                         {/* Icon */}
-                        <div className="flex items-center justify-center" style={{ height: 72 }}>
+                        <div className="flex items-center justify-center" style={{ height: 68 }}>
                           <Icon />
                         </div>
 
                         {/* Title */}
                         <p
-                          className="text-[16px] font-normal mt-2"
+                          className="text-[16px] font-normal"
                           style={{
+                            marginTop: 10,
                             fontFamily: 'var(--font-nunito-sans)',
                             color: isHovered ? '#006EFE' : '#15191F',
                             transition: 'color 0.2s',
@@ -331,25 +309,6 @@ export function BookTypeSelector({ show, onSelect, onClose, plan = 'standard' }:
                         </p>
 
 
-                        {/* Description — revealed on hover. Animates via grid-template-rows
-                            (0fr/1fr) instead of max-height, so the browser only recomputes
-                            this grid track rather than the whole layout on every frame. */}
-                        <div
-                          className="mt-1"
-                          style={{
-                            display: 'grid',
-                            gridTemplateRows: isHovered ? '1fr' : '0fr',
-                            opacity: isHovered ? 1 : 0,
-                            transition: 'opacity 0.25s ease, grid-template-rows 0.25s ease',
-                          }}
-                        >
-                          <p
-                            className="text-[12px] font-normal text-text-tertiary leading-tight overflow-hidden"
-                            style={{ fontFamily: 'var(--font-nunito-sans)' }}
-                          >
-                            {bt.description}
-                          </p>
-                        </div>
                       </div>
                     </motion.button>
                   );

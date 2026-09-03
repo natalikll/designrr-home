@@ -172,7 +172,7 @@ export default function HomePageStandard() {
     <div className="h-full relative overflow-hidden">
 
       <AnimatePresence>
-        {showUpgrade && <UpgradePlanModal onClose={() => setShowUpgrade(false)} currentPlanId="standard" />}
+        {showUpgrade && <UpgradePlanModal onClose={() => setShowUpgrade(false)} />}
       </AnimatePresence>
 
       {/* Sidebar toggle */}

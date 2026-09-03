@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect, Fragment } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
-import { useFlowStore } from '@/stores/flowStore';
+import { useFlowStore, manuscriptLimitFor, presentationLimitFor, allowanceResetLabel } from '@/stores/flowStore';
 import { createPortal } from 'react-dom';
 import { Tooltip } from '@/components/ui/Tooltip';
 
@@ -944,7 +944,7 @@ const PLANS = [
         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="#006EFE" />
       </svg>
     ),
-    features: ['5 Wordgenie Manuscript Generations/month', 'Standard Templates', 'Unlimited PDF eBooks', 'Page Numbering & Table Of Contents Generator'],
+    features: ['10 Wordgenie Generations/month', 'Export presentations to PDF', 'Standard Templates', 'Unlimited PDF eBooks', 'Page Numbering & Table Of Contents Generator'],
   },
   {
     id: 'pro',
@@ -956,7 +956,7 @@ const PLANS = [
         <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
       </svg>
     ),
-    features: ['10 Wordgenie Manuscript Generations/month', 'Create Presentations and Courses', 'Pro Templates', 'Publish to Kindle', '3D Cover Creator'],
+    features: ['20 Wordgenie Generations/month', 'Export to PowerPoint, PNG and watermark-free links', 'Pro Templates', 'Publish to Kindle', '3D Cover Creator'],
   },
   {
     id: 'premium',
@@ -1039,7 +1039,10 @@ const COMPARISON_SECTIONS: ComparisonSection[] = [
     header: 'Wordgenie Tools',
     rows: [
       { label: 'Wordgenie Book Generator', values: [true, true, true, true] },
-      { label: 'Wordgenie v4 Manuscript Generations', tooltip: 'Generate full manuscripts with the improved Wordgenie v4 experience.', values: ['5 /mo', '10 /mo', 'Unlimited', 'Unlimited'] },
+      { label: 'Wordgenie v4 Generations', tooltip: 'One shared allowance, spent by books and presentations alike.', values: ['10 /mo', '20 /mo', 'Unlimited', 'Unlimited'] },
+      { label: 'Presentation export — PDF', values: [true, true, true, true] },
+      { label: 'Presentation export — PowerPoint, PNG', values: [false, true, true, true] },
+      { label: 'Share link without Designrr watermark', values: [false, true, true, true] },
       { label: 'Wordgenie Prompt', tooltip: 'Generate a manuscript from a single instruction, without the guided step-by-step flow.', values: [false, true, true, true] },
       { label: 'Wordgenie Chat', tooltip: 'Refine and expand your manuscript through a back-and-forth conversation with Wordgenie.', values: [false, true, true, true] },
       { label: 'Wordgenie Edit', tooltip: 'Ask Wordgenie to rewrite, tighten, or restyle existing chapters in place.', values: [false, true, true, true] },
@@ -1047,20 +1050,48 @@ const COMPARISON_SECTIONS: ComparisonSection[] = [
   },
 ];
 
+export interface QuotaAllowance { plan: string; line: string }
+
+/* Per-plan allowance for the manuscript quota gate, in the unit the user just ran out of.
+   Only the tiers that give a *different* answer earn a card: Standard is what they already
+   have, and Agency Premium repeats Premium's "Unlimited". Every volume gate in the study
+   (Krea, Lovable, Visual Electric) leads with the quantity rather than a feature list —
+   at a quota the user has already decided they want the product and is asking how much of
+   it they get. Numbers mirror the Wordgenie row in COMPARISON_SECTIONS. */
+export const MANUSCRIPT_ALLOWANCES: QuotaAllowance[] = [
+  { plan: 'pro', line: '20 Wordgenie generations per month' },
+  { plan: 'premium', line: 'Unlimited Wordgenie generations' },
+];
+
 export function UpgradePlanModal({
   onClose,
-  currentPlanId = 'premium',
+  currentPlanId: currentPlanIdOverride,
   contextMessage,
   highlightPlanId,
+  highlightFeature,
+  quota,
 }: {
   onClose: () => void;
+  /** Override the viewer's plan. Omitted, it comes from the store, so the sidebar and
+      My Account can't disagree about which plan someone is on the way they used to. */
   currentPlanId?: string;
-  /** Shown as a banner above the plan cards — e.g. "Kindle export requires Pro or higher." */
+  /** What triggered the modal — e.g. "Unlock the Kindle Book format". Becomes the title:
+      Mixpanel names its dialog after the feature, Circle after the blocked action. Absent,
+      this is a standing entry point and the title falls back to the generic one. */
   contextMessage?: string;
-  /** Plan to visually highlight as the one satisfying contextMessage. Defaults to the Premium "Recommended" plan when unset. */
+  /** Plan to lead with — the cheapest tier that clears the gate. Defaults to Premium. */
   highlightPlanId?: string;
+  /** The capability the user was blocked on, in whatever words the caller uses. Hoisted to the
+      top of every card's feature list and marked, so "does this fix my problem" is answered on
+      the first line. Ignored at a quota, where the allowance is already the headline. */
+  highlightFeature?: string;
+  /** Present when a usage limit fired rather than a locked feature. The caller owns the
+      numbers — this component never invents an allowance it can't source. */
+  quota?: { allowances: QuotaAllowance[]; resetLabel?: string };
 }) {
   const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
+  const storePlan = useFlowStore((s) => s.currentPlan);
+  const currentPlanId = currentPlanIdOverride ?? storePlan;
   const currentRank = PLAN_ORDER.indexOf(currentPlanId);
   const router = useRouter();
   const [compareOpen, setCompareOpen] = useState(false);
@@ -1081,10 +1112,63 @@ export function UpgradePlanModal({
 
   const effectiveHighlight = highlightPlanId ?? 'premium';
   const highlightRank = PLAN_ORDER.indexOf(effectiveHighlight);
-  // Every tier at or above the one that unlocks the triggering feature also includes it —
-  // surface all of them (not just the cheapest) so the user sees their real set of options.
+  // Every tier at or above the one that unlocks the triggering feature also includes it.
+  // They're named in a sentence under the card rather than given columns of their own —
+  // Typeform's "Available on these plans: …" does exactly this.
   const qualifyingIds = contextMessage ? PLAN_ORDER.slice(highlightRank) : [];
-  const highlightPlanData = PLANS.find((p) => p.id === effectiveHighlight);
+
+  /* Three shapes, chosen by what opened the modal.
+     - quota    → the tiers that answer "how many do I get", because the right one depends
+                  on the user's volume and picking for them is wrong half the time.
+     - feature  → one card, the cheapest tier that clears the gate. There is a single right
+                  answer, so a grid is a comparison nobody asked for.
+     - standing → the full grid. Someone who clicked Upgrade with no task running IS
+                  comparing, which is the one case the four columns are for. */
+  const mode: 'quota' | 'feature' | 'standing' =
+    quota ? 'quota' : contextMessage ? 'feature' : 'standing';
+
+  const upgradesOnly = (ids: string[]) => ids.filter((id) => PLAN_ORDER.indexOf(id) > currentRank);
+  let visiblePlanIds: string[];
+  if (mode === 'quota') visiblePlanIds = upgradesOnly(quota!.allowances.map((a) => a.plan));
+  else if (mode === 'feature') visiblePlanIds = upgradesOnly([effectiveHighlight]);
+  else visiblePlanIds = PLAN_ORDER;
+  // A gate shouldn't fire for someone who already owns the tier, but if one ever does,
+  // fall back to everything above their plan rather than rendering an empty modal.
+  if (!visiblePlanIds.length) visiblePlanIds = upgradesOnly(PLAN_ORDER);
+  const visiblePlans = PLANS.filter((p) => visiblePlanIds.includes(p.id));
+  const allowanceLineFor = (id: string) => quota?.allowances.find((a) => a.plan === id)?.line;
+
+  /* Loose match, because callers name the thing the user clicked in their own words ("Kindle Book
+     format") while the plan table has its own ("Publish to Kindle"). Either containing the other
+     is enough to treat them as the same line and avoid listing it twice. */
+  const sameFeature = (a: string, b: string) => {
+    const x = a.toLowerCase();
+    const y = b.toLowerCase();
+    return x.includes(y) || y.includes(x);
+  };
+
+  const featureLinesFor = (plan: typeof PLANS[number]) => {
+    const lines = plan.features.map((text) => ({ text, lead: false }));
+    // The allowance leads the list rather than sitting above it as a headline: it's the answer
+    // to what they hit, so it belongs where every other "what you get" line is, just first and
+    // marked. The plan's own generations line is dropped, since this replaces it with a fuller
+    // sentence ("20 Wordgenie generations per month").
+    if (mode === 'quota') {
+      const allowance = allowanceLineFor(plan.id);
+      const rest = lines.filter((l) => !/generation/i.test(l.text));
+      return allowance ? [{ text: allowance, lead: true }, ...rest] : rest;
+    }
+    if (!highlightFeature) return lines;
+    return [
+      { text: highlightFeature, lead: true },
+      ...lines.filter((l) => !sameFeature(l.text, highlightFeature)),
+    ];
+  };
+
+  /* Focused modes don't need 980px of chrome. Opening Compare re-widens the modal, since
+     the five-column table genuinely needs the room. */
+  const baseWidth = mode === 'standing' ? 980 : visiblePlans.length === 1 ? 460 : 720;
+  const modalWidth = compareOpen ? 980 : baseWidth;
 
   const modal = (
     <div
@@ -1094,11 +1178,11 @@ export function UpgradePlanModal({
     >
       <motion.div
         initial={{ opacity: 0, scale: 0.96, y: 10 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
+        animate={{ opacity: 1, scale: 1, y: 0, width: modalWidth }}
         exit={{ opacity: 0, scale: 0.96, y: 10 }}
         transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
         className="bg-white relative"
-        style={{ width: 980, borderRadius: 16, padding: '0 32px 28px', boxShadow: '0px 4px 40px 0px rgba(0,0,0,0.12)', maxHeight: '90vh', overflowY: 'auto' }}
+        style={{ borderRadius: 16, padding: '0 32px 28px', boxShadow: '0px 4px 40px 0px rgba(0,0,0,0.12)', maxHeight: '90vh', overflowY: 'auto' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Close */}
@@ -1112,56 +1196,33 @@ export function UpgradePlanModal({
           </svg>
         </button>
 
-        {/* Header — paddingTop lives here (not on the scroll container) so the comparison
-            table's sticky header can stick flush at true top:0 with no gap above it. */}
-        <div style={{ paddingTop: 32, marginBottom: contextMessage ? 12 : 24 }}>
-          <p style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#001633', lineHeight: '26px' }}>Upgrade your account</p>
+        {/* Header — the modal is titled after whatever triggered it rather than after itself.
+            Mixpanel titles its upgrade dialog "Track Cohorts Across Reports"; Circle names the
+            blocked action. A generic "Upgrade your account" only fits the standing entry point,
+            where nothing specific triggered it.
+            paddingTop lives here (not on the scroll container) so the comparison table's sticky
+            header can stick flush at true top:0 with no gap above it. */}
+        <div style={{ paddingTop: 32, marginBottom: 20, paddingRight: 28 }}>
+          <p style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#001633', lineHeight: '26px' }}>
+            {contextMessage ?? 'Upgrade your account'}
+          </p>
+          {/* Waiting is a legitimate way out of a quota, so say when the allowance returns
+              instead of implying paying is the only option. */}
+          {mode === 'quota' && quota?.resetLabel && (
+            <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#667C98', lineHeight: '18px', marginTop: 6 }}>
+              {quota.resetLabel}
+            </p>
+          )}
         </div>
 
-        {/* Context banner — why this modal opened, when triggered by a locked feature.
-            Leads with what the user gains (not "requires X"), and names every qualifying
-            tier so a feature available on Pro+ doesn't read as if only one plan works. */}
-        {contextMessage && (
-          <div style={{
-            display: 'flex', flexDirection: 'column', gap: 3,
-            background: '#EEF5FF', border: '1px solid #B8D4FF', borderRadius: 8,
-            padding: '10px 14px', marginBottom: 20,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
-                {effectiveHighlight === 'premium' ? (
-                  <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" fill="#006EFE" />
-                ) : (
-                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="#006EFE" />
-                )}
-              </svg>
-              <span style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: '#001633', lineHeight: '20px' }}>
-                {contextMessage}
-                {highlightPlanData && (
-                  <span style={{ fontWeight: 400 }}> with {highlightPlanData.name} or higher.</span>
-                )}
-              </span>
-            </div>
-            {qualifyingIds.length > 1 && (() => {
-              const names = qualifyingIds.map((id) => PLANS.find((p) => p.id === id)?.name ?? '');
-              const list = names.length === 2
-                ? names.join(' and ')
-                : `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
-              return (
-                <p style={{ ...ns, fontSize: 12, fontWeight: 500, color: '#3D5A80', margin: 0, marginLeft: 24 }}>
-                  {list} all include this — compare the rest below to see which fits.
-                </p>
-              );
-            })()}
-          </div>
-        )}
-
         {/* Plan cards */}
-        <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-          {PLANS.map((plan) => {
+        <div className="grid" style={{ gridTemplateColumns: `repeat(${visiblePlans.length}, 1fr)`, gap: 16 }}>
+          {visiblePlans.map((plan) => {
             const isCurrent = plan.id === currentPlanId;
             const isDowngrade = !isCurrent && PLAN_ORDER.indexOf(plan.id) < currentRank;
-            const isHighlighted = !isCurrent && plan.id === effectiveHighlight;
+            // "Recommended" is a comparative claim, so it only means anything against other
+            // cards. In the focused modes there's nothing to be recommended over.
+            const isHighlighted = mode === 'standing' && !isCurrent && plan.id === effectiveHighlight;
             return (
             <div
               key={plan.id}
@@ -1200,7 +1261,8 @@ export function UpgradePlanModal({
               {/* Name */}
               <p style={{ ...ns, fontSize: 18, fontWeight: 700, color: '#006EFE', lineHeight: '24px', marginBottom: 8 }}>{plan.name}</p>
 
-              {/* Price */}
+              {/* Price. Same treatment in every mode now — the allowance moved into the list
+                  below, so a quota card and a feature card are the same shape. */}
               <div className="flex items-baseline" style={{ gap: 6, marginBottom: 16 }}>
                 <span style={{ ...ns, fontSize: 28, fontWeight: 800, color: '#001633', lineHeight: '34px' }}>{plan.price}</span>
                 <span style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#667C98', lineHeight: '18px' }}>{plan.period}</span>
@@ -1209,7 +1271,12 @@ export function UpgradePlanModal({
               {/* Divider */}
               <div style={{ height: 1, background: '#E0E5EB', marginBottom: 16 }} />
 
-              {/* Features */}
+              {/* Every plan still lists what it includes — leading with the thing that was
+                  blocked doesn't mean hiding the rest, and the rest is most of the reason to
+                  pick one tier over another. What changes is the order: whatever the user hit
+                  comes first and is marked, so the answer to "does this fix my problem" is the
+                  first line rather than the fourth. At a quota that answer is already the
+                  headline above, so it's dropped from the list instead of stated twice. */}
               <div className="flex flex-col" style={{ gap: 10, flex: 1 }}>
                 {(() => {
                   const prevPlan = PLANS[PLAN_ORDER.indexOf(plan.id) - 1];
@@ -1219,17 +1286,18 @@ export function UpgradePlanModal({
                     </p>
                   );
                 })()}
-                {plan.features.map((f) => (
-                  <div key={f} className="flex items-start" style={{ gap: 8 }}>
+                {featureLinesFor(plan).map(({ text, lead }) => (
+                  <div key={text} className="flex items-start" style={{ gap: 8 }}>
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
-                      <path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth={lead ? 2.4 : 1.8} strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
-                    <span style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#15191F', lineHeight: '18px' }}>{f}</span>
+                    <span style={{ ...ns, fontSize: 13, fontWeight: lead ? 700 : 400, color: '#15191F', lineHeight: '18px' }}>{text}</span>
                   </div>
                 ))}
               </div>
 
-              {/* CTA button */}
+              {/* CTA button — names its destination. Three adjacent buttons all reading
+                  "Upgrade" leave the column position as the only thing distinguishing them. */}
               <div style={{ marginTop: 20 }}>
                 {isCurrent ? (
                   <button disabled style={{ width: '100%', height: 40, borderRadius: 8, border: 'none', background: '#F0F2F5', cursor: 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -1237,11 +1305,11 @@ export function UpgradePlanModal({
                   </button>
                 ) : isDowngrade ? (
                   <button style={{ width: '100%', height: 40, borderRadius: 8, border: '1.5px solid #006EFE', background: '#fff', cursor: 'pointer', ...ns, fontSize: 14, fontWeight: 600, color: '#006EFE', lineHeight: '18px' }}>
-                    Change Plan
+                    Switch to {plan.name}
                   </button>
                 ) : (
                   <button onClick={() => handleUpgrade(plan.id)} style={{ width: '100%', height: 40, borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer', ...ns, fontSize: 14, fontWeight: 600, color: '#fff', lineHeight: '18px' }}>
-                    Upgrade
+                    Upgrade to {plan.name}
                   </button>
                 )}
               </div>
@@ -1250,6 +1318,22 @@ export function UpgradePlanModal({
             );
           })}
         </div>
+
+        {/* The other tiers that also clear this gate, named in a sentence rather than given
+            columns. Typeform ships exactly this — "Available on these plans: Business,
+            Enterprise, …" under a single button — and it keeps the card honest about the
+            cheaper option without spending three columns saying so. */}
+        {mode === 'feature' && qualifyingIds.length > 1 && (() => {
+          const names = qualifyingIds.slice(1).map((id) => PLANS.find((p) => p.id === id)?.name ?? '');
+          const list = names.length === 1
+            ? names[0]
+            : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+          return (
+            <p style={{ ...ns, fontSize: 12.5, fontWeight: 400, color: '#667C98', lineHeight: '18px', marginTop: 14, textAlign: 'center' }}>
+              Also included in {list}.
+            </p>
+          );
+        })()}
 
         {/* Compare plans link */}
         <div className="flex items-center justify-center" style={{ marginTop: 24, gap: 6 }}>
@@ -1276,16 +1360,16 @@ export function UpgradePlanModal({
               style={{ overflow: compareSettled ? 'visible' : 'hidden' }}
             >
               <div style={{ marginTop: 24 }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                   <thead>
                     <tr>
-                      <th style={{ position: 'sticky', top: 0, zIndex: 2, padding: '16px', background: '#fff', verticalAlign: 'bottom', boxShadow: '0 1px 0 #E0E5EB' }} />
+                      <th style={{ position: 'sticky', top: 0, zIndex: 2, width: '36%', padding: '16px', background: '#fff', verticalAlign: 'bottom', boxShadow: '0 1px 0 #E0E5EB' }} />
                       {PLANS.map((p) => {
                         const isHighlighted = p.id === effectiveHighlight;
                         return (
                           <th key={p.id} style={{
                             position: 'sticky', top: 0, zIndex: 2,
-                            padding: '16px 12px', minWidth: 120, verticalAlign: 'bottom',
+                            padding: '16px 12px', width: '16%', verticalAlign: 'bottom',
                             background: isHighlighted ? '#F0F7FF' : '#fff',
                             boxShadow: '0 1px 0 #E0E5EB',
                           }}>
@@ -1388,11 +1472,11 @@ export function UpgradePlanModal({
                               </button>
                             ) : isDowngrade ? (
                               <button style={{ width: '100%', height: 38, borderRadius: 8, border: '1.5px solid #006EFE', background: '#fff', cursor: 'pointer', ...ns, fontSize: 13.5, fontWeight: 600, color: '#006EFE' }}>
-                                Change Plan
+                                Switch to {plan.name}
                               </button>
                             ) : (
                               <button onClick={() => handleUpgrade(plan.id)} style={{ width: '100%', height: 38, borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer', ...ns, fontSize: 13.5, fontWeight: 600, color: '#fff' }}>
-                                Upgrade
+                                Upgrade to {plan.name}
                               </button>
                             )}
                           </td>
@@ -1970,17 +2054,7 @@ const CREDITS = [
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
       </svg>
-    ), label: 'Wordgenie credits', used: 48200, total: 100000, remaining: 51800, remainingLabel: '51 800 remaining', remainingColor: '#52637A', buyMore: false },
-  { icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
-      </svg>
-    ), label: 'Audiobook credits', used: 95281, total: 100000, remaining: 4719, remainingLabel: '4 719 remaining', remainingColor: '#D62929', buyMore: true },
-  { icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/>
-      </svg>
-    ), label: 'Transcription minutes', used: 36, total: 240, remaining: 204, remainingLabel: '204 min remaining', remainingColor: '#52637A', buyMore: true },
+    ), label: 'Wordgenie credits', used: 48200, total: 100000, remaining: 51800, remainingLabel: '51,800 remaining', remainingColor: '#52637A', buyMore: false },
 ];
 
 /* ─────────────────────────────────────────────
@@ -2103,8 +2177,14 @@ const INVOICES = [
 
 function BillingTab() {
   const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
-  const [upgradeCtx, setUpgradeCtx] = useState<{ message?: string; planId?: string } | null>(null);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message?: string; planId?: string; quota?: boolean } | null>(null);
   const [buyCreditsType, setBuyCreditsType] = useState<string | null>(null);
+  /* Reads the same store the composer and the plan switcher do — this card used to hard-code
+     "Premium", which contradicted whatever tier the viewer was actually previewing. */
+  const billingPlan = useFlowStore((s) => s.currentPlan);
+  const presentationsUsed = useFlowStore((s) => s.presentationGenerationsUsed);
+  const manuscriptsUsed = useFlowStore((s) => s.manuscriptGenerationsUsed);
+  const billingPlanData = PLANS.find((pl) => pl.id === billingPlan) ?? PLANS[0];
 
   return (
     <div className="flex flex-col gap-6">
@@ -2112,9 +2192,9 @@ function BillingTab() {
         {upgradeCtx && (
           <UpgradePlanModal
             onClose={() => setUpgradeCtx(null)}
-            currentPlanId="premium"
             contextMessage={upgradeCtx.message}
             highlightPlanId={upgradeCtx.planId}
+            quota={upgradeCtx.quota ? { allowances: MANUSCRIPT_ALLOWANCES } : undefined}
           />
         )}
         {buyCreditsType && <BuyCreditsModal creditType={buyCreditsType} onClose={() => setBuyCreditsType(null)} />}
@@ -2124,7 +2204,7 @@ function BillingTab() {
       <SectionCard>
         <SectionHeader
           title="Current plan"
-          description="You're on the Premium Plan"
+          description={`You're on the ${billingPlanData.name} plan`}
           right={
             <button onClick={() => setUpgradeCtx({})} style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', height: 38, padding: '0 20px', borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
               Manage plan
@@ -2144,12 +2224,12 @@ function BillingTab() {
                 </svg>
               </div>
               <div>
-                <p style={{ ...ns, fontSize: 24, fontWeight: 700, color: '#001633', lineHeight: '32px' }}>Premium</p>
-                <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#667C98', lineHeight: '18px' }}>$29 / month · Renews Apr 1, 2026</p>
+                <p style={{ ...ns, fontSize: 24, fontWeight: 700, color: '#001633', lineHeight: '32px' }}>{billingPlanData.name}</p>
+                <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#667C98', lineHeight: '18px' }}>{billingPlanData.price} {billingPlanData.period} · Renews Apr 1, 2026</p>
               </div>
             </div>
             <div className="flex flex-wrap items-center" style={{ gap: '6px 16px' }}>
-              {['Unlimited projects', 'Wordgenie AI', 'Audiobook creation', 'Flipbook publishing', 'Priority support'].map((f) => (
+              {billingPlanData.features.map((f) => (
                 <span key={f} className="flex items-center" style={{ gap: 4, ...ns, fontSize: 13, color: '#006EFE', fontWeight: 400 }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                   {f}
@@ -2162,11 +2242,126 @@ function BillingTab() {
 
       {/* ── Credit usage ── */}
       <SectionCard>
+        {/* "Plan usage", not "Credit usage" — the first row isn't credits, it's generations, and
+            three of the four things listed here are different currencies. The description no
+            longer claims everything resets monthly either: generations do, purchased credits
+            don't, which is why the reset date is stated per row rather than once up here. */}
         <SectionHeader
-          title="Credit usage"
-          description="Track your monthly credit consumption. Resets automatically each billing cycle."
+          title="Plan usage"
+          description="What you've used this cycle. Each row states its own limit and when, or whether, it resets."
         />
         <div className="flex flex-col px-6 pb-6" style={{ gap: 24, paddingTop: 20 }}>
+          {/* Wordgenie generations lead the list — it's the allowance people actually hit, and
+              the one every gate in the product refers back to. Framed as "used" rather than
+              "left": a dashboard is where you review consumption (Otter, ClickUp, Luma and
+              Fireflies all count up here), while the in-composer alert counts down because at
+              the moment of interruption what matters is what's still available. */}
+          {(() => {
+            const limit = manuscriptLimitFor(billingPlan);
+            const unlimited = !Number.isFinite(limit);
+            const used = manuscriptsUsed;
+            const pct = unlimited ? 0 : Math.min(Math.round((used / limit) * 100), 100);
+            const exhausted = !unlimited && used >= limit;
+            return (
+              <div className="flex flex-col" style={{ gap: 8 }}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center" style={{ gap: 10 }}>
+                    <div className="flex items-center justify-center flex-shrink-0" style={{ width: 32, height: 32, borderRadius: '50%', background: '#F0F6FF' }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="#006EFE"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" /></svg>
+                    </div>
+                    <div>
+                      <p style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#15191F', lineHeight: '18px' }}>Wordgenie generations</p>
+                      {/* Consumption on the left, remaining on the right — the same split the
+                          three credit rows below use, so a column means one thing all the way
+                          down the list. This row used to state both numbers here and put the
+                          reset date in the right-hand column, which left that column carrying a
+                          date on row one and a count on rows two to four.
+                          The reset date rides here instead: it qualifies the usage, and it can't
+                          go in the section header because purchased credits don't reset at all. */}
+                      <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '16px' }}>
+                        {unlimited
+                          ? `${used} used this month`
+                          : `${used} of ${limit} used this month · ${allowanceResetLabel()}`}
+                      </p>
+                    </div>
+                  </div>
+                  <span style={{ ...ns, fontSize: 12, fontWeight: 400, color: exhausted ? '#D62929' : '#8596AD', lineHeight: '16px' }}>
+                    {unlimited ? 'Unlimited' : `${limit - used} remaining`}
+                  </span>
+                </div>
+                {/* No bar when there's no ceiling — a progress track with nothing to fill toward
+                    would imply a limit that doesn't exist. */}
+                {!unlimited && (
+                  <div style={{ height: 6, borderRadius: 999, background: '#E0E5EB', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: '100%', borderRadius: 999, background: exhausted ? 'linear-gradient(90deg, #006EFE, #D62929)' : '#006EFE', transform: `scaleX(${pct / 100})`, transformOrigin: 'left', transition: 'transform 0.4s ease' }} />
+                  </div>
+                )}
+                {/* What actually happens at zero. Every usage page in the study spells this out —
+                    Coda "AI functionality will be paused once all the credits have been used",
+                    HubSpot "scheduled and automated emails will no longer be sent", Claude "turn
+                    on extra usage to keep using Claude if you hit a limit". We never said it, so
+                    a customer had to guess whether running out breaks the whole product. It
+                    doesn't, and the second sentence is there to say so. */}
+                {!unlimited && (
+                  <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '17px' }}>
+                    Wordgenie stops generating manuscripts once you reach {limit}; everything you&apos;ve
+                    already created stays editable. Presentations draw on their own allowance, below.
+                  </p>
+                )}
+                {exhausted && (
+                  <button
+                    onClick={() => setUpgradeCtx({ message: `You've used all ${limit} manuscript generations this month.`, quota: true })}
+                    style={{ ...ns, fontSize: 12, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', width: 'fit-content' }}
+                  >
+                    See upgrade options →
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Presentations are metered on every tier too — Standard 5, PRO 10 — on a pool of their
+              own. They used to be listed as PRO-only, which was wrong: what PRO actually unlocks
+              is the export surface (PowerPoint, PNG, and a share link without the watermark),
+              not the ability to make one. */}
+          {(() => {
+            const limit = presentationLimitFor(billingPlan);
+            const unlimited = !Number.isFinite(limit);
+            const used = Math.min(presentationsUsed, limit);
+            const pct = unlimited ? 0 : Math.min(Math.round((used / limit) * 100), 100);
+            return (
+              <div className="flex flex-col" style={{ gap: 8 }}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center" style={{ gap: 10 }}>
+                    <div className="flex items-center justify-center flex-shrink-0" style={{ width: 32, height: 32, borderRadius: '50%', background: '#F0F6FF' }}>
+                      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="2" y="3" width="16" height="11" rx="2" /><path d="M8 14v3M12 14v3M6 17h8" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#15191F', lineHeight: '18px' }}>Presentation generations</p>
+                      <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '16px' }}>
+                        {unlimited ? `${used} used this month` : `${used} of ${limit} used this month · ${limit - used} remaining`}
+                      </p>
+                    </div>
+                  </div>
+                  <span style={{ ...ns, fontSize: 12, fontWeight: 400, color: '#8596AD', lineHeight: '16px' }}>
+                    {unlimited ? 'Unlimited' : allowanceResetLabel()}
+                  </span>
+                </div>
+                {!unlimited && (
+                  <div style={{ height: 6, borderRadius: 999, background: '#E0E5EB', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: '100%', borderRadius: 999, background: '#006EFE', transform: `scaleX(${pct / 100})`, transformOrigin: 'left', transition: 'transform 0.4s ease' }} />
+                  </div>
+                )}
+                <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '17px' }}>
+                  Every plan can create and export presentations as PDF. PRO adds PowerPoint and PNG export,
+                  and removes the watermark from shared links.
+                </p>
+              </div>
+            );
+          })()}
+
           {CREDITS.map((c) => {
             const pct = Math.round((c.used / c.total) * 100);
             return (
@@ -2249,7 +2444,10 @@ function BillingTab() {
 ───────────────────────────────────────────── */
 
 export function MyAccountView() {
-  const [activeTab, setActiveTab] = useState<Tab>('profile');
+  // Seeded from the store so a caller can deep-link a tab — the sidebar's plan row lands on
+  // billing. Initial state only: once open, the tab strip owns it.
+  const accountTab = useFlowStore((s) => s.accountTab);
+  const [activeTab, setActiveTab] = useState<Tab>(accountTab);
   const setShowAccount = useFlowStore((s) => s.setShowAccount);
 
   const tabContent: Record<Tab, React.ReactNode> = {

@@ -113,5 +113,14 @@ export interface FlowState {
   sidebarOpen: boolean;
   isImporting: boolean;
   showAccount: boolean;
+  /* Which tab My Account opens on. Lets a caller deep-link it — the sidebar's plan row lands on
+     billing, since a click there says nothing about which plan is wanted and needs the full
+     comparison rather than a modal guessing. */
+  accountTab: 'profile' | 'password' | 'preferences' | 'billing';
+  /* Whether a campaign is currently running. The home strip is campaign-only — between
+     campaigns it renders nothing — so this is the switch that turns that season on and off. */
+  promoActive: boolean;
+  /** Which campaign is running — a discount offer, or a product launch. */
+  promoVariant: 'offer' | 'announcement';
   profilePhoto: string | null;
 }

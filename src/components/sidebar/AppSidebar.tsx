@@ -2,12 +2,28 @@
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter, usePathname } from 'next/navigation';
-import { useFlowStore } from '@/stores/flowStore';
+import { useFlowStore, PLAN_LABELS, type PlanId } from '@/stores/flowStore';
 import { createPortal } from 'react-dom';
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { UpgradePlanModal } from '../account/MyAccountView';
 
 export const SIDEBAR_WIDTH = 240;
+
+const nsSidebar = { fontFamily: "'Nunito Sans', sans-serif" } as const;
+
+/* Which tier a plan should be pointed at, and what that tier adds.
+   Only the target is used now that the row carries no pitch line — the line is kept because the
+   upgrade modal wants the same two-feature summary, and having one source stops the rail and the
+   modal naming different features.
+   Pointing at the next tier up rather than the top one, the same cheapest-that-solves-it rule the
+   upgrade modal follows. Absent for Premium and Agency, which is what drops the UPGRADE badge for
+   them — there is nothing above them to sell. */
+const UPGRADE_PITCH: Partial<Record<PlanId, { target: PlanId; line: string }>> = {
+  // "X adds A and B" — the target leads so the line can't be misread as describing the plan named
+  // in the headline above. Two features, no "and more": at 11.5px the fuller phrasings all landed
+  // just past the 192px box and broke with a single orphaned word on line two.
+  standard: { target: 'pro',     line: 'PRO adds ePub and presentations' },
+  pro:      { target: 'premium', line: 'Premium adds print books and audiobooks' },
+};
 
 type PopupType = 'projects' | 'media' | 'learning' | null;
 
@@ -341,6 +357,9 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
   const lastPathname = useFlowStore((s) => s.lastPathname);
   const setLastPathname = useFlowStore((s) => s.setLastPathname);
   const setSidebarOpen = useFlowStore((s) => s.setSidebarOpen);
+  const currentPlan = useFlowStore((s) => s.currentPlan);
+  // Absent for the top tiers, which is what removes the card for Premium and Agency entirely.
+  const pitch = UPGRADE_PITCH[currentPlan];
   const router = useRouter();
   const pathname = usePathname();
 
@@ -374,7 +393,6 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
 
   const [activePopup, setActivePopup] = useState<PopupType>(null);
   const [popupAnchor, setPopupAnchor] = useState({ top: 0, right: 0 });
-  const [showUpgrade, setShowUpgrade] = useState(false);
 
   const projectsRef = useRef<HTMLButtonElement>(null);
   const mediaRef = useRef<HTMLButtonElement>(null);
@@ -551,59 +569,100 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                 </div>
               </nav>
 
-              {/* Bottom section */}
-              <div style={{ borderTop: '1px solid #F0F2F5', padding: '12px 12px 32px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 8 }}>
+              {/* Bottom section — the two utility items, then your plan and who you are. */}
+              <div style={{ borderTop: '1px solid #F0F2F5', padding: '10px 12px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
 
-                  {/* Learning Center */}
-                  <button
-                    ref={learningRef}
-                    style={bottomItemStyle}
-                    onClick={() => openPopup('learning', learningRef)}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                  >
-                    <LearningIcon />
-                    Learning Center
-                  </button>
+                {/* Learning Center */}
+                <button
+                  ref={learningRef}
+                  style={bottomItemStyle}
+                  onClick={() => openPopup('learning', learningRef)}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <LearningIcon />
+                  Learning Center
+                </button>
 
-                  {/* Upgrades */}
-                  <button
-                    style={bottomItemStyle}
-                    onClick={() => setShowUpgrade(true)}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                  >
-                    <UpgradesIcon />
-                    Upgrades
-                  </button>
+                {/* Promote */}
+                <button
+                  style={bottomItemStyle}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <SpeakerIcon />
+                  Promote
+                </button>
 
-                  {/* Promote */}
-                  <button
-                    style={bottomItemStyle}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                  >
-                    <SpeakerIcon />
-                    Promote
-                  </button>
-                </div>
+                {/* Separates the two utility items from the plan and the person — the rule sits
+                    at the text column's inset rather than full-bleed, because it divides a group
+                    inside this block rather than the block from the one above it. */}
+                <div aria-hidden style={{ height: 1, background: '#F0F2F5', margin: '2px 0' }} />
 
-                {/* Divider */}
-                <div style={{ height: 1, background: '#F0F2F5', margin: '8px 0' }} />
+                {/* Plan row, directly above the account row.
 
-                {/* User profile / My Account */}
+                    A row, not a card. Across ~90 sidebars the rule that held wasn't about content
+                    but about permanence: cards are for things that expire — a trial (beehiiv,
+                    GitBook, Programa, Felt, Productboard), an unfinished setup (HoneyBook, Vanta,
+                    Apollo, Wix, Klaviyo, Slite), a promo with an end date (Kajabi, Polywork), a
+                    dismissible announcement (Linktree, Dovetail, Family). Everything permanent —
+                    referral, what's new, help, changelog, plan — is a plain row. A generation
+                    quota never expires, so it never earns the card.
+
+                    No count here either. A number needs its unit, the unit needs width this row
+                    doesn't have, and "0 of 5" alone is a riddle. The count already sits where it
+                    can be acted on — the composer's send button reads "Generate · 3 left" — and
+                    where it's complete, in My Account with the reset date. The rail was the one
+                    place showing it where nothing could be done about it.
+
+                    Chatbase is the sole product in the study with a quota meter in a rail, and
+                    that workspace is on Free. Teachable's "Plan [UPGRADE]" is the only pattern
+                    found aimed at a customer who already pays, which is what this copies: status
+                    first, action second.
+
+                    One click target, not two. The badge is decoration on the row rather than a
+                    nested button — two hit areas in a 34px row is a keyboard and touch problem,
+                    and Teachable's row behaves the same way. */}
+                <button
+                  style={{ ...bottomItemStyle, justifyContent: 'space-between', fontSize: 13 }}
+                  onClick={() => setShowAccount(true, 'billing')}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <PlanIcon />
+                    {PLAN_LABELS[currentPlan]} plan
+                  </span>
+                  {/* Absent for the top tiers — nothing above them to sell. */}
+                  {pitch && (
+                    <span style={{
+                      ...nsSidebar, fontSize: 10, fontWeight: 800, letterSpacing: '0.4px',
+                      color: '#0053C7', background: '#EAF1FF', borderRadius: 5,
+                      padding: '3px 6px', lineHeight: '12px', flexShrink: 0,
+                    }}>
+                      UPGRADE
+                    </span>
+                  )}
+                </button>
+
+                {/* Same rule as the one above the plan row, so the foot reads as three groups of
+                    equal standing — utilities, plan, person — rather than a list with one
+                    arbitrary break in it. */}
+                <div aria-hidden style={{ height: 1, background: '#F0F2F5', margin: '2px 0' }} />
+
+                {/* User profile / My Account — identity only. The plan sits in the row above,
+                    where it's the subject; repeating it here would be a duplicate. */}
                 <button
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px',
-                    borderRadius: 8, height: 48, width: '100%', border: 'none', cursor: 'pointer',
+                    borderRadius: 8, height: 40, width: '100%', border: 'none', cursor: 'pointer',
                     background: activeNav === 'account' ? '#EEF5FF' : 'transparent',
                   }}
                   onClick={() => setShowAccount(true)}
                   onMouseEnter={(e) => { if (activeNav === 'account') return; e.currentTarget.style.background = '#F6F7F9'; }}
                   onMouseLeave={(e) => { if (activeNav === 'account') return; e.currentTarget.style.background = 'transparent'; }}
                 >
-                  <div style={{ width: 32, height: 32, borderRadius: '50%', background: profilePhoto ? 'transparent' : '#E0E5EB', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, color: '#8596AD', flexShrink: 0 }}>
+                  <div style={{ width: 22, height: 22, borderRadius: '50%', background: profilePhoto ? 'transparent' : '#E0E5EB', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: '#8596AD', flexShrink: 0 }}>
                     {profilePhoto
                       ? <img src={profilePhoto} alt="avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                       : 'CW'
@@ -643,7 +702,6 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
         </div>,
         document.body
       )}
-      {showUpgrade && <UpgradePlanModal onClose={() => setShowUpgrade(false)} currentPlanId="standard" />}
     </>
   );
 }
@@ -734,10 +792,16 @@ function LearningIcon() {
   );
 }
 
-function UpgradesIcon() {
+/* Outline stroke at 1.5px to sit with the 400-weight row label, matching the other foot icons.
+   A card outline rather than a padlock or a crown: the row states which plan you're on, and
+   only carries an upgrade badge as a secondary. Padlocks appeared in none of the sidebars
+   studied, and the deck's own recommendation is against them. */
+function PlanIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ flexShrink: 0 }}>
-      <path d="M7.1943 6.61618L8.87341 3.15678L10.5525 6.61618C10.6783 6.87598 10.9244 7.05647 11.2116 7.10022L14.9691 7.65537L12.2398 10.3573C12.0375 10.5569 11.9445 10.844 11.9937 11.1257L12.6364 14.9406L9.28635 13.1494C9.02929 13.0126 8.72027 13.0126 8.46047 13.1494L5.10772 14.9406L5.75038 11.1257C5.79687 10.844 5.70662 10.5596 5.50426 10.3573L2.77776 7.65537L6.53524 7.10022C6.82238 7.0592 7.06851 6.87598 7.1943 6.61618ZM12.62 15.9224C12.8415 16.04 13.1095 16.0236 13.3118 15.8759C13.5142 15.7282 13.6181 15.4794 13.5771 15.2332L12.8579 10.9808L15.8989 7.96712C16.0766 7.7921 16.1368 7.5323 16.0602 7.29712C15.9836 7.06194 15.7785 6.88965 15.5324 6.85136L11.3401 6.23332L9.46411 2.36918C9.35472 2.1422 9.125 2 8.87341 2C8.62182 2 8.3921 2.1422 8.28271 2.36918L6.40671 6.23332L2.21714 6.8541C1.97102 6.88965 1.76592 7.06194 1.68935 7.29985C1.61277 7.53777 1.67567 7.79484 1.85069 7.96986L4.88895 10.9808L4.17246 15.2332C4.13144 15.4794 4.23262 15.7282 4.43772 15.8759C4.64282 16.0236 4.91083 16.04 5.1296 15.9224L8.87615 13.9206L12.6227 15.9224H12.62Z" fill="#667C98"/>
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" style={{ flexShrink: 0 }}>
+      <rect x="2.5" y="4.5" width="15" height="11" rx="2" stroke="#667C98" strokeWidth="1.5" />
+      <path d="M2.5 8.5h15" stroke="#667C98" strokeWidth="1.5" />
+      <path d="M5.5 12h3" stroke="#667C98" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }

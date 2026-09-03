@@ -37,13 +37,17 @@ body {
   background: #ffffff;
   overflow: hidden;
 }
+/* Moved off the centre line. At left:50% the densest part of this blob sat directly behind the
+   hero and the composer — which is where the amber usage banner lives, and warm-over-cool
+   neutralises, so the tint got dragged toward grey. Pushed right so it pairs diagonally with the
+   bottom-left blob and leaves the content column on clean white. */
 .app-gradient-bg::before {
   content: '';
   position: absolute;
   width: 1041px;
   height: 545px;
-  left: 50%;
-  top: -131px;
+  left: 78%;
+  top: -200px;
   transform: translate(-50%, 0) rotate(45deg);
   background: linear-gradient(123.24deg, rgba(57, 169, 229, 0.14) 30.21%, rgba(131, 23, 255, 0.14) 88.11%);
   filter: blur(150px);

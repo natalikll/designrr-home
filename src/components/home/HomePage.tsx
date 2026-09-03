@@ -4,8 +4,8 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Variants } from 'framer-motion';
-import Logo from './Logo';
-import HomeWordgenieInput, { WordgenieModeToggle } from './WordgenieInput';
+import HomeWordgenieInput, { WordgenieEyebrow } from './WordgenieInput';
+import { PlanTopStrip } from './PlanTopStrip';
 import { RecentProjectsHub, RecentBooks, RecentPresentations } from './RecentProjects';
 import ImportCards from './ImportCards';
 import { PresentationStartCards } from '../presentation/PresentationEntryView';
@@ -128,7 +128,16 @@ export default function HomePage() {
     : undefined;
 
   return (
-    <div className="h-full relative overflow-hidden">
+    <div className="h-full overflow-hidden flex flex-col app-gradient-bg">
+
+      {/* Standing plan strip — a sibling above the scroll container rather than inside it, so it
+          stays put and doesn't collide with the absolutely-positioned sidebar toggle below.
+          z-10 lifts it over the gradient blobs, which sit at z-0 on the container above. */}
+      <div className="relative z-10">
+        <PlanTopStrip />
+      </div>
+
+      <div className="flex-1 min-h-0 relative">
 
       {/* Sidebar toggle */}
       <div className="absolute top-4 left-5 z-40">
@@ -144,24 +153,42 @@ export default function HomePage() {
 
       {/* Hub — always visible, single view */}
       <div className="absolute inset-0 overflow-y-auto">
-        <div className="app-gradient-bg flex min-h-full flex-col">
-          <main className="relative z-10 flex flex-1 flex-col items-center px-4 pt-[104px]">
-            <Logo />
+        <div className="flex min-h-full flex-col">
+          <main className="relative z-10 flex flex-1 flex-col items-center px-4 pt-[112px]">
+            {/* No Designrr wordmark here — the sidebar header already carries it, and a second
+                copy 40px below the first is the thing most products in the study avoid: Base44,
+                Sana, Otter, Suno, WRITER, Emergent and Gemini all keep the company mark in the
+                chrome and give the content area only a headline. What does sit centred above the
+                headline elsewhere is a sub-brand or product mark — SuperGrok's wordmark, Mistral's
+                Le Chat logo, Langdock's — which is exactly what the Wordgenie lockup is. */}
             <motion.div {...hubStagger} className="flex flex-col items-center w-full">
 
+              {/* Shown in every mode, not just book — it's the engine behind the whole hub, so
+                  it reads as the page's product mark rather than a per-mode indicator. Constant
+                  presence also means the headline never shifts when the mode changes. */}
+              <motion.div variants={slideUp} className="flex items-center justify-center" style={{ height: 24 }}>
+                <WordgenieEyebrow />
+              </motion.div>
+
+              {/* 52 rather than 60, against a 24px lockup. The wordmark's cap height inside that
+                  lockup is roughly 11px, so it reads as a ~0.2× eyebrow against the headline —
+                  the normal relationship. At 60/20 the mark was a third the headline's size and
+                  looked stranded. The question itself is left alone: it's the same construction
+                  Base44 ("What will you build next?"), Manus ("What can I do for you?"), Sana and
+                  Langdock all use, so there's nothing to gain by rewording it. */}
               <motion.h1
                 variants={slideUp}
-                className="mt-8 text-center font-semibold tracking-[-1.8px] text-text-primary"
-                style={{ fontSize: 60, lineHeight: '68px', fontFamily: "'Nunito Sans', sans-serif" }}
+                className="mt-3.5 text-center font-semibold tracking-[-1.4px] text-text-primary"
+                style={{ fontSize: 52, lineHeight: '58px', fontFamily: "'Nunito Sans', sans-serif" }}
               >
                 What would you like to create?
               </motion.h1>
 
-              <motion.p variants={slideUp} className="mt-3 max-w-[480px] text-center text-base leading-6 text-text-muted">
+              <motion.p variants={slideUp} className="mt-4 max-w-[480px] text-center text-base leading-6 text-text-muted">
                 Describe your idea or choose where to start below.
               </motion.p>
 
-              <motion.div variants={slideUp} className="mt-8 w-full max-w-[900px] flex flex-col items-center" style={{ gap: 14 }}>
+              <motion.div variants={slideUp} className="mt-9 w-full max-w-[900px] flex flex-col items-center" style={{ gap: 16 }}>
                 <div className="w-full">
                   <HomeWordgenieInput
                     hideHeader={mode !== 'book'}
@@ -171,7 +198,6 @@ export default function HomePage() {
                     placeholder={mode ? PLACEHOLDERS[mode] : 'What would you like to create today?'}
                     onSubmit={handleSubmit}
                     presentationMode={mode === 'presentation'}
-                    topRow={mode === 'book' ? <WordgenieModeToggle /> : undefined}
                   />
                 </div>
 
@@ -240,6 +266,7 @@ export default function HomePage() {
             </motion.div>
           </main>
         </div>
+      </div>
       </div>
     </div>
   );

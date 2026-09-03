@@ -2,10 +2,10 @@
 
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { useFlowStore, MANUSCRIPT_GENERATION_LIMIT } from '@/stores/flowStore';
+import { useFlowStore, manuscriptLimitFor } from '@/stores/flowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
-import { UpgradePlanModal } from '../account/MyAccountView';
+import { UpgradePlanModal, MANUSCRIPT_ALLOWANCES } from '../account/MyAccountView';
 
 interface OutlineHeaderProps {
   onGenerateBook: () => void;
@@ -15,13 +15,16 @@ export function OutlineHeader({ onGenerateBook }: OutlineHeaderProps) {
   const sidebarOpen = useFlowStore((s) => s.sidebarOpen);
   const setSidebarOpen = useFlowStore((s) => s.setSidebarOpen);
   const used = useFlowStore((s) => s.manuscriptGenerationsUsed);
+  const currentPlan = useFlowStore((s) => s.currentPlan);
   const [showUpgrade, setShowUpgrade] = useState(false);
 
-  const remaining = MANUSCRIPT_GENERATION_LIMIT - used;
-  const isExhausted = remaining <= 0;
+  const limit = manuscriptLimitFor(currentPlan);
+  const isUnlimited = !Number.isFinite(limit);
+  const remaining = limit - used;
+  const isExhausted = !isUnlimited && remaining <= 0;
   // 80% used is the standard first-warning threshold in SaaS usage-limit convention —
   // not an arbitrary "a few left" cutoff.
-  const isLow = !isExhausted && used / MANUSCRIPT_GENERATION_LIMIT >= 0.8;
+  const isLow = !isUnlimited && !isExhausted && used / limit >= 0.8;
   const counterColor = isExhausted ? '#D62929' : isLow ? '#B8860B' : '#8596AD';
 
   const handleClick = () => {
@@ -73,7 +76,7 @@ export function OutlineHeader({ onGenerateBook }: OutlineHeaderProps) {
               className="text-[13px] cursor-default whitespace-nowrap"
               style={{ fontWeight: isLow || isExhausted ? 700 : 600, color: counterColor }}
             >
-              {isExhausted ? 'Limit reached' : `${remaining} / ${MANUSCRIPT_GENERATION_LIMIT} left`}
+              {isUnlimited ? 'Unlimited' : isExhausted ? 'Limit reached' : `${remaining} / ${limit} left`}
             </span>
             {/* Hover tooltip */}
             <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50">
@@ -107,9 +110,9 @@ export function OutlineHeader({ onGenerateBook }: OutlineHeaderProps) {
         {showUpgrade && (
           <UpgradePlanModal
             onClose={() => setShowUpgrade(false)}
-            currentPlanId="standard"
             contextMessage="You've used all your manuscript generations this month."
             highlightPlanId="pro"
+            quota={{ allowances: MANUSCRIPT_ALLOWANCES }}
           />
         )}
       </div>

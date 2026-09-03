@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
-import { useFlowStore } from '@/stores/flowStore';
+import { useFlowStore, ownsPlan } from '@/stores/flowStore';
+import { TierBadge, shouldShowTierBadge, type GateTier } from '@/components/ui/TierBadge';
+import { UpgradePlanModal } from '@/components/account/MyAccountView';
 import { usePresentationFlowStore, type PresentationSlide, type SlideLayout, type SlideType, type TextOffset } from '@/stores/presentationFlowStore';
 import { MOCK_THEMES, type MockTheme } from '@/lib/presentationMocks';
 import { NarratedVideoModal } from './NarratedVideoModal';
@@ -2523,6 +2525,10 @@ function PresentOverlay({ slides, theme, startIndex, mode, onClose }: {
 
 export function PresentationEditorView() {
   const router = useRouter();
+  const currentPlan = useFlowStore(s => s.currentPlan);
+  // The clicked export names the modal, so it opens on the one plan that unlocks that format
+  // rather than a generic four-card grid.
+  const [upgradeCtx, setUpgradeCtx] = useState<string | null>(null);
   const sidebarOpen = useFlowStore(s => s.sidebarOpen);
   const setSidebarOpen = useFlowStore(s => s.setSidebarOpen);
 
@@ -3288,44 +3294,65 @@ export function PresentationEditorView() {
               {exportOpen && (
                 <div className="absolute bg-white flex flex-col" style={{ top: 'calc(100% + 4px)', right: 0, zIndex: 30, width: 270, padding: 5, borderRadius: 9, border: '1px solid #E8EBF2', boxShadow: '0px 8px 24px rgba(15,23,51,0.14)' }}>
                   {([
-                    { label: 'Download PowerPoint', badgeBg: '#FBDCCD', icon: (
+                    { label: 'Download PowerPoint', tier: 'pro' as const, badgeBg: '#FBDCCD', icon: (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C4551B" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="3" y="4" width="18" height="13" rx="2"/>
                         <path d="M9.5 8.5v5l4.5-2.5-4.5-2.5z" fill="#C4551B" stroke="none"/>
                         <path d="M8 20h8"/>
                       </svg>
                     ), onClick: () => { downloadPptx(); setExportOpen(false); } },
-                    { label: 'Download PDF', badgeBg: '#FBD0D0', icon: (
+                    { label: 'Download PDF', tier: undefined, badgeBg: '#FBD0D0', icon: (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C22525" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/>
                         <path d="M14 3v5h5"/>
                         <path d="M9 13h6M9 16.5h4"/>
                       </svg>
                     ), onClick: () => { downloadPdf(); setExportOpen(false); } },
-                    { label: 'Download PNG images', badgeBg: '#C6DDFC', icon: (
+                    { label: 'Download PNG images', tier: 'pro' as const, badgeBg: '#C6DDFC', icon: (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1D4ED8" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="3" y="4" width="18" height="16" rx="2"/>
                         <circle cx="8.5" cy="9.5" r="1.4" fill="#1D4ED8" stroke="none"/>
                         <path d="M21 15.5l-5.5-5.5a1 1 0 0 0-1.4 0L6 18"/>
                       </svg>
                     ), onClick: () => { downloadPngImages(); setExportOpen(false); } },
-                    { label: 'Copy link', badgeBg: '#EAF2FF', icon: (
+                    { label: 'Copy link', tier: undefined, badgeBg: '#EAF2FF', icon: (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                         <path d="M15 7h2a5 5 0 1 1 0 10h-2" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round"/>
                         <path d="M9 17H7A5 5 0 0 1 7 7h2" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round"/>
                         <line x1="8" y1="12" x2="16" y2="12" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round"/>
                       </svg>
                     ), onClick: () => { setExportOpen(false); setShareLinkOpen(true); } },
-                  ] as { label: string; badgeBg: string; icon: React.ReactNode; onClick: () => void }[]).map(item => (
-                    <button key={item.label} onClick={item.onClick} className="flex items-center w-full cursor-pointer text-left" style={{ gap: 10, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none' }}
+                  ] as { label: string; tier?: GateTier; badgeBg: string; icon: React.ReactNode; onClick: () => void }[]).map(item => {
+                    const gated = shouldShowTierBadge(currentPlan, item.tier);
+                    // Copy link isn't gated — the output is. Pitch states that consequence in
+                    // words and gives removing it its own action rather than disabling the share.
+                    const watermarked = item.label === 'Copy link' && !ownsPlan(currentPlan, 'pro');
+                    return (
+                    <button
+                      key={item.label}
+                      onClick={() => (gated ? setUpgradeCtx(item.label) : item.onClick())}
+                      className="flex items-center w-full cursor-pointer text-left"
+                      style={{ gap: 10, padding: '7px 10px', borderRadius: 6, border: 'none', background: 'none' }}
                       onMouseEnter={e => { e.currentTarget.style.background = '#F5F7FA'; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                      onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
+                    >
+                      {/* Full strength either way. A dimmed row with a lock reads as broken
+                          rather than purchasable — Trello and Gamma both badge the row and
+                          otherwise leave it alone. */}
                       <div style={{ width: 28, height: 28, borderRadius: 7, background: item.badgeBg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                         {item.icon}
                       </div>
-                      <span style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }}>{item.label}</span>
+                      <div className="flex flex-col" style={{ gap: 1, minWidth: 0, flex: 1 }}>
+                        <span style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#1F2532' }}>{item.label}</span>
+                        {watermarked && (
+                          <span style={{ ...ns, fontSize: 11, color: '#9AA5B4' }}>Includes a Designrr watermark</span>
+                        )}
+                      </div>
+                      {gated && <TierBadge tier={item.tier as GateTier} size="sm" />}
+                      {watermarked && <TierBadge tier="pro" size="sm" />}
                     </button>
-                  ))}
+                  );
+                  })}
                   {narrationVersion === '1' && (
                     <>
                       <div style={{ borderTop: '1px solid #F0F2F5', margin: '3px 0' }}/>
@@ -4256,6 +4283,16 @@ export function PresentationEditorView() {
         onClose={() => setShareLinkOpen(false)}
         url="https://designrr.io/present/klimiashvilinn_568/casper-weldings-overview"
       />
+
+      {/* Titled after the format that was clicked, not "Upgrade your account" — the click
+          already told us which plan they need, so this is the one-card case. */}
+      {upgradeCtx && (
+        <UpgradePlanModal
+          onClose={() => setUpgradeCtx(null)}
+          highlightPlanId="pro"
+          contextMessage={`${upgradeCtx} is available on PRO.`}
+        />
+      )}
 
       {/* Marquee-select rectangle — fixed to the viewport so it stays correct regardless
           of the canvas's zoom/scale transforms. */}

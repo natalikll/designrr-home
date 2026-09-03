@@ -3,11 +3,12 @@
 import { useState, useEffect, useRef, type ReactElement } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
-import { useFlowStore } from '@/stores/flowStore';
+import { useFlowStore, PLAN_LABELS } from '@/stores/flowStore';
 import { usePresentationFlowStore } from '@/stores/presentationFlowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
 import { UpgradePlanModal } from '../account/MyAccountView';
+import { TierBadge, shouldShowTierBadge } from '../ui/TierBadge';
 
 /* ── constants ──────────────────────────────────────────────────────────────── */
 
@@ -238,6 +239,11 @@ function TemplateCover({ t, height = 300, title }: { t: Template; height?: numbe
 
 function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
   const [hovered, setHovered] = useState(false);
+  const currentPlan = useFlowStore((s) => s.currentPlan);
+  // GitLab's rule, already encoded in TierBadge: don't mark a tier the viewer owns. A PRO
+  // customer was seeing "Pro" on templates they can already use, and "Try for free" on ones
+  // that are simply free to them.
+  const showBadge = t.isPro && shouldShowTierBadge(currentPlan, 'pro');
   return (
     <div className="flex flex-col cursor-pointer" style={{ gap: 10 }}
       onMouseEnter={() => setHovered(true)}
@@ -246,14 +252,30 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
       <div className="relative overflow-hidden"
         style={{ borderRadius: 8, border: `1.5px solid ${hovered ? '#006EFE' : '#E8EBF2'}`, transition: 'border-color 0.15s, box-shadow 0.15s', boxShadow: hovered ? '0 4px 16px rgba(0,110,254,0.12)' : '0 2px 8px rgba(0,0,0,0.06)' }}>
         <TemplateCover t={t} height={260} />
-        {t.isPro && (
-          <div
-            className="absolute flex items-center"
-            style={{ top: 10, left: 10, gap: 5, background: 'rgba(21,25,31,0.85)', borderRadius: 999, padding: '4px 10px 4px 8px' }}
+        {/* Top-right, off the artwork's focal point. No star: the glyph only decodes inside the
+            pricing modal where the plan name sits beside it, which is why TierBadge makes icons
+            opt-in — and gold-on-dark was a fourth tier treatment competing with the blue pill
+            used by the pricing modal, the format picker and the export menu.
+            The two states are deliberately inverted rather than differing by word alone. "Pro"
+            is a gate and sits back; "Try for free" is an offer and comes forward, because it is
+            the thing that gets someone into a Pro template. A shadow rather than a border keeps
+            both legible on artwork of any colour, including white. */}
+        {showBadge && (
+          <span
+            className="absolute"
+            style={{
+              ...ns, top: 10, right: 10,
+              fontSize: 11, fontWeight: 700, letterSpacing: '0.01em', lineHeight: 1,
+              padding: '5px 10px', borderRadius: 999,
+              background: t.tryForFree ? '#0053C7' : '#FFFFFF',
+              color: t.tryForFree ? '#FFFFFF' : '#0053C7',
+              boxShadow: t.tryForFree
+                ? '0 1px 5px rgba(0,32,84,0.32)'
+                : '0 1px 5px rgba(15,23,51,0.22)',
+            }}
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="#F5C344"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" /></svg>
-            <span style={{ ...ns, fontSize: 11, fontWeight: 600, color: '#fff' }}>{t.tryForFree ? 'Try for free' : 'Pro'}</span>
-          </div>
+            {t.tryForFree ? 'Try for free' : 'Pro'}
+          </span>
         )}
         {hovered && (
           <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.32)' }}>
@@ -409,7 +431,7 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
   const [themeSearch, setThemeSearch] = useState('');
   const [openFilter, setOpenFilter] = useState<null | 'type' | 'themes' | 'pageSize' | 'orientation'>(null);
   const [preview, setPreview] = useState<Template | null>(null);
-  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' } | null>(null);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro'; feature: string } | null>(null);
   const themesLabel = themesFilter.length ? `Themes: ${themesFilter.join(', ')}` : 'Themes';
 
   const filtered = TEMPLATES.filter(t => {
@@ -439,7 +461,7 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
           <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#15191F' }}>Choose a template</h1>
           {proCount > 0 && (
             <button
-              onClick={() => setUpgradeCtx({ message: `Unlock all ${proCount} Pro templates`, planId: 'pro' })}
+              onClick={() => setUpgradeCtx({ message: `Unlock all ${proCount} Pro templates`, planId: 'pro', feature: 'Pro Templates' })}
               style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', cursor: 'pointer' }}
             >
               Upgrade to use all Pro templates ↗
@@ -579,9 +601,9 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
       {upgradeCtx && (
         <UpgradePlanModal
           onClose={() => setUpgradeCtx(null)}
-          currentPlanId="standard"
           contextMessage={upgradeCtx.message}
           highlightPlanId={upgradeCtx.planId}
+          highlightFeature={upgradeCtx.feature}
         />
       )}
 
@@ -594,7 +616,7 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
             onUse={(template) => {
               setPreview(null);
               if (template.isPro && !template.tryForFree) {
-                setUpgradeCtx({ message: 'Unlock this template', planId: 'pro' });
+                setUpgradeCtx({ message: 'Unlock this template', planId: 'pro', feature: 'Pro Templates' });
               } else {
                 onUse(template);
               }
@@ -757,31 +779,11 @@ function FormatIcon({ id }: { id: string }) {
   return map[id] ?? null;
 }
 
-const TIER_TINT: Record<'pro' | 'premium', { bg: string; fg: string }> = {
-  pro: { bg: '#EAF1FF', fg: '#006EFE' },
-  premium: { bg: '#EAF1FF', fg: '#006EFE' },
-};
-
-/* Mirrors each tier's own icon from the pricing modal (star for Pro, crown for Premium). */
-function TierIcon({ tier, color }: { tier: 'pro' | 'premium'; color: string }) {
-  if (tier === 'premium') {
-    return (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill={color}>
-        <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill={color}>
-      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-    </svg>
-  );
-}
-
 function PublishView({ template, onBack }: { template: Template; onBack: () => void }) {
   const router = useRouter();
   const setSelectedManuscriptId = usePresentationFlowStore((s) => s.setSelectedManuscriptId);
-  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium' } | null>(null);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium'; feature: string } | null>(null);
+  const currentPlan = useFlowStore((s) => s.currentPlan);
 
   const [format, setFormat] = useState('pdf');
   const [title, setTitle] = useState('The Power of Unknowing: How Embracing Ignorance');
@@ -793,16 +795,18 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
 
   const mockUrl = 'https://designrr.s3.amazonaws.com/klimiashvilinn_568/the-power-of-unknowing';
   const selectedFormatMeta = PUBLISH_FORMATS.find(f => f.id === format);
-  const selectedRequiredPlan = selectedFormatMeta?.requiredPlan;
+  // Only a gate this viewer is actually behind — a Premium account selecting a Pro format
+  // should just publish, not be asked to upgrade into something it already has.
+  const selectedRequiredPlan = shouldShowTierBadge(currentPlan, selectedFormatMeta?.requiredPlan)
+    ? selectedFormatMeta?.requiredPlan
+    : undefined;
 
   // Presentations are Pro+ (see HomePageStandard's locked hub chip) — this nudge used to skip
-  // that gate entirely, letting a Standard account reach the full flow for free. Matches the
-  // "always locked" assumption every other gate in this file makes since there's no real plan
-  // state yet (currentPlanId is hardcoded 'standard' throughout).
-  const isPresentationLocked = true;
+  // that gate entirely, letting a Standard account reach the full flow for free.
+  const isPresentationLocked = shouldShowTierBadge(currentPlan, 'pro');
   const handleTurnIntoPresentation = () => {
     if (isPresentationLocked) {
-      setUpgradeCtx({ message: 'Unlock Presentations and Courses', planId: 'pro' });
+      setUpgradeCtx({ message: 'Unlock Presentations and Courses', planId: 'pro', feature: 'Create Presentations and Courses' });
       return;
     }
     setSelectedManuscriptId('m-1');
@@ -830,7 +834,7 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
           <button
             onClick={() => {
               if (selectedRequiredPlan) {
-                setUpgradeCtx({ message: `Unlock ${selectedFormatMeta?.label} export`, planId: selectedRequiredPlan });
+                setUpgradeCtx({ message: `Unlock ${selectedFormatMeta?.label} export`, planId: selectedRequiredPlan, feature: `${selectedFormatMeta?.label} export` });
               } else {
                 setPublished(true);
               }
@@ -838,7 +842,7 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
             style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '8px 20px', cursor: 'pointer' }}
             onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
             onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
-            {selectedRequiredPlan ? 'Upgrade' : 'Publish'}
+            {selectedRequiredPlan ? `Upgrade to ${PLAN_LABELS[selectedRequiredPlan]}` : 'Publish'}
           </button>
         </div>
       </div>
@@ -875,8 +879,7 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
             <h2 style={{ ...ns, fontSize: 18, fontWeight: 700, color: '#15191F', marginBottom: 20 }}>How would you like to publish?</h2>
             <div className="flex flex-col" style={{ gap: 10 }}>
               {PUBLISH_FORMATS.map(f => {
-                const isLocked = !!f.requiredPlan;
-                const tint = f.requiredPlan ? TIER_TINT[f.requiredPlan] : null;
+                const isLocked = shouldShowTierBadge(currentPlan, f.requiredPlan);
                 return (
                 <button key={f.id}
                   onClick={() => setFormat(f.id)}
@@ -891,11 +894,9 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
                     <div style={{ ...ns, fontSize: 15, fontWeight: 600, color: '#15191F' }}>{f.label}</div>
                     <div style={{ ...ns, fontSize: 13, color: '#8596AD' }}>{f.sub}</div>
                   </div>
-                  {isLocked && tint && (
-                    <div className="flex items-center justify-center" style={{ width: 26, height: 26, borderRadius: '50%', background: tint.bg, flexShrink: 0 }}>
-                      <Tooltip label={`Requires ${f.requiredPlan === 'pro' ? 'Pro' : 'Premium'}`} position="top">
-                        <TierIcon tier={f.requiredPlan!} color={tint.fg} />
-                      </Tooltip>
+                  {isLocked && (
+                    <div style={{ flexShrink: 0 }}>
+                      <TierBadge tier={f.requiredPlan!} />
                     </div>
                   )}
                 </button>
@@ -1032,12 +1033,11 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
                   { icon: '📱', label: 'Generate QR code' },
                   { icon: '✉️', label: 'Share with e-mail' },
                 ]).map(a => {
-                  const isLocked = !!a.requiredPlan;
-                  const tint = a.requiredPlan ? TIER_TINT[a.requiredPlan] : null;
+                  const isLocked = shouldShowTierBadge(currentPlan, a.requiredPlan);
                   return (
                   <button key={a.label}
                     onClick={() => {
-                      if (isLocked && a.requiredPlan) setUpgradeCtx({ message: `Unlock ${a.label}`, planId: a.requiredPlan });
+                      if (isLocked && a.requiredPlan) setUpgradeCtx({ message: `Unlock ${a.label}`, planId: a.requiredPlan, feature: a.label });
                     }}
                     className="relative"
                     style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', borderRadius: 10, border: '1px solid #E0E5EB', background: '#fff', cursor: 'pointer', ...ns, fontSize: 14, fontWeight: 500, color: '#15191F' }}
@@ -1045,11 +1045,9 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
                     onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
                     <span style={{ fontSize: 18 }}>{a.icon}</span>
                     {a.label}
-                    {isLocked && tint && (
-                      <div className="flex items-center justify-center flex-shrink-0" style={{ width: 22, height: 22, borderRadius: '50%', background: tint.bg, marginLeft: 'auto' }}>
-                        <Tooltip label={`Requires ${a.requiredPlan === 'pro' ? 'Pro' : 'Premium'}`} position="top">
-                          <TierIcon tier={a.requiredPlan!} color={tint.fg} />
-                        </Tooltip>
+                    {isLocked && (
+                      <div className="flex-shrink-0" style={{ marginLeft: 'auto' }}>
+                        <TierBadge tier={a.requiredPlan!} size="sm" />
                       </div>
                     )}
                   </button>
@@ -1065,9 +1063,9 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
     {upgradeCtx && (
       <UpgradePlanModal
         onClose={() => setUpgradeCtx(null)}
-        currentPlanId="standard"
         contextMessage={upgradeCtx.message}
         highlightPlanId={upgradeCtx.planId}
+        highlightFeature={upgradeCtx.feature}
       />
     )}
     </div>

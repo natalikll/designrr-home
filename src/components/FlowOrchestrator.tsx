@@ -2,10 +2,9 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useFlowStore } from '@/stores/flowStore';
+import { useFlowStore, PLAN_LABELS, manuscriptLimitFor, type PlanId } from '@/stores/flowStore';
 import { useFlowEngine } from '@/hooks/useFlowEngine';
 import HomePage from './home/HomePage';
-import HomePageStandard from './home/HomePageStandard';
 import { ChatContainer } from './chat/ChatContainer';
 import { OutlineView } from './outline/OutlineView';
 import { BookView } from './book/BookView';
@@ -14,9 +13,10 @@ import { GenerationTransition } from './transition/GenerationTransition';
 import { AppSidebar } from './sidebar/AppSidebar';
 import { AccountOverlay } from './account/AccountOverlay';
 
-function HomePageWithKey({ plan }: { plan: 1 | 2 }) {
+const PROMO_KEY = 'dsgn_promo_active';
+
+function HomePageWithKey() {
   const homeKey = useFlowStore((s) => s.homeKey);
-  if (plan === 2) return <HomePageStandard key={homeKey} />;
   return <HomePage key={homeKey} />;
 }
 
@@ -25,19 +25,67 @@ export function FlowOrchestrator() {
   const sidebarOpen = useFlowStore((s) => s.sidebarOpen);
   const setSidebarOpen = useFlowStore((s) => s.setSidebarOpen);
   const { handleHeroSubmit, handleGenerateBook } = useFlowEngine();
-  const [homePlan, setHomePlan] = React.useState<1 | 2>(() => {
-    if (typeof window !== 'undefined') {
-      const v = Number(localStorage.getItem('dsgn_home_plan'));
-      return (v === 2 ? 2 : 1);
-    }
-    return 1;
-  });
 
-  const cyclePlan = () => {
-    const next = homePlan === 2 ? 1 : 2;
-    setHomePlan(next);
-    localStorage.setItem('dsgn_home_plan', String(next));
+  /* Preview switch for the viewer's plan. It replaces a toggle that swapped between two whole
+     homepage components — that was an A/B of layouts, not a tier. This one writes to the single
+     `currentPlan` in the store, which already drives tier badges, gate modals and allowances, so
+     one click re-renders every plan-aware surface at once instead of just this screen. */
+  const currentPlan = useFlowStore((s) => s.currentPlan);
+  const setCurrentPlan = useFlowStore((s) => s.setCurrentPlan);
+  const PREVIEW_PLANS: PlanId[] = ['standard', 'pro', 'premium'];
+
+  React.useEffect(() => {
+    const saved = localStorage.getItem('dsgn_home_plan');
+    if (saved && PREVIEW_PLANS.includes(saved as PlanId)) setCurrentPlan(saved as PlanId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const choosePlan = (plan: PlanId) => {
+    setCurrentPlan(plan);
+    localStorage.setItem('dsgn_home_plan', plan);
   };
+
+  /* Campaign switch. The home strip only exists while a promotion is running, so previewing it
+     means turning the season on rather than toggling a component. Switching it on also clears
+     the per-campaign view counter — the strip caps itself at three impressions, which would
+     otherwise make it vanish after the third preview and look like a bug. */
+  const promoActive = useFlowStore((s) => s.promoActive);
+  const setPromoActive = useFlowStore((s) => s.setPromoActive);
+  const promoVariant = useFlowStore((s) => s.promoVariant);
+  const setPromoVariant = useFlowStore((s) => s.setPromoVariant);
+
+  React.useEffect(() => {
+    const saved = localStorage.getItem(PROMO_KEY);
+    if (saved === 'offer' || saved === 'announcement') { setPromoActive(true); setPromoVariant(saved); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* One button, three states — off, a discount offer, a product launch — because a campaign is
+     one of those at a time rather than a set of independent switches. */
+  const togglePromo = () => {
+    const next = !promoActive ? 'offer' : promoVariant === 'offer' ? 'announcement' : 'off';
+    setPromoActive(next !== 'off');
+    if (next !== 'off') setPromoVariant(next);
+    localStorage.setItem(PROMO_KEY, next);
+    // Clear the impression cap, or the third preview would silently show nothing.
+    for (const id of ['autumn-2026', 'presentations-launch-2026']) {
+      localStorage.removeItem(`dsgn_promo_views_${id}`);
+    }
+  };
+
+  /* Usage preview, as fractions rather than counts, because the same three states land on
+     different numbers per plan — 80% is 4 generations on Standard and 8 on PRO. Premium is
+     unlimited, so there's no proportion to set and the group goes inactive. */
+  const usedFraction = useFlowStore((s) => s.manuscriptGenerationsUsed);
+  const setState = useFlowStore.setState;
+  const planLimit = manuscriptLimitFor(currentPlan);
+  const meteredPlan = Number.isFinite(planLimit);
+  const USAGE_STEPS: { label: string; fraction: number }[] = [
+    { label: 'New', fraction: 0 },
+    { label: '80%', fraction: 0.8 },
+    { label: '100%', fraction: 1 },
+  ];
+  const activeFraction = meteredPlan ? usedFraction / planLimit : 0;
 
   return (
     <div className="h-full w-full flex relative">
@@ -62,7 +110,7 @@ export function FlowOrchestrator() {
                 transition: { duration: 0.4 },
               }}
             >
-              <HomePageWithKey plan={homePlan} />
+              <HomePageWithKey />
             </motion.div>
           )}
 
@@ -133,23 +181,92 @@ export function FlowOrchestrator() {
         {/* Cinematic transition overlay (Step 5 and 7) */}
         <GenerationTransition />
 
-        {/* Home page tier preview toggle — Option 1: Pro (full access) · Option 2: Standard (locked chips) */}
+        {/* Plan preview — Standard (5 generations) · PRO (10) · Premium (unlimited) */}
         {currentStep === 0 && (
-          <button
-            onClick={cyclePlan}
-            className="absolute bottom-5 right-5 z-50 flex items-center cursor-pointer"
+          <div
+            className="absolute bottom-5 right-5 z-50 flex items-center"
             style={{
-              gap: 5, padding: '6px 12px', borderRadius: 999,
+              gap: 2, padding: 4, borderRadius: 999,
               background: 'rgba(255,255,255,0.9)', border: '1px solid #DDE2EA',
-              boxShadow: '0 2px 8px rgba(15,23,51,0.08)',
-              fontFamily: "'Nunito Sans', sans-serif", fontSize: 12, fontWeight: 600,
-              color: '#52637A', backdropFilter: 'blur(8px)',
+              boxShadow: '0 2px 8px rgba(15,23,51,0.08)', backdropFilter: 'blur(8px)',
             }}
           >
-            <span style={{ color: homePlan === 1 ? '#006EFE' : '#C5CDD9' }}>1 · Pro</span>
-            <span style={{ color: '#DDE2EA' }}>·</span>
-            <span style={{ color: homePlan === 2 ? '#006EFE' : '#C5CDD9' }}>2 · Standard</span>
-          </button>
+            {PREVIEW_PLANS.map((plan) => {
+              const active = currentPlan === plan;
+              return (
+                <button
+                  key={plan}
+                  onClick={() => choosePlan(plan)}
+                  className="cursor-pointer transition-colors"
+                  style={{
+                    padding: '4px 12px', borderRadius: 999, border: 'none',
+                    background: active ? '#EAF1FF' : 'transparent',
+                    fontFamily: "'Nunito Sans', sans-serif", fontSize: 12,
+                    fontWeight: active ? 700 : 600,
+                    color: active ? '#006EFE' : '#8596AD',
+                  }}
+                >
+                  {PLAN_LABELS[plan]}
+                </button>
+              );
+            })}
+
+            <div style={{ width: 1, height: 20, background: '#DDE2EA', margin: '0 4px' }} />
+
+            {USAGE_STEPS.map(({ label, fraction }) => {
+              const active = meteredPlan && Math.abs(activeFraction - fraction) < 0.001;
+              return (
+                <button
+                  key={label}
+                  disabled={!meteredPlan}
+                  onClick={() => {
+                    setState({ manuscriptGenerationsUsed: Math.round(planLimit * fraction) });
+                    /* "New" means a fresh account, and a fresh account hasn't met Wordgenie yet.
+                       The intro modal writes a localStorage flag on dismiss and nothing cleared
+                       it, so it fired once per browser and never again — which reads as broken
+                       rather than as working-as-designed. */
+                    if (fraction === 0) {
+                      localStorage.removeItem('dsgn_wordgenie_v4_intro_seen');
+                      localStorage.removeItem('dsgn_wordgenie_presentation_intro_seen');
+                    }
+                  }}
+                  className={meteredPlan ? 'cursor-pointer transition-colors' : 'transition-colors'}
+                  style={{
+                    padding: '4px 10px', borderRadius: 999, border: 'none',
+                    background: active ? '#EAF1FF' : 'transparent',
+                    fontFamily: "'Nunito Sans', sans-serif", fontSize: 12,
+                    fontWeight: active ? 700 : 600,
+                    color: !meteredPlan ? '#C5CDD9' : active ? '#006EFE' : '#8596AD',
+                    cursor: meteredPlan ? 'pointer' : 'not-allowed',
+                  }}
+                  title={meteredPlan ? undefined : 'Premium includes unlimited generations'}
+                >
+                  {label}
+                </button>
+              );
+            })}
+
+            <div style={{ width: 1, height: 20, background: '#DDE2EA', margin: '0 4px' }} />
+
+            {/* Not a segmented choice like the two groups above — a campaign is either running
+                or it isn't, so this is one button that reads as on or off. */}
+            <button
+              onClick={togglePromo}
+              className="cursor-pointer transition-colors"
+              style={{
+                padding: '4px 12px', borderRadius: 999, border: 'none',
+                background: promoActive ? '#EAF1FF' : 'transparent',
+                fontFamily: "'Nunito Sans', sans-serif", fontSize: 12,
+                fontWeight: promoActive ? 700 : 600,
+                color: promoActive ? '#006EFE' : '#8596AD',
+              }}
+              title={promoActive
+                ? `Campaign running: ${promoVariant === 'offer' ? 'discount offer' : 'product launch'}. Click to cycle.`
+                : 'No campaign running — the strip is hidden, which is its default. Click to preview one.'}
+            >
+              {!promoActive ? 'Promo' : promoVariant === 'offer' ? 'Offer' : 'Launch'}
+            </button>
+          </div>
         )}
       </div>
     </div>

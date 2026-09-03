@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, useId } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useFlowEngine } from '@/hooks/useFlowEngine';
-import { useFlowStore, MANUSCRIPT_GENERATION_LIMIT, PRESENTATION_GENERATION_LIMIT } from '@/stores/flowStore';
+import { useFlowStore, manuscriptLimitFor, presentationLimitFor, allowanceResetLabel, allowanceStateFor, planRank, PLAN_LABELS, type PlanId } from '@/stores/flowStore';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { SettingsPillRow } from '@/components/presentation/SettingsPillRow';
-import { UpgradePlanModal } from '@/components/account/MyAccountView';
+import { UpgradePlanModal, MANUSCRIPT_ALLOWANCES } from '@/components/account/MyAccountView';
 
 interface WordgenieInputProps {
   onSubmit?: (value: string) => void;
@@ -32,87 +32,44 @@ interface WordgenieInputProps {
 const FLOW_COPY = {
   book: {
     noun: 'book',
-    introHeadline: (limit: number) => `You've got ${limit} free book generations.`,
-    introBody: (limit: number) => `New Wordgenie writes a full manuscript from your idea — ${limit} free books, no strings attached. Need more later?`,
+    /* Fires just after someone committed to a book, so it can't open by selling them a
+       presentation — that would be a bait-and-switch on the thing they just asked for. It
+       confirms the book first, then names presentations as the reason the allowance doubled.
+       Stating the reason is what does the steering: "10 generations, shared" is technically
+       correct and gives nobody a motive; "doubled because Wordgenie makes presentations now"
+       is equally true and supplies one. Still no claim that any of them are earmarked — they
+       aren't, and saying so would be the lie we've avoided everywhere else. */
+    introHeadline: (limit: number) => `${limit} generations a month — now for slides as well as books.`,
+    introBody: (limit: number) => `Wordgenie writes a full manuscript from your idea. You can now ask it for a presentation instead — that's why the monthly allowance doubled to ${limit}. A book and a presentation each cost one, so they're yours to spend either way. Need more later?`,
     proBenefitIntro: 'Upgrade your plan to keep creating books with Wordgenie — compare Pro, Premium, and Agency Premium below.',
     showStandardFallback: true,
   },
   presentation: {
     noun: 'presentation',
-    introHeadline: (limit: number) => `You've got ${limit} free presentation generations.`,
-    introBody: (limit: number) => `New Wordgenie turns your idea into a full slide deck — ${limit} free presentations, no strings attached. Need more later?`,
+    /* No push needed here — they're already making one. This just explains the shared pool. */
+    introHeadline: (limit: number) => `You've got ${limit} generations a month.`,
+    introBody: (limit: number) => `Wordgenie turns your idea into a full slide deck — or a full manuscript, if you ask for a book instead. Your ${limit} monthly generations cover both, and each one costs one. Need more later?`,
     proBenefitIntro: 'Upgrade your plan to keep creating presentations with Wordgenie — compare Pro, Premium, and Agency Premium below.',
     showStandardFallback: false,
   },
 } as const;
 type FlowKind = keyof typeof FLOW_COPY;
 
-/* Entry-point choice shown above the input for the book-creation mode: v4 is the
-   flow this whole app already is, Standard Wordgenie is the older multi-step
-   generator (sub-niches → title → tone → doc) that standard-tier users fall back
-   to once they've used their 5 free v4 generations. Only the toggle ships here —
-   the Standard flow itself is a stub pending a real spec. */
-export function WordgenieModeToggle() {
-  const [showStub, setShowStub] = useState(false);
-  const sparkleGradientId = useId();
-
-  // The parent wraps topRow in overflow:hidden (to keep its rounded top corners),
-  // so an absolutely-positioned popover here would get clipped — swap the row's
-  // content in place instead.
-  if (showStub) {
-    return (
-      <div className="flex items-center justify-between" style={{ padding: '10px 16px', gap: 12 }}>
-        <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 13, color: '#52637A' }}>
-          <span style={{ fontWeight: 700, color: '#15191F' }}>Standard Wordgenie</span> — the classic sub-niches → title → tone flow isn&apos;t wired up in this preview yet.
-        </p>
-        <button
-          type="button"
-          onClick={() => setShowStub(false)}
-          style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 12.5, fontWeight: 700, color: '#006EFE', background: 'none', border: 'none', cursor: 'pointer', padding: 0, flexShrink: 0 }}
-        >
-          Got it
-        </button>
-      </div>
-    );
-  }
-
+/* Names the generator you're using, above the page heading rather than inside the composer.
+   It used to sit in the box's top-left with the send button's brand gradient — and everything
+   else inside a composer's chrome, across every product we looked at, is a control. Weight beat
+   semantics, so a label that was deliberately not clickable still read as a button. The eyebrow
+   slot above an h1 is never interactive, so the gradient can stay without lying. */
+export function WordgenieEyebrow() {
   return (
-    <div className="flex items-center justify-between" style={{ padding: '10px 16px', gap: 20 }}>
-      {/* Not a control — this is what's already active below (the prompt box + AI chat) —
-          but it's the flagship AI mode, so it gets the same brand gradient as the send
-          button below rather than being muted into a plain caption. Still no button
-          semantics: no cursor pointer, no hover state, so it doesn't imply a click. */}
-      <div className="flex items-center" style={{ gap: 6 }}>
-        <svg width="15" height="15" viewBox="0 0 24 24">
-          <defs>
-            <linearGradient id={sparkleGradientId} x1="0%" y1="100%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#006EFE" />
-              <stop offset="100%" stopColor="#5326BD" />
-            </linearGradient>
-          </defs>
-          <path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" fill={`url(#${sparkleGradientId})`} />
-        </svg>
-        <span style={{
-          fontFamily: "'Nunito Sans', sans-serif", fontSize: 13.5, fontWeight: 800,
-          background: 'linear-gradient(259.1deg, #006EFE -2.17%, #5326BD 103.16%)',
-          WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent', WebkitTextFillColor: 'transparent',
-        }}>
-          New Wordgenie
-        </span>
-      </div>
-      <button
-        type="button"
-        onClick={() => setShowStub(true)}
-        className="flex items-center cursor-pointer"
-        style={{ gap: 6, fontFamily: "'Nunito Sans', sans-serif", fontSize: 13.5, fontWeight: 700, color: '#006EFE', background: 'none', border: 'none', padding: 0, textDecoration: 'none' }}
-        onMouseEnter={(e) => { e.currentTarget.style.textDecoration = 'underline'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.textDecoration = 'none'; }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L11 16l-4 1 1-4 10.5-10.5z" />
-        </svg>
-        Use Standard Wordgenie
-      </button>
+    <div className="flex items-center justify-center">
+      {/* The system's own lockup, not a re-drawn approximation — the official mark is a
+          four-point star with two satellite sparkles (public/assets/wordgenie-icon.svg,
+          mirrored in AISparkleIcon), and this file wraps it in the "New" pill beside the
+          wordmark. ChatContainer already renders the same asset. Set below the Designrr
+          logo's 24px so the sub-brand stays subordinate to the product brand. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/wordgenie-header.svg" alt="New Wordgenie" className="h-[24px] w-auto" />
     </div>
   );
 }
@@ -181,25 +138,131 @@ function ModalShell({
    naming Pro's specific perks — the button below opens every tier (Pro just highlighted),
    so listing Pro-only features here would anchor the reader to Pro when Premium or Agency
    might genuinely fit them better. */
-/* standardFallback: near-limit has no dedicated "Use Standard Wordgenie" button (unlike the
-   exhausted modal), so its only mention of that path lives here — kept second, after the
-   upgrade pitch, so upgrading reads as the first encouragement and Standard as the fallback. */
-function ProBenefitList({ flowKind = 'book', standardFallback = false }: { flowKind?: FlowKind; standardFallback?: boolean }) {
-  // Presentations have no Standard fallback (see FLOW_COPY), so the second line never
-  // renders there even if a caller passes standardFallback — book is the only flow with
-  // an "instead" path to offer.
-  const showFallback = standardFallback && FLOW_COPY[flowKind].showStandardFallback;
+/* The `standardFallback` line lived here for the near-limit modal, which no longer exists —
+   the exhausted modal has its own "Use Standard Wordgenie" button, so nothing needs the prose
+   version any more. */
+function ProBenefitList({ flowKind = 'book' }: { flowKind?: FlowKind }) {
   return (
-    <>
-      <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#52637A', margin: showFallback ? '0 0 8px' : '0 0 20px', lineHeight: 1.6 }}>
-        {FLOW_COPY[flowKind].proBenefitIntro}
-      </p>
-      {showFallback && (
-        <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#52637A', margin: '0 0 20px', lineHeight: 1.6 }}>
-          Or switch to Standard Wordgenie anytime.
-        </p>
-      )}
-    </>
+    <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#52637A', margin: '0 0 20px', lineHeight: 1.6 }}>
+      {FLOW_COPY[flowKind].proBenefitIntro}
+    </p>
+  );
+}
+
+/* Fires only at the two documented thresholds — 80% and again at 100% — and sits flush inside
+   the composer's top edge, sharing its border and rounded corners. Base44 renders its limit
+   notice exactly this way. The original row sat *above* the border rather than inside it, which
+   is what made it read as detached debris.
+   Amber then red, not two shades of one hue: the metering guidance is explicit that info,
+   warning and critical need genuinely distinct treatments. The upgrade link stays live at zero
+   because it's the feature that's disabled, not the exit. */
+/* One amber ground for both thresholds. No red at either end — running out of an allowance on a
+   plan that has one is an expected state, not a failure, and red reads as something broke at the
+   exact moment we're asking for money.
+   The two states are told apart by the sentence rather than the colour, which is a stronger
+   signal than a shade: "1 of 5 free book generations left" and "You've used all 5 free book
+   generations" share no wording at all, and the CTA changes with them. The metering guidance
+   warns against severities separated *only* by shades of one hue — copy this different isn't
+   that failure mode.
+   Amber in hue (H37) at high lightness (L91). Hue is what makes it read as amber rather than
+   beige — the earlier pale version failed at H29, not because it was light. The page's
+   blue-violet wash used to neutralise warm tints, but moving that blob off the centre line
+   cleared the content column, so the tint no longer has to be dark to survive it.
+   The link is amber too, not the navy it was. Everything on the bar now sits in one hue, which
+   removes the vibration brand blue caused against a warm ground — the two are near opposites on
+   the wheel. It takes a darker step of the same amber rather than the body's exact value, 9.3:1
+   against the body's 7.1:1, so it still reads as the most prominent thing on the bar; and it
+   keeps its underline, so the affordance never rests on hue alone.
+
+   One ground for both thresholds, lighter than the #FEEED4 it replaces. The ground tints the
+   whole composer, not just the bar, so a heavy tint made an ordinary state look like a fault;
+   at 1.11 against white it reads as a change of temperature rather than a warning light.
+   Both thresholds share it deliberately. A brief pass split them into two shades and the step
+   was too small to read as anything — what actually separates the states is the sentence, which
+   changes completely ("1 of 5 left" against "You've used all 5") along with the CTA. */
+export const ALERT_TONE = { bg: '#FDF2DE', fg: '#7A4413', cta: '#63340B' } as const;
+
+function UsageAlertBar({ remaining, limit, noun, exhausted, onUpgrade, ctaLabel }: {
+  remaining: number;
+  limit: number;
+  noun: string;
+  exhausted: boolean;
+  onUpgrade: () => void;
+  ctaLabel: string;
+}) {
+  const tone = ALERT_TONE;
+
+  return (
+    <div className="flex items-center justify-between" style={{ padding: '10px 18px', gap: 16 }}>
+      <div className="flex items-center" style={{ gap: 6, minWidth: 0 }}>
+        <span style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: tone.fg, lineHeight: 1.4 }}>
+          {exhausted
+            ? `You've used all ${limit} free generations.`
+            : `${remaining} of ${limit} free generations left.`}
+        </span>
+        {/* Muted, because it's context rather than the alert itself — but present, because it's
+            the one alternative to paying and it belongs beside the number it qualifies. */}
+        <span style={{ ...ns, fontSize: 12.5, fontWeight: 500, color: tone.fg, opacity: 0.7, lineHeight: 1.4, whiteSpace: 'nowrap' }}>
+          · {allowanceResetLabel()}
+        </span>
+      </div>
+      {/* Right-hand end, opposite the message — Base44 pairs its limit sentence with the upgrade
+          link the same way, and it keeps the action clear of the text it acts on.
+          Kept as bare text. Brand blue vibrated against the amber — the two sit near opposite
+          each other on the wheel — so this is a deeper, less saturated navy that reads as a link
+          without fighting the ground, underlined so the affordance doesn't rest on hue alone. */}
+      <button
+        type="button"
+        onClick={onUpgrade}
+        className="cursor-pointer hover:opacity-70 transition-opacity"
+        style={{
+          ...ns, fontSize: 12.5, fontWeight: 700, color: tone.cta,
+          background: 'none', border: 'none', padding: 0,
+          textDecoration: 'underline', textUnderlineOffset: 3,
+          whiteSpace: 'nowrap', flexShrink: 0,
+        }}
+      >
+        {ctaLabel}
+      </button>
+    </div>
+  );
+}
+
+/* Standard Wordgenie is a separate multi-step wizard on its own route, not a mode this box can
+   switch into. It lives in the bottom toolbar with the other controls but behind a divider,
+   because it is the one thing there that leaves rather than configures.
+   No arrow: the divider already separates it from the controls, and "Use <destination>" is
+   itself a going-somewhere phrase, so a glyph at 12.5px in a four-item toolbar was repeating a
+   signal the words already send. Air and Elicit label their equivalents bare too. */
+function StandardWordgenieLink() {
+  const [showStub, setShowStub] = useState(false);
+
+  if (showStub) {
+    return (
+      <span className="flex items-center" style={{ gap: 8 }}>
+        <span style={{ ...ns, fontSize: 12.5, color: '#52637A', lineHeight: 1.4 }}>
+          Not wired up in this preview yet.
+        </span>
+        <button
+          type="button"
+          onClick={() => setShowStub(false)}
+          style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: '#006EFE', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+        >
+          Got it
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setShowStub(true)}
+      className="cursor-pointer hover:opacity-70 transition-opacity"
+      style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: '#006EFE', background: 'none', border: 'none', padding: 0, whiteSpace: 'nowrap' }}
+    >
+      Use Standard Wordgenie
+    </button>
   );
 }
 
@@ -261,26 +324,75 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileMenuRef = useRef<HTMLDivElement>(null);
   const { handleHeroSubmit } = useFlowEngine();
+  const currentPlan = useFlowStore((s) => s.currentPlan);
   const manuscriptsUsed = useFlowStore((s) => s.manuscriptGenerationsUsed);
-  const manuscriptsRemaining = Math.max(MANUSCRIPT_GENERATION_LIMIT - manuscriptsUsed, 0);
+  const manuscriptsRemaining = Math.max(manuscriptLimitFor(currentPlan) - manuscriptsUsed, 0);
   const presentationsUsed = useFlowStore((s) => s.presentationGenerationsUsed);
-  const presentationsRemaining = Math.max(PRESENTATION_GENERATION_LIMIT - presentationsUsed, 0);
+  const presentationsRemaining = Math.max(presentationLimitFor(currentPlan) - presentationsUsed, 0);
 
   // Which pool this instance gates against — book flow (no onSubmit) always uses the
   // book pool; a caller opts into the presentation pool via presentationMode. Plain
   // landing submits (onSubmit set, presentationMode unset) still skip gating entirely,
   // unchanged from before.
   const flowKind: FlowKind = presentationMode ? 'presentation' : 'book';
-  const GENERATION_LIMIT = flowKind === 'presentation' ? PRESENTATION_GENERATION_LIMIT : MANUSCRIPT_GENERATION_LIMIT;
-  const generationsRemaining = flowKind === 'presentation' ? presentationsRemaining : manuscriptsRemaining;
+  // One shared allowance — a presentation and a book cost the same generation.
+  const GENERATION_LIMIT = manuscriptLimitFor(currentPlan);
+  const generationsRemaining = manuscriptsRemaining;
+  /* Premium and Agency are unlimited, so there's no number to count down and nothing to warn
+     about. Every allowance affordance — the readout by the send button, the alert strip, the
+     near-limit and exhausted modals — keys off this rather than each testing the plan itself. */
+  const isUnlimited = !Number.isFinite(GENERATION_LIMIT);
+
+  /* Only the plans that actually give more than the viewer already has. PRO doesn't solve a PRO
+     user's limit, so "Upgrade to Pro" would be nonsense for them — Premium is their single
+     answer and the CTA names it. A Standard user has two genuinely different answers (PRO's 10 a
+     month, Premium's unlimited), so the CTA opens the choice rather than picking for them. */
+  const betterPlans = MANUSCRIPT_ALLOWANCES.filter(
+    (a) => planRank(a.plan as PlanId) > planRank(currentPlan),
+  );
+  const upgradeTarget = (betterPlans[0]?.plan ?? 'premium') as PlanId;
+
+  /* Keyed on how many answers exist, not on how close to the limit they are. Being blocked
+     changes the urgency, not which plan fits — so a Standard user sees the same offer at 4-of-5
+     as at 5-of-5, and a PRO user is named Premium at both. Tying this to the threshold instead
+     meant the same person got a different answer one generation apart. */
+  const upgradeCtaLabel = betterPlans.length > 1
+    ? 'See upgrade options'
+    : `Upgrade to ${PLAN_LABELS[upgradeTarget]}`;
+
+  /* Only once a mode is committed to: on the landing state no pool has been chosen yet, so a
+     count there would answer a question nobody asked. (HomePageStandard only sets selectedMode
+     for book, hence the presentationMode arm.) */
+  const isMeteredComposer = (!onSubmit || presentationMode) && (!!selectedMode || presentationMode);
+
+  /* 80% and 100% are the documented pair for usage alerts. Both grounds are the same amber —
+     the sentences differ completely, which separates the two states more sharply than a shade
+     would, and neither is red: running out of an allowance is expected, not a failure.
+     The threshold itself lives in allowanceStateFor so the sidebar meter turns amber on exactly
+     the tick this bar appears — two surfaces disagreeing about the same allowance is worse than
+     either being slightly off. */
+  const nearingLimit = allowanceStateFor(generationsRemaining, GENERATION_LIMIT) === 'low';
+
+  /* The modal shows the allowance cards whenever the allowance is what prompted it — at either
+     threshold, since the question is identical at both. */
+  const quotaGate = !isUnlimited && flowKind === 'book' && (nearingLimit || generationsRemaining <= 0)
+    ? { allowances: MANUSCRIPT_ALLOWANCES }
+    : undefined;
+
+
+  /* The bar only exists when it has something to say, and it is now the only place the count
+     appears in the flow. Base44 and Claude both keep the surface clean until the limit and then
+     speak in place; monthly refilling allowances are silent in normal use across every product
+     we checked. Below the threshold the number lives in My Account, not here. */
+  const showAlertBar = isMeteredComposer && (nearingLimit || (!isUnlimited && generationsRemaining <= 0));
+  const alertTone = showAlertBar ? ALERT_TONE : null;
 
   // v4 intro — gated behind the first actual submit, not mode-selection, so someone
   // heading for "Use Standard Wordgenie" instead never sees v4-specific copy meant
   // for the flow they didn't choose. Three states beyond that first welcome: a near-limit
   // nudge at 80% used (still fully optional — "Continue" stays primary), and an exhausted
-  // stop at 100% (the only point where "Upgrade to Pro" earns to be the prominent choice).
+  // stop at 100% (the only point where the upgrade CTA earns to be the prominent choice).
   const [showV4Intro, setShowV4Intro] = useState(false);
-  const [showNearLimitModal, setShowNearLimitModal] = useState(false);
   const [showExhaustedModal, setShowExhaustedModal] = useState(false);
   const [showExhaustedStandardStub, setShowExhaustedStandardStub] = useState(false);
   const [showUpgradeFromIntro, setShowUpgradeFromIntro] = useState(false);
@@ -290,7 +402,6 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   const [seenIntroThisSession, setSeenIntroThisSession] = useState<Record<FlowKind, boolean>>({ book: false, presentation: false });
   const [pendingSubmitText, setPendingSubmitText] = useState<string | null>(null);
   const v4IntroCtaRef = useRef<HTMLButtonElement>(null);
-  const nearLimitCtaRef = useRef<HTMLButtonElement>(null);
   const exhaustedCtaRef = useRef<HTMLButtonElement>(null);
 
   // Auto-resize textarea
@@ -349,17 +460,16 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
         setShowExhaustedModal(true);
         return;
       }
-      const alreadySeenIntro = seenIntroThisSession[flowKind]
+      /* Nothing to introduce on an unlimited plan — the modal is entirely about the monthly
+         allowance, and with Infinity in the template it read "You've got Infinity free
+         generations a month." Premium hears about presentations from the launch strip, which
+         shows to every tier precisely because a launch is news rather than an upsell. */
+      const alreadySeenIntro = isUnlimited
+        || seenIntroThisSession[flowKind]
         || (typeof window !== 'undefined' && localStorage.getItem(introKey(flowKind)) === 'true');
       if (!alreadySeenIntro) {
         setPendingSubmitText(trimmed);
         setShowV4Intro(true);
-        return;
-      }
-      const usedRatio = (GENERATION_LIMIT - generationsRemaining) / GENERATION_LIMIT;
-      if (usedRatio >= 0.8) {
-        setPendingSubmitText(trimmed);
-        setShowNearLimitModal(true);
         return;
       }
     }
@@ -386,20 +496,6 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   // prompt back to reconsider, matching what a close control means everywhere else.
   const dismissV4Intro = () => {
     markV4IntroSeen();
-    setPendingSubmitText(null);
-    textareaRef.current?.focus();
-  };
-
-  const resolveNearLimitModal = () => {
-    setShowNearLimitModal(false);
-    const text = pendingSubmitText;
-    setPendingSubmitText(null);
-    if (text) proceedWithSubmit(text);
-    else textareaRef.current?.focus();
-  };
-
-  const dismissNearLimitModal = () => {
-    setShowNearLimitModal(false);
     setPendingSubmitText(null);
     textareaRef.current?.focus();
   };
@@ -476,6 +572,16 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
 
   const formatTime = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
   const hasContent = value.trim().length > 0 || attachedFiles.length > 0;
+  /* Two separate reasons the button can't fire, kept distinct: nothing typed yet, versus nothing
+     left to spend. Enter still routes through handleSubmit, which opens the exhausted modal —
+     so the keyboard explains the block rather than silently swallowing it. */
+  const outOfGenerations = isMeteredComposer && !isUnlimited && generationsRemaining <= 0;
+  /* Out of generations reads as disabled but stays clickable, so clicking it opens the same
+     exhausted modal that Enter does. Truly disabling it made the two disagree — click did
+     nothing, Enter explained — and a dead control that answers "why?" beats one that just sits
+     there. `aria-disabled` carries the state to assistive tech without removing the handler.
+     Empty input is the one case that's genuinely inert: there's nothing to explain. */
+  const canSubmit = hasContent && !outOfGenerations;
 
   return (
     <>
@@ -484,9 +590,34 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
       animate={borderless ? false : { y: 0 }}
       transition={{ duration: 0.5, delay: 0.3, ease: [0.22, 1, 0.36, 1] }}
       className={borderless ? 'w-full' : 'mx-auto w-full max-w-[780px]'}
-      style={borderless ? { position: 'relative', zIndex: showFileMenu ? 50 : 1 } : { background: 'white', borderRadius: 16, position: 'relative', zIndex: showFileMenu ? 50 : 1 }}
+      style={borderless
+        ? { position: 'relative', zIndex: showFileMenu ? 50 : 1 }
+        : {
+          /* At the thresholds the composer sits *on* the alert rather than carrying a row in its
+             header — Base44's construction. The tint shows only above the input, not as a frame
+             around it: a band on all four sides would read as a container the composer had been
+             put into, when the point is just that the notice and the box are one object. The
+             input stays flush left, right and bottom and keeps its own border. */
+          background: alertTone ? alertTone.bg : 'white',
+          borderRadius: 16,
+          transition: 'background 0.2s ease',
+          position: 'relative',
+          zIndex: showFileMenu ? 50 : 1,
+        }}
     >
       <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} multiple />
+
+      {/* ── Usage alert, behind and above the input it governs ── */}
+      {showAlertBar && (
+        <UsageAlertBar
+          remaining={generationsRemaining}
+          limit={GENERATION_LIMIT}
+          noun={FLOW_COPY[flowKind].noun}
+          exhausted={generationsRemaining <= 0}
+          onUpgrade={() => setShowUpgradeFromIntro(true)}
+          ctaLabel={upgradeCtaLabel}
+        />
+      )}
 
       {/* Main input container */}
       <div
@@ -500,7 +631,7 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
         } : {
           border: '1px solid #006EFE',
           borderRadius: 16,
-          paddingTop: 12,
+          paddingTop: topRow ? 0 : 12,
           paddingBottom: 4,
           boxShadow: isHovered || isFocused
             ? '0px 7px 22px 0px rgba(62, 57, 205, 0.15)'
@@ -561,7 +692,7 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
               placeholder={placeholder ?? 'What would you like to create today?'}
               rows={1}
               className="max-h-[120px] w-full resize-none bg-transparent font-normal text-text-placeholder focus:outline-none overflow-hidden"
-              style={{ fontSize: 16, lineHeight: '24px', minHeight: 72, color: value ? '#15191F' : undefined, fontFamily: "'Nunito Sans', sans-serif" }}
+              style={{ fontSize: 16, lineHeight: '24px', minHeight: 96, color: value ? '#15191F' : undefined, fontFamily: "'Nunito Sans', sans-serif" }}
             />
           )}
         </div>
@@ -616,10 +747,28 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
               {selectedMode && <SelectedModeChip key="chip" {...selectedMode} />}
             </AnimatePresence>
             {showSettings && <SettingsPillRow compact exclude={excludeSettings} />}
+
+            {/* Divided from the controls to its left, because it isn't one. ＋ and the mode chip
+                configure this box; this leaves it for a different flow on another route. The
+                rule stays the same as it was in the header — grouped with the controls at equal
+                weight, a route reads as a mode you can toggle. The divider is what earns it a
+                place in a row that's already carrying four things. */}
+            {isMeteredComposer && flowKind === 'book' && (
+              <>
+                <div style={{ width: 1, height: 20, background: '#E0E5EB', margin: '0 2px' }} />
+                <StandardWordgenieLink />
+              </>
+            )}
             </div>
 
-            {/* Right side: mic + send */}
+            {/* Right side: allowance + mic + send */}
             <div className="flex items-center" style={{ gap: 8 }}>
+              {/* No count here. It used to ride on the send button on Suno's precedent, but Suno,
+                  Arcade and Gamma all sell top-up credits, and what Arcade's button states is the
+                  cost of that one action ("Generate · 50") rather than the balance left. Nothing
+                  in the study puts a remaining balance on an action button, and a permanent
+                  scarcity label on the primary control is a poor trade for a number the alert bar
+                  already gives at the only moment it is actionable. */}
               <Tooltip label={isRecording ? 'Stop recording' : 'Voice input'}>
                 <button
                   onClick={isRecording ? stopRecording : startRecording}
@@ -639,24 +788,41 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
                 </button>
               </Tooltip>
 
-              <Tooltip label="Send message">
+              {/* Icon only, in every flow. The count used to ride here on Suno's and Arcade's
+                  precedent, but those products sell top-up credits and Arcade's number is the
+                  cost of the action rather than the balance left. Nothing in the study puts a
+                  remaining balance on an action button, and products metering a monthly
+                  allowance — Claude, Base44, HubSpot, Sprig, Coda — show nothing in the flow at
+                  all until the limit. The allowance is disclosed on first submit by the intro
+                  modal, then by the bar at 80% and 100%, and in full in My Account. */}
+              {/* Disabled once the allowance is gone. This is the feature, and the feature is
+                  what a limit disables — the way out stays live as the Upgrade link in the bar
+                  above, which is the half of that rule that actually matters. Canva's own screen
+                  does the same: Generate greys out at quota while the upgrade path doesn't. */}
+              <Tooltip
+                label={
+                  outOfGenerations
+                    ? `You've used all ${GENERATION_LIMIT} free generations — ${allowanceResetLabel().toLowerCase()}`
+                    : isMeteredComposer ? 'Generate' : 'Send message'
+                }
+              >
                 <motion.button
-                  whileHover={hasContent ? { scale: 1.03 } : {}}
-                  whileTap={hasContent ? { scale: 0.97 } : {}}
+                  whileHover={canSubmit ? { scale: 1.03 } : {}}
+                  whileTap={canSubmit ? { scale: 0.97 } : {}}
                   onClick={handleSubmit}
                   disabled={!hasContent}
+                  aria-disabled={outOfGenerations || undefined}
                   className="flex shrink-0 items-center justify-center transition-all duration-200"
                   style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: 8,
-                    background: hasContent
+                    ...ns,
+                    width: 40, height: 40, borderRadius: 8,
+                    background: canSubmit
                       ? 'linear-gradient(259.1deg, #006EFE -2.17%, #5326BD 103.16%)'
                       : 'linear-gradient(259.1deg, rgba(0, 110, 254, 0.3) -2.17%, rgba(83, 38, 189, 0.3) 103.16%)',
                     cursor: hasContent ? 'pointer' : 'not-allowed',
                     color: 'white',
                   }}
-                  aria-label="Send message"
+                  aria-label={isMeteredComposer ? 'Generate' : 'Send message'}
                 >
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                     <path d="M3.5 9L9 3.5L14.5 9M9 3.5V14.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -712,49 +878,8 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
       </ModalShell>
     )}
 
-    {/* 80% used — a real generation is still available, so "Continue" stays primary.
-        The upgrade path is visible but stays secondary until it's the only option left. */}
-    {showNearLimitModal && (
-      <ModalShell onClose={dismissNearLimitModal} labelId="near-limit-heading" initialFocusRef={nearLimitCtaRef}>
-        <button
-          onClick={dismissNearLimitModal}
-          className="absolute flex items-center justify-center hover:opacity-60 transition-opacity cursor-pointer"
-          style={{ top: 20, right: 20, width: 24, height: 24, background: 'none', border: 'none', padding: 0 }}
-          aria-label="Close"
-        >
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <path d="M14 4L4 14M4 4l10 10" stroke="#29323D" strokeWidth="1.2" strokeLinecap="round" />
-          </svg>
-        </button>
-
-        <ModalHeader id="near-limit-heading" headline={`You've used ${GENERATION_LIMIT - generationsRemaining} of your ${GENERATION_LIMIT} free ${FLOW_COPY[flowKind].noun} generations.`} />
-
-        <div style={{ padding: '8px 32px 24px' }}>
-          <p style={{ ...ns, fontSize: 13, color: '#52637A', margin: '0 0 20px' }}>
-            <b style={{ color: '#B8860B' }}>{generationsRemaining} free {FLOW_COPY[flowKind].noun} generation{generationsRemaining === 1 ? '' : 's'}</b> left.
-          </p>
-          <ProBenefitList flowKind={flowKind} standardFallback />
-          <div className="flex items-center justify-end" style={{ gap: 14 }}>
-            <button
-              onClick={() => { setShowNearLimitModal(false); setPendingSubmitText(null); setShowUpgradeFromIntro(true); }}
-              style={{ ...ns, fontSize: 13.5, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
-            >
-              Upgrade to Pro
-            </button>
-            <button
-              ref={nearLimitCtaRef}
-              onClick={resolveNearLimitModal}
-              style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '10px 20px', cursor: 'pointer' }}
-            >
-              Continue
-            </button>
-          </div>
-        </div>
-      </ModalShell>
-    )}
-
-    {/* 100% used — the only state where "Continue" genuinely isn't an option, so
-        "Upgrade to Pro" earns to be the prominent choice. "Use Standard Wordgenie instead"
+    {/* 100% used — the only state where "Continue" genuinely isn't an option, so the
+        upgrade CTA earns to be the prominent choice. "Use Standard Wordgenie instead"
         used to silently dismiss (identical to the X button) even though that flow isn't
         wired up — same honest stub WordgenieModeToggle already shows elsewhere, so this
         doesn't quietly promise a working alternative that doesn't exist. */}
@@ -771,7 +896,7 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
           </svg>
         </button>
 
-        <ModalHeader id="exhausted-heading" headline={`You've used all ${GENERATION_LIMIT} free ${FLOW_COPY[flowKind].noun} generations.`} />
+        <ModalHeader id="exhausted-heading" headline={`You've used all ${GENERATION_LIMIT} free generations.`} />
 
         {showExhaustedStandardStub ? (
           <div style={{ padding: '8px 32px 24px' }}>
@@ -804,7 +929,7 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
               onClick={() => { setShowExhaustedModal(false); setShowUpgradeFromIntro(true); }}
               style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '10px 20px', cursor: 'pointer' }}
             >
-              Upgrade to Pro
+              {upgradeCtaLabel}
             </button>
           </div>
         </div>
@@ -815,11 +940,15 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
     {showUpgradeFromIntro && (
       <UpgradePlanModal
         onClose={() => setShowUpgradeFromIntro(false)}
-        currentPlanId="standard"
+        // Not "unlock unlimited" below the limit — that promises Premium while the modal may be
+        // offering PRO. State where they are; let the cards say what each one gives.
         contextMessage={generationsRemaining <= 0
-          ? `You've used all your ${FLOW_COPY[flowKind].noun} generations this month.`
-          : `Unlock unlimited Wordgenie ${FLOW_COPY[flowKind].noun} generations`}
-        highlightPlanId="pro"
+          ? `You've used all ${GENERATION_LIMIT} generations this month.`
+          : nearingLimit
+            ? `${generationsRemaining} of ${GENERATION_LIMIT} generations left this month.`
+            : 'Get more Wordgenie generations'}
+        highlightPlanId={upgradeTarget}
+        quota={quotaGate}
       />
     )}
     </>

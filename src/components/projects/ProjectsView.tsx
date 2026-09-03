@@ -10,6 +10,7 @@ import { useVideoFlowStore } from '@/stores/videoFlowStore';
 import { SAVED_PRESENTATIONS } from '@/lib/presentationMocks';
 import { SAVED_VIDEOS } from '@/lib/videoMocks';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
+import { TierBadge, shouldShowTierBadge } from '../ui/TierBadge';
 import { Tooltip } from '../ui/Tooltip';
 import { UpgradePlanModal } from '../account/MyAccountView';
 
@@ -412,26 +413,6 @@ const DROPDOWN_ITEMS_2: { key: string; label: string; icon: string; requiredPlan
   { key: 'info',            label: 'Project information',         icon: 'info' },
 ];
 
-const TIER_TINT: Record<'pro' | 'premium', { bg: string; fg: string }> = {
-  pro: { bg: '#EAF1FF', fg: '#006EFE' },
-  premium: { bg: '#EAF1FF', fg: '#006EFE' },
-};
-
-/* Mirrors each tier's own icon from the pricing modal (star for Pro, crown for Premium). */
-function TierIcon({ tier, color }: { tier: 'pro' | 'premium'; color: string }) {
-  if (tier === 'premium') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 24 24" fill={color}>
-        <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill={color}>
-      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-    </svg>
-  );
-}
 
 function DropdownIcon({ type }: { type: string }) {
   const s = { width: 20, height: 20, flexShrink: 0 as const };
@@ -459,6 +440,7 @@ function DropdownIcon({ type }: { type: string }) {
 
 /* ── Project card ── */
 function ProjectCard({ project, onOpen, onTurnIntoPresentation, onLockedFeature }: { project: Project; onOpen: (project: Project) => void; onTurnIntoPresentation: (project: Project) => void; onLockedFeature: (label: string, planId: 'pro' | 'premium') => void }) {
+  const currentPlan = useFlowStore((s) => s.currentPlan);
   const [hovered, setHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -486,7 +468,7 @@ function ProjectCard({ project, onOpen, onTurnIntoPresentation, onLockedFeature 
   }, [menuOpen]);
 
   const renderItem = (item: { key: string; label: string; icon: string; requiredPlan?: 'pro' | 'premium' }) => {
-    const tint = item.requiredPlan ? TIER_TINT[item.requiredPlan] : null;
+    const showTier = shouldShowTierBadge(currentPlan, item.requiredPlan);
     return (
       <button
         key={item.key}
@@ -501,12 +483,10 @@ function ProjectCard({ project, onOpen, onTurnIntoPresentation, onLockedFeature 
       >
         <DropdownIcon type={item.icon} />
         <span className="flex-1">{item.label}</span>
-        {item.requiredPlan && tint && (
-          <Tooltip label={`Requires ${item.requiredPlan === 'pro' ? 'Pro' : 'Premium'}`} position="top">
-            <div className="flex items-center justify-center flex-shrink-0" style={{ width: 20, height: 20, borderRadius: '50%', background: tint.bg }}>
-              <TierIcon tier={item.requiredPlan} color={tint.fg} />
-            </div>
-          </Tooltip>
+        {showTier && (
+          <span className="flex-shrink-0">
+            <TierBadge tier={item.requiredPlan!} size="sm" />
+          </span>
         )}
       </button>
     );
@@ -628,7 +608,7 @@ export function ProjectsView() {
   const setSelectedManuscriptId = usePresentationFlowStore(s => s.setSelectedManuscriptId);
   const [activeTab, setActiveTab] = useState<ProjectType>('ebook');
   const [search, setSearch] = useState('');
-  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium' } | null>(null);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium'; feature: string } | null>(null);
 
   const filtered = PROJECTS.filter(p => p.type === activeTab && (!search || p.title.toLowerCase().includes(search.toLowerCase())));
 
@@ -661,7 +641,7 @@ export function ProjectsView() {
   const isPresentationLocked = true;
   const handleTurnIntoPresentation = (project: Project) => {
     if (isPresentationLocked) {
-      setUpgradeCtx({ message: 'Unlock Presentations and Courses', planId: 'pro' });
+      setUpgradeCtx({ message: 'Unlock Presentations and Courses', planId: 'pro', feature: 'Create Presentations and Courses' });
       return;
     }
     setSelectedManuscriptId(project.id);
@@ -728,7 +708,7 @@ export function ProjectsView() {
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 24 }}>
               {filtered.map(project => (
-                <ProjectCard key={project.id} project={project} onOpen={handleOpenProject} onTurnIntoPresentation={handleTurnIntoPresentation} onLockedFeature={(label, planId) => setUpgradeCtx({ message: `Unlock ${label}`, planId })} />
+                <ProjectCard key={project.id} project={project} onOpen={handleOpenProject} onTurnIntoPresentation={handleTurnIntoPresentation} onLockedFeature={(label, planId) => setUpgradeCtx({ message: `Unlock ${label}`, planId, feature: label })} />
               ))}
             </div>
           )}
@@ -738,9 +718,9 @@ export function ProjectsView() {
       {upgradeCtx && (
         <UpgradePlanModal
           onClose={() => setUpgradeCtx(null)}
-          currentPlanId="standard"
           contextMessage={upgradeCtx.message}
           highlightPlanId={upgradeCtx.planId}
+          highlightFeature={upgradeCtx.feature}
         />
       )}
     </div>
