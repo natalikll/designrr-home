@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect, Fragment } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
-import { useFlowStore, manuscriptLimitFor, presentationLimitFor, allowanceResetLabel } from '@/stores/flowStore';
+import { useFlowStore, manuscriptLimitFor, combinedGenerationsUsed, allowanceResetLabel } from '@/stores/flowStore';
 import { createPortal } from 'react-dom';
 import { Tooltip } from '@/components/ui/Tooltip';
 
@@ -11,10 +11,15 @@ type Tab = 'profile' | 'password' | 'preferences' | 'billing';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'profile', label: 'Profile' },
-  { key: 'password', label: 'Password & Security' },
+  { key: 'password', label: 'Password & security' },
   { key: 'preferences', label: 'Preferences' },
-  { key: 'billing', label: 'Plan & Billing' },
+  { key: 'billing', label: 'Plan & billing' },
 ];
+
+/* One tab's horizontal padding. Named because it's used twice and has to stay in step: the
+   button row is offset by exactly this much so the first label lines up with the page's
+   left edge while the tabs keep padded hit areas. */
+const TAB_PAD_X = 12;
 
 /* ─────────────────────────────────────────────
    Photo Upload Modal
@@ -410,14 +415,14 @@ function SectionHeader({
   title, description, badge, onSave, saved, right,
 }: {
   title: React.ReactNode;
-  description: string;
+  description?: string;
   badge?: React.ReactNode;
   onSave?: () => void;
   saved?: boolean;
   right?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between border-b border-[#E0E5EB] px-6 py-5">
+    <div className={`flex ${description ? 'items-start' : 'items-center'} justify-between border-b border-[#E0E5EB] px-6 py-5`}>
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-3">
           <span style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 20, fontWeight: 600, color: '#001633', lineHeight: '24px' }}>
@@ -425,9 +430,11 @@ function SectionHeader({
           </span>
           {badge}
         </div>
-        <span style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 400, color: '#667C98', lineHeight: '18px' }}>
-          {description}
-        </span>
+        {description && (
+          <span style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 400, color: '#667C98', lineHeight: '18px' }}>
+            {description}
+          </span>
+        )}
       </div>
       {right ?? (onSave && (
         <button
@@ -939,35 +946,20 @@ const PLANS = [
     name: 'Standard',
     price: '$27',
     period: 'lifetime access',
-    icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="#006EFE" />
-      </svg>
-    ),
-    features: ['10 Wordgenie Generations/month', 'Export presentations to PDF', 'Standard Templates', 'Unlimited PDF eBooks', 'Page Numbering & Table Of Contents Generator'],
+    features: ['10 Wordgenie generations/month — books or presentations', 'Export presentations to PDF', 'Standard Templates', 'Unlimited PDF eBooks', 'Page Numbering & Table Of Contents Generator'],
   },
   {
     id: 'pro',
     name: 'Pro',
     price: '$97',
     period: '/year',
-    icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="#006EFE">
-        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-      </svg>
-    ),
-    features: ['20 Wordgenie Generations/month', 'Export to PowerPoint, PNG and watermark-free links', 'Pro Templates', 'Publish to Kindle', '3D Cover Creator'],
+    features: ['20 Wordgenie generations/month — books or presentations', 'Export to PowerPoint, PNG and watermark-free links', 'Pro Templates', 'Publish to Kindle', '3D Cover Creator'],
   },
   {
     id: 'premium',
     name: 'Premium',
     price: '$297',
     period: '/year',
-    icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="#006EFE">
-        <path d="M5 20L3 8l5.5 4.5L12 4l3.5 8.5L21 8l-2 12H5Z" />
-      </svg>
-    ),
     features: ['Unlimited Wordgenie Manuscript Generations', 'Publish Print Books', 'Transcribe Videos and Audio', 'Create Audiobooks'],
   },
   {
@@ -975,12 +967,6 @@ const PLANS = [
     name: 'Agency Premium',
     price: '$497',
     period: '/year',
-    icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="#006EFE">
-        <path fillRule="evenodd" d="M8 3H16V9H8V3Z M9.5 4.5H14.5V7.5H9.5V4.5Z" />
-        <rect x="2" y="8" width="20" height="12" rx="2" />
-      </svg>
-    ),
     features: ['Custom Template Creator', 'Collaborative eBooks with Client Interface', 'Accounts for Agency Members'],
   },
 ];
@@ -1070,6 +1056,7 @@ export function UpgradePlanModal({
   highlightPlanId,
   highlightFeature,
   quota,
+  presentation = 'modal',
 }: {
   onClose: () => void;
   /** Override the viewer's plan. Omitted, it comes from the store, so the sidebar and
@@ -1088,6 +1075,10 @@ export function UpgradePlanModal({
   /** Present when a usage limit fired rather than a locked feature. The caller owns the
       numbers — this component never invents an allowance it can't source. */
   quota?: { allowances: QuotaAllowance[]; resetLabel?: string };
+  /** 'modal' (default): every existing call site — a specific block fired mid-task, so an
+      interrupt over the current screen is correct. 'page': the standing, nothing-blocked case —
+      `/account/upgrade` renders this in its own column, no modal chrome, no width of its own. */
+  presentation?: 'modal' | 'page';
 }) {
   const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
   const storePlan = useFlowStore((s) => s.currentPlan);
@@ -1170,39 +1161,22 @@ export function UpgradePlanModal({
   const baseWidth = mode === 'standing' ? 980 : visiblePlans.length === 1 ? 460 : 720;
   const modalWidth = compareOpen ? 980 : baseWidth;
 
-  const modal = (
-    <div
-      className="fixed inset-0 flex items-center justify-center"
-      style={{ background: 'rgba(20,25,31,0.40)', zIndex: 9999 }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <motion.div
-        initial={{ opacity: 0, scale: 0.96, y: 10 }}
-        animate={{ opacity: 1, scale: 1, y: 0, width: modalWidth }}
-        exit={{ opacity: 0, scale: 0.96, y: 10 }}
-        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-        className="bg-white relative"
-        style={{ borderRadius: 16, padding: '0 32px 28px', boxShadow: '0px 4px 40px 0px rgba(0,0,0,0.12)', maxHeight: '90vh', overflowY: 'auto' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Close */}
-        <button
-          onClick={onClose}
-          className="absolute flex items-center justify-center hover:opacity-60 transition-opacity cursor-pointer"
-          style={{ top: 20, right: 20, width: 24, height: 24, background: 'none', border: 'none', padding: 0 }}
-        >
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <path d="M14 4L4 14M4 4l10 10" stroke="#29323D" strokeWidth="1.2" strokeLinecap="round" />
-          </svg>
-        </button>
-
+  /* Everything below the chrome — header, plan cards, compare table — shared between the two
+     shells this component can render as. It doesn't reference the backdrop, the card, or the
+     close button, so nothing here needs to change for a shell that has neither. */
+  const content = (
+    <>
         {/* Header — the modal is titled after whatever triggered it rather than after itself.
             Mixpanel titles its upgrade dialog "Track Cohorts Across Reports"; Circle names the
             blocked action. A generic "Upgrade your account" only fits the standing entry point,
             where nothing specific triggered it.
             paddingTop lives here (not on the scroll container) so the comparison table's sticky
-            header can stick flush at true top:0 with no gap above it. */}
-        <div style={{ paddingTop: 32, marginBottom: 20, paddingRight: 28 }}>
+            header can stick flush at true top:0 with no gap above it. 32 happens to be right for
+            both shells: it clears the modal's floating X, and it's the same top padding every
+            other plain content page in the app gives its first block below the sidebar-toggle
+            bar (Projects, Docs — `padding: '32px 32px 0'`). paddingRight is modal-only: it's
+            clearance for the floating X, which the page shell doesn't have. */}
+        <div style={{ paddingTop: 32, marginBottom: 20, paddingRight: presentation === 'page' ? 0 : 28 }}>
           <p style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#001633', lineHeight: '26px' }}>
             {contextMessage ?? 'Upgrade your account'}
           </p>
@@ -1253,12 +1227,9 @@ export function UpgradePlanModal({
 
               <div style={{ padding: '20px 16px 16px', flex: 1, display: 'flex', flexDirection: 'column' }}>
 
-              {/* Icon */}
-              <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#EEF5FF', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
-                {plan.icon}
-              </div>
-
-              {/* Name */}
+              {/* Name — no tier icon above it. A decorative bolt/star/crown/briefcase told a
+                  reader nothing the name and price didn't already; Linear, Vercel, Notion, Stripe
+                  and GitHub all differentiate tiers with text alone. */}
               <p style={{ ...ns, fontSize: 18, fontWeight: 700, color: '#006EFE', lineHeight: '24px', marginBottom: 8 }}>{plan.name}</p>
 
               {/* Price. Same treatment in every mode now — the allowance moved into the list
@@ -1373,12 +1344,7 @@ export function UpgradePlanModal({
                             background: isHighlighted ? '#F0F7FF' : '#fff',
                             boxShadow: '0 1px 0 #E0E5EB',
                           }}>
-                            <div className="flex flex-col items-center" style={{ gap: 8 }}>
-                              <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#EEF5FF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                {p.icon}
-                              </div>
-                              <span style={{ ...ns, fontSize: 15, fontWeight: 700, color: isHighlighted ? '#006EFE' : '#52637A' }}>{p.name}</span>
-                            </div>
+                            <span style={{ ...ns, fontSize: 15, fontWeight: 700, color: isHighlighted ? '#006EFE' : '#52637A' }}>{p.name}</span>
                           </th>
                         );
                       })}
@@ -1489,6 +1455,50 @@ export function UpgradePlanModal({
             </motion.div>
           )}
         </AnimatePresence>
+    </>
+  );
+
+  // A real page for the standing case — someone who asked to see plans with no specific task
+  // blocked. It used to be that this component was ALWAYS a modal, which meant the sidebar's
+  // plan row had nowhere better to send you than My Account's billing tab, one click short of
+  // the actual comparison. Modal chrome (backdrop, click-outside-to-close, the floating X, the
+  // scale-in entrance, the maxHeight:90vh scroll clip) is exactly what an interrupt over an
+  // in-progress task needs and a destination you navigated to doesn't need at all.
+  // No width wrapper here — `/account/upgrade/page.tsx` owns the column width and renders its own
+  // (wider than `modalWidth`, since the cards don't need to match a modal's proportions once
+  // they're not sharing a card with anything). A maxWidth here would just cap the route's own
+  // container back down and make "wider cards" a no-op.
+  if (presentation === 'page') {
+    return content;
+  }
+
+  const modal = (
+    <div
+      className="fixed inset-0 flex items-center justify-center"
+      style={{ background: 'rgba(20,25,31,0.40)', zIndex: 9999 }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0, width: modalWidth }}
+        exit={{ opacity: 0, scale: 0.96, y: 10 }}
+        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+        className="bg-white relative"
+        style={{ borderRadius: 16, padding: '0 32px 28px', boxShadow: '0px 4px 40px 0px rgba(0,0,0,0.12)', maxHeight: '90vh', overflowY: 'auto' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Close */}
+        <button
+          onClick={onClose}
+          className="absolute flex items-center justify-center hover:opacity-60 transition-opacity cursor-pointer"
+          style={{ top: 20, right: 20, width: 24, height: 24, background: 'none', border: 'none', padding: 0 }}
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M14 4L4 14M4 4l10 10" stroke="#29323D" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+        </button>
+
+        {content}
       </motion.div>
     </div>
   );
@@ -2049,13 +2059,6 @@ function PreferencesTab() {
    Tab: Plan & Billing
 ───────────────────────────────────────────── */
 
-const CREDITS = [
-  { icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-      </svg>
-    ), label: 'Wordgenie credits', used: 48200, total: 100000, remaining: 51800, remainingLabel: '51,800 remaining', remainingColor: '#52637A', buyMore: false },
-];
 
 /* ─────────────────────────────────────────────
    Buy Credits Modal
@@ -2177,7 +2180,11 @@ const INVOICES = [
 
 function BillingTab() {
   const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
+  const router = useRouter();
   const [upgradeCtx, setUpgradeCtx] = useState<{ message?: string; planId?: string; quota?: boolean } | null>(null);
+  /* Unreachable while the Wordgenie credits row is out — that row's "Buy more" was the only
+     thing that set this. Kept rather than deleted because the removal is provisional, and
+     BuyCreditsModal/CREDIT_PACKAGES still hold the audiobook and transcription packages. */
   const [buyCreditsType, setBuyCreditsType] = useState<string | null>(null);
   /* Reads the same store the composer and the plan switcher do — this card used to hard-code
      "Premium", which contradicted whatever tier the viewer was actually previewing. */
@@ -2204,34 +2211,43 @@ function BillingTab() {
       <SectionCard>
         <SectionHeader
           title="Current plan"
-          description={`You're on the ${billingPlanData.name} plan`}
           right={
-            <button onClick={() => setUpgradeCtx({})} style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', height: 38, padding: '0 20px', borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-              Manage plan
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-              </svg>
+            /* "Upgrade", not "Manage plan" — the label used to promise a management screen it
+               never opened. It navigates now rather than opening the in-modal comparison: this
+               button and the sidebar's plan row are the same standing, nothing-blocked case
+               (UpgradePlanModal's own mode comment: "someone who clicked Upgrade with no task
+               running IS comparing"), and a modal opening on top of a page that's one click away
+               from being the exact same content would be a duplicate destination, not a shortcut. */
+            <button onClick={() => router.push('/account/upgrade')} style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', height: 38, padding: '0 20px', borderRadius: 8, border: 'none', background: '#006EFE', cursor: 'pointer' }}>
+              Upgrade
             </button>
           }
         />
         <div style={{ padding: '20px 24px 24px' }}>
-          <div style={{ background: 'linear-gradient(135deg, #F0F6FF 0%, #EEF2FF 100%)', border: '1px solid #CCE2FF', borderRadius: 12, padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ background: 'linear-gradient(135deg, #F0F6FF 0%, #EEF2FF 100%)', border: '1px solid #CCE2FF', borderRadius: 12, padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div className="flex items-center" style={{ gap: 12 }}>
-              {/* Crown icon */}
-              <div className="flex items-center justify-center flex-shrink-0" style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, #006EFE, #5326BD)' }}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                  <path d="M3 18h18M5 18L3 7l5 4 4-6 4 6 5-4-2 11" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </div>
               <div>
+                {/* No tier icon here either, for the same reason it's gone from the upgrade
+                    grid and comparison table: it told a reader nothing the name didn't already. */}
                 <p style={{ ...ns, fontSize: 24, fontWeight: 700, color: '#001633', lineHeight: '32px' }}>{billingPlanData.name}</p>
-                <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#667C98', lineHeight: '18px' }}>{billingPlanData.price} {billingPlanData.period} · Renews Apr 1, 2026</p>
+                {/* Was "$27 lifetime access · Renews Apr 1, 2026" — a one-time purchase that
+                    renews is a contradiction, and the date was hardcoded to a point already five
+                    months in the past regardless of when this renders. Price and period are the
+                    only facts this card states outright now; when the generation allowance
+                    resets is a live, computed fact and belongs to the Plan usage section below,
+                    which already states it per row rather than once, since Standard and PRO can
+                    fall on different cycles. */}
+                <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#667C98', lineHeight: '18px' }}>{billingPlanData.price} {billingPlanData.period}</p>
               </div>
             </div>
-            <div className="flex flex-wrap items-center" style={{ gap: '6px 16px' }}>
+            {/* Was a run of wrapped inline chips in brand blue — every entry read as a link,
+                and stacked checklist rows are the shape Apollo, Melio, Fabric and Dribbble all
+                use for "what this plan includes". One item per line, plain text, a quiet grey
+                check rather than blue. */}
+            <div className="flex flex-col" style={{ gap: 8 }}>
               {billingPlanData.features.map((f) => (
-                <span key={f} className="flex items-center" style={{ gap: 4, ...ns, fontSize: 13, color: '#006EFE', fontWeight: 400 }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                <span key={f} className="flex items-center" style={{ gap: 8, ...ns, fontSize: 13.5, color: '#29323D', fontWeight: 400 }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12"/></svg>
                   {f}
                 </span>
               ))}
@@ -2240,28 +2256,33 @@ function BillingTab() {
         </div>
       </SectionCard>
 
-      {/* ── Credit usage ── */}
+      {/* ── Plan usage ── */}
       <SectionCard>
-        {/* "Plan usage", not "Credit usage" — the first row isn't credits, it's generations, and
-            three of the four things listed here are different currencies. The description no
-            longer claims everything resets monthly either: generations do, purchased credits
-            don't, which is why the reset date is stated per row rather than once up here. */}
+        {/* "Plan usage", not "Credit usage" — these are generations, not a purchased balance. */}
         <SectionHeader
           title="Plan usage"
-          description="What you've used this cycle. Each row states its own limit and when, or whether, it resets."
+          description="What you've used this cycle, and when it resets."
         />
         <div className="flex flex-col px-6 pb-6" style={{ gap: 24, paddingTop: 20 }}>
-          {/* Wordgenie generations lead the list — it's the allowance people actually hit, and
-              the one every gate in the product refers back to. Framed as "used" rather than
-              "left": a dashboard is where you review consumption (Otter, ClickUp, Luma and
-              Fireflies all count up here), while the in-composer alert counts down because at
-              the moment of interruption what matters is what's still available. */}
+          {/* One row, not two. Presentations were shown as their own allowance with their own
+              limit (Standard 5, PRO 10) — but that was never a real separate pool, it's the same
+              generations books draw from; see the note above MANUSCRIPT_LIMITS in flowStore.ts.
+              Stating it as two limits double-counted the total (a Standard customer read "10 +
+              5 = 15" when the true ceiling is 10) and buried the one fact this section exists to
+              be honest about: a presentation and a book cost the same generation. That fact is
+              now stated plainly rather than implied by two numbers that didn't add up. */}
           {(() => {
             const limit = manuscriptLimitFor(billingPlan);
             const unlimited = !Number.isFinite(limit);
-            const used = manuscriptsUsed;
+            const used = Math.min(combinedGenerationsUsed({ manuscriptGenerationsUsed: manuscriptsUsed, presentationGenerationsUsed: presentationsUsed }), unlimited ? Infinity : limit);
             const pct = unlimited ? 0 : Math.min(Math.round((used / limit) * 100), 100);
+            const bookPct = unlimited || used === 0 ? 0 : Math.round((manuscriptsUsed / used) * pct);
+            const presentationPct = unlimited ? 0 : Math.max(pct - bookPct, 0);
             const exhausted = !unlimited && used >= limit;
+            // Only worth saying while it's still true and still actionable — once someone has
+            // already made a presentation, or has no generations left this cycle, the fact no
+            // longer changes what they'd do next.
+            const suggestPresentation = !exhausted && presentationsUsed === 0 && manuscriptsUsed > 0;
             return (
               <div className="flex flex-col" style={{ gap: 8 }}>
                 <div className="flex items-center justify-between">
@@ -2271,13 +2292,6 @@ function BillingTab() {
                     </div>
                     <div>
                       <p style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#15191F', lineHeight: '18px' }}>Wordgenie generations</p>
-                      {/* Consumption on the left, remaining on the right — the same split the
-                          three credit rows below use, so a column means one thing all the way
-                          down the list. This row used to state both numbers here and put the
-                          reset date in the right-hand column, which left that column carrying a
-                          date on row one and a count on rows two to four.
-                          The reset date rides here instead: it qualifies the usage, and it can't
-                          go in the section header because purchased credits don't reset at all. */}
                       <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '16px' }}>
                         {unlimited
                           ? `${used} used this month`
@@ -2292,25 +2306,48 @@ function BillingTab() {
                 {/* No bar when there's no ceiling — a progress track with nothing to fill toward
                     would imply a limit that doesn't exist. */}
                 {!unlimited && (
-                  <div style={{ height: 6, borderRadius: 999, background: '#E0E5EB', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: '100%', borderRadius: 999, background: exhausted ? 'linear-gradient(90deg, #006EFE, #D62929)' : '#006EFE', transform: `scaleX(${pct / 100})`, transformOrigin: 'left', transition: 'transform 0.4s ease' }} />
+                  <div className="flex" style={{ height: 6, borderRadius: 999, background: '#E0E5EB', overflow: 'hidden' }}>
+                    {/* Two fills in one track rather than one — the split is the fact this row
+                        exists to disclose, so it belongs in the bar itself, not only in a legend
+                        underneath it. Books first, then presentations, matching the legend order. */}
+                    {bookPct > 0 && <div style={{ height: '100%', width: `${bookPct}%`, background: exhausted ? 'linear-gradient(90deg, #006EFE, #D62929)' : '#006EFE', transition: 'width 0.4s ease' }} />}
+                    {presentationPct > 0 && <div style={{ height: '100%', width: `${presentationPct}%`, background: '#5326BD', transition: 'width 0.4s ease' }} />}
                   </div>
                 )}
-                {/* What actually happens at zero. Every usage page in the study spells this out —
-                    Coda "AI functionality will be paused once all the credits have been used",
-                    HubSpot "scheduled and automated emails will no longer be sent", Claude "turn
-                    on extra usage to keep using Claude if you hit a limit". We never said it, so
-                    a customer had to guess whether running out breaks the whole product. It
-                    doesn't, and the second sentence is there to say so. */}
+                {!unlimited && (manuscriptsUsed > 0 || presentationsUsed > 0) && (
+                  <div className="flex items-center" style={{ gap: 14 }}>
+                    <span className="flex items-center" style={{ gap: 5, ...ns, fontSize: 11.5, color: '#8596AD' }}>
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#006EFE', flexShrink: 0 }} />
+                      {manuscriptsUsed} book{manuscriptsUsed === 1 ? '' : 's'}
+                    </span>
+                    <span className="flex items-center" style={{ gap: 5, ...ns, fontSize: 11.5, color: '#8596AD' }}>
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#5326BD', flexShrink: 0 }} />
+                      {presentationsUsed} presentation{presentationsUsed === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                )}
+                {/* What actually happens at zero — stated the same way the old copy did, minus
+                    the "on its own allowance, below" pointer, since there's no second row to
+                    point to any more. */}
                 {!unlimited && (
                   <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '17px' }}>
-                    Wordgenie stops generating manuscripts once you reach {limit}; everything you&apos;ve
-                    already created stays editable. Presentations draw on their own allowance, below.
+                    Wordgenie stops generating once you reach {limit}; everything you&apos;ve already
+                    created stays editable. Every plan can export a presentation as PDF — PRO adds
+                    PowerPoint, PNG, and drops the watermark from shared links.
+                  </p>
+                )}
+                {/* The honest version of the nudge this row used to skip entirely. It says the
+                    plain fact (same generation, no extra cost) and stops — no invented stat about
+                    engagement or reach, no urgency, no repetition once it's no longer relevant. */}
+                {suggestPresentation && (
+                  <p style={{ ...ns, fontSize: 12, color: '#52637A', lineHeight: '17px' }}>
+                    Haven&apos;t turned a book into a presentation yet? It costs the same generation as
+                    a book, from what you already have this month.
                   </p>
                 )}
                 {exhausted && (
                   <button
-                    onClick={() => setUpgradeCtx({ message: `You've used all ${limit} manuscript generations this month.`, quota: true })}
+                    onClick={() => setUpgradeCtx({ message: `You've used all ${limit} Wordgenie generations this month.`, quota: true })}
                     style={{ ...ns, fontSize: 12, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', width: 'fit-content' }}
                   >
                     See upgrade options →
@@ -2319,89 +2356,6 @@ function BillingTab() {
               </div>
             );
           })()}
-
-          {/* Presentations are metered on every tier too — Standard 5, PRO 10 — on a pool of their
-              own. They used to be listed as PRO-only, which was wrong: what PRO actually unlocks
-              is the export surface (PowerPoint, PNG, and a share link without the watermark),
-              not the ability to make one. */}
-          {(() => {
-            const limit = presentationLimitFor(billingPlan);
-            const unlimited = !Number.isFinite(limit);
-            const used = Math.min(presentationsUsed, limit);
-            const pct = unlimited ? 0 : Math.min(Math.round((used / limit) * 100), 100);
-            return (
-              <div className="flex flex-col" style={{ gap: 8 }}>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center" style={{ gap: 10 }}>
-                    <div className="flex items-center justify-center flex-shrink-0" style={{ width: 32, height: 32, borderRadius: '50%', background: '#F0F6FF' }}>
-                      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="2" y="3" width="16" height="11" rx="2" /><path d="M8 14v3M12 14v3M6 17h8" />
-                      </svg>
-                    </div>
-                    <div>
-                      <p style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#15191F', lineHeight: '18px' }}>Presentation generations</p>
-                      <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '16px' }}>
-                        {unlimited ? `${used} used this month` : `${used} of ${limit} used this month · ${limit - used} remaining`}
-                      </p>
-                    </div>
-                  </div>
-                  <span style={{ ...ns, fontSize: 12, fontWeight: 400, color: '#8596AD', lineHeight: '16px' }}>
-                    {unlimited ? 'Unlimited' : allowanceResetLabel()}
-                  </span>
-                </div>
-                {!unlimited && (
-                  <div style={{ height: 6, borderRadius: 999, background: '#E0E5EB', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: '100%', borderRadius: 999, background: '#006EFE', transform: `scaleX(${pct / 100})`, transformOrigin: 'left', transition: 'transform 0.4s ease' }} />
-                  </div>
-                )}
-                <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '17px' }}>
-                  Every plan can create and export presentations as PDF. PRO adds PowerPoint and PNG export,
-                  and removes the watermark from shared links.
-                </p>
-              </div>
-            );
-          })()}
-
-          {CREDITS.map((c) => {
-            const pct = Math.round((c.used / c.total) * 100);
-            return (
-              <div key={c.label} className="flex flex-col" style={{ gap: 8 }}>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center" style={{ gap: 10 }}>
-                    <div className="flex items-center justify-center flex-shrink-0" style={{ width: 32, height: 32, borderRadius: '50%', background: '#F0F6FF' }}>
-                      {c.icon}
-                    </div>
-                    <div>
-                      <p style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#15191F', lineHeight: '18px' }}>{c.label}</p>
-                      <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '16px' }}>{c.used.toLocaleString()} used</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center" style={{ gap: 12 }}>
-                    <span style={{ ...ns, fontSize: 12, fontWeight: 400, color: c.remainingColor, lineHeight: '16px' }}>{c.remainingLabel}</span>
-                    {c.buyMore && (
-                      <button onClick={() => setBuyCreditsType(c.label)} style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#006EFE', height: 32, padding: '0 14px', borderRadius: 8, border: '1px solid #006EFE', background: '#fff', cursor: 'pointer', flexShrink: 0 }}>
-                        Buy more
-                      </button>
-                    )}
-                  </div>
-                </div>
-                {/* Progress bar — scaleX instead of animating width, so this only costs paint/composite, not layout */}
-                <div style={{ height: 6, borderRadius: 999, background: '#E0E5EB', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: '100%', borderRadius: 999, background: c.remainingColor === '#D62929' ? 'linear-gradient(90deg, #006EFE, #D62929)' : '#006EFE', transform: `scaleX(${pct / 100})`, transformOrigin: 'left', transition: 'transform 0.4s ease' }} />
-                </div>
-                {/* Near-exhausted nudge — a repeat top-up isn't always the cheaper fix;
-                    surface the plan that raises this limit for good, right where it bites. */}
-                {c.remainingColor === '#D62929' && (
-                  <button
-                    onClick={() => setUpgradeCtx({ message: `Raise your ${c.label.toLowerCase()} limit with Agency Premium`, planId: 'agency' })}
-                    style={{ ...ns, fontSize: 12, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', width: 'fit-content' }}
-                  >
-                    Upgrading may cost less than buying more →
-                  </button>
-                )}
-              </div>
-            );
-          })}
         </div>
       </SectionCard>
 
@@ -2447,8 +2401,36 @@ export function MyAccountView() {
   // Seeded from the store so a caller can deep-link a tab — the sidebar's plan row lands on
   // billing. Initial state only: once open, the tab strip owns it.
   const accountTab = useFlowStore((s) => s.accountTab);
+  const accountTabRequestId = useFlowStore((s) => s.accountTabRequestId);
   const [activeTab, setActiveTab] = useState<Tab>(accountTab);
+  // The actual bug behind "the plan row doesn't lead anywhere": this component can already be
+  // mounted when a caller re-requests a tab — the dedicated /account route renders it
+  // unconditionally, and any overlay route where My Account is already open does too — and
+  // useState's initial value is read once, on mount, never again.
+  // Adjusted during render rather than in an effect — React's own documented pattern for
+  // "reset/adjust state when a prop changes" (see "Adjusting some state when a prop changes" in
+  // the React docs), which avoids both the lint rule against deriving state inside an effect and
+  // the extra render pass an effect would cost (a frame of the old tab's content before the
+  // effect fires and fixes it). Tracking the request id rather than accountTab itself is what
+  // makes a second click asking for the SAME tab still win — e.g. billing → user clicks Profile
+  // locally → the sidebar's plan row again, which re-requests billing — since the id changes
+  // every time setShowAccount is called even when the destination repeats.
+  const [seenRequestId, setSeenRequestId] = useState(accountTabRequestId);
+  if (accountTabRequestId !== seenRequestId) {
+    setSeenRequestId(accountTabRequestId);
+    setActiveTab(accountTab);
+  }
   const setShowAccount = useFlowStore((s) => s.setShowAccount);
+
+  /* Arrow-key traversal for the tablist. Selection follows focus — the tabs are cheap to render
+     and nothing fetches behind them, so there's no reason to make the user press Enter to commit.
+     Focus moves on the next frame, once the re-rendered button exists to receive it. */
+  const moveTab = (delta: number) => {
+    const i = TABS.findIndex((t) => t.key === activeTab);
+    const next = TABS[(i + delta + TABS.length) % TABS.length];
+    setActiveTab(next.key);
+    requestAnimationFrame(() => document.getElementById(`account-tab-${next.key}`)?.focus());
+  };
 
   const tabContent: Record<Tab, React.ReactNode> = {
     profile: <ProfileTab />,
@@ -2466,34 +2448,70 @@ export function MyAccountView() {
           <h1 style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 24, fontWeight: 700, color: '#001633', lineHeight: '32px', margin: 0 }}>
             Your Account
           </h1>
-          <p style={{ fontFamily: 'Inter, sans-serif', fontSize: 14, fontWeight: 400, color: '#717182', lineHeight: '20px', marginTop: 4 }}>
+          <p style={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 400, color: '#717182', lineHeight: '20px', marginTop: 4 }}>
             Manage your profile, security, plan and preferences.
           </p>
         </div>
 
-        {/* Tabs */}
-        <div className="flex items-end border-b border-[#E0E5EB] mb-8">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              style={{
-                fontFamily: "'Nunito Sans', sans-serif", fontSize: 15, fontWeight: 500,
-                color: activeTab === tab.key ? '#001633' : '#52637A',
-                background: 'none', border: 'none',
-                borderBottom: activeTab === tab.key ? '2px solid #006EFE' : '2px solid transparent',
-                padding: '8px 24px', marginBottom: -1, whiteSpace: 'nowrap', cursor: 'pointer',
-              }}
-            >
-              {tab.label}
-            </button>
-          ))}
+        {/* Tabs. The underline set the closest peers use for a shallow settings screen sitting
+            under a global app rail — Runway, Uxcel, Midday. No second in-page vertical nav: the
+            app sidebar is already one, and billing doesn't need promoting out of the set into its
+            own destination because the rail's "<Plan> plan" row deep-links straight to it.
+
+            The divider spans the content column, but the button row is pulled left by one tab's
+            horizontal padding so the first label sits flush with the h1 above and the section
+            cards below — while every tab keeps a hit area wider than its text. The old
+            '8px 24px' indented "Profile" 24px and broke the page's left edge. */}
+        <div className="border-b border-[#E0E5EB] mb-8">
+          <div
+            role="tablist"
+            aria-label="Account sections"
+            className="flex items-end"
+            style={{ marginLeft: -TAB_PAD_X }}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowRight') { e.preventDefault(); moveTab(1); }
+              else if (e.key === 'ArrowLeft') { e.preventDefault(); moveTab(-1); }
+            }}
+          >
+            {TABS.map((tab) => {
+              const active = activeTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  id={`account-tab-${tab.key}`}
+                  role="tab"
+                  aria-selected={active}
+                  aria-controls="account-tabpanel"
+                  /* Only the selected tab is in the tab order; Left/Right move within the set.
+                     The ARIA tabs pattern, so four tabs cost one Tab stop rather than four. */
+                  tabIndex={active ? 0 : -1}
+                  onClick={() => setActiveTab(tab.key)}
+                  className="cursor-pointer outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#006EFE] focus-visible:rounded-sm"
+                  style={{
+                    fontFamily: "'Nunito Sans', sans-serif", fontSize: 15, fontWeight: 500,
+                    color: active ? '#001633' : '#52637A',
+                    background: 'none', border: 'none',
+                    borderBottom: active ? '2px solid #006EFE' : '2px solid transparent',
+                    padding: `8px ${TAB_PAD_X}px`, marginBottom: -1, whiteSpace: 'nowrap',
+                    transition: 'color 0.12s',
+                  }}
+                  onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = '#001633'; }}
+                  onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = '#52637A'; }}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Tab content */}
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
+            id="account-tabpanel"
+            role="tabpanel"
+            aria-labelledby={`account-tab-${activeTab}`}
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}

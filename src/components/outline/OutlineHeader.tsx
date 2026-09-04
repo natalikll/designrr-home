@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { useFlowStore, manuscriptLimitFor } from '@/stores/flowStore';
+import { useFlowStore, manuscriptLimitFor, combinedGenerationsUsed } from '@/stores/flowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
 import { UpgradePlanModal, MANUSCRIPT_ALLOWANCES } from '../account/MyAccountView';
@@ -14,7 +14,9 @@ interface OutlineHeaderProps {
 export function OutlineHeader({ onGenerateBook }: OutlineHeaderProps) {
   const sidebarOpen = useFlowStore((s) => s.sidebarOpen);
   const setSidebarOpen = useFlowStore((s) => s.setSidebarOpen);
-  const used = useFlowStore((s) => s.manuscriptGenerationsUsed);
+  // Combined, not just this book's own counter — a presentation generated earlier in the
+  // session already spent from this same pool, and this header used to ignore that entirely.
+  const used = useFlowStore(combinedGenerationsUsed);
   const currentPlan = useFlowStore((s) => s.currentPlan);
   const [showUpgrade, setShowUpgrade] = useState(false);
 

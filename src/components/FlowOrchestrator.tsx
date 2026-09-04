@@ -32,6 +32,7 @@ export function FlowOrchestrator() {
      one click re-renders every plan-aware surface at once instead of just this screen. */
   const currentPlan = useFlowStore((s) => s.currentPlan);
   const setCurrentPlan = useFlowStore((s) => s.setCurrentPlan);
+  const triggerWelcomeIntro = useFlowStore((s) => s.triggerWelcomeIntro);
   const PREVIEW_PLANS: PlanId[] = ['standard', 'pro', 'premium'];
 
   React.useEffect(() => {
@@ -210,6 +211,26 @@ export function FlowOrchestrator() {
                 </button>
               );
             })}
+
+            {/* Forces the one-time welcome modal open on demand — doesn't touch the usage
+                fraction (unlike the "New" usage-step button, which clears the same seen-flags
+                but only as a side effect of resetting to a fresh account) and doesn't require
+                picking a mode chip first, so it works from the bare landing state too. No-op on
+                Premium/Agency, same as the real trigger — there's nothing to show there. */}
+            <button
+              onClick={triggerWelcomeIntro}
+              className="cursor-pointer transition-colors"
+              style={{
+                padding: '4px 12px', borderRadius: 999, border: 'none',
+                background: 'transparent',
+                fontFamily: "'Nunito Sans', sans-serif", fontSize: 12,
+                fontWeight: 600,
+                color: '#8596AD',
+              }}
+              title="Force the welcome modal open"
+            >
+              Welcome
+            </button>
 
             <div style={{ width: 1, height: 20, background: '#DDE2EA', margin: '0 4px' }} />
 

@@ -46,10 +46,15 @@ interface FlowActions {
   resetFlow: () => void;
   homeKey: number;
   bumpHomeKey: () => void;
+  // A counter rather than a boolean: WordgenieInput fires the welcome modal off a change to
+  // this value, so clicking the dev trigger twice in a row (e.g. after dismissing) fires again
+  // even though the value would otherwise be the same "true".
+  welcomeIntroTrigger: number;
+  triggerWelcomeIntro: () => void;
   manuscriptGenerationsUsed: number;
   incrementManuscriptGenerations: () => void;
-  // Separate pool from manuscripts — presentations are a genuinely different, more premium
-  // output, so they get their own 5 free generations rather than sharing the book count.
+  // Same shared pool as manuscripts, tracked as its own counter only so usage can be reported by
+  // kind — see the note above MANUSCRIPT_LIMITS in this file for what used to live here instead.
   presentationGenerationsUsed: number;
   incrementPresentationGenerations: () => void;
   // Last route the sidebar saw itself mounted on — lets a freshly-mounted AppSidebar (after a
@@ -66,10 +71,6 @@ interface FlowActions {
 type FlowStore = FlowState & FlowActions;
 
 const SIDEBAR_KEY = 'dsgn_sidebar_open';
-/** @deprecated Standard's allowance specifically — use `manuscriptLimitFor(currentPlan)`. */
-export const MANUSCRIPT_GENERATION_LIMIT = 5;
-/** @deprecated Standard's presentation allowance specifically — use `presentationLimitFor(plan)`. */
-export const PRESENTATION_GENERATION_LIMIT = 5;
 
 /* Which plan the viewer is on. Ordered cheapest → dearest, so a tier badge can ask
    "is this above what they already have?" rather than being hard-coded per screen.
@@ -92,17 +93,26 @@ export function planRank(plan: PlanId): number {
   return PLAN_IDS.indexOf(plan);
 }
 
-/* Wordgenie generations included with each plan. One pool, spent by books and presentations
-   alike: Standard 10/mo, PRO 10/mo, Premium and Agency unlimited.
-   Standard doubled from 5 when presentations launched, and the pool was deliberately left
-   shared rather than split 5-and-5 — a ringfenced presentation allowance would expire unused
-   for anyone who only writes books, and would make the gift smaller than it is.
-   Standard doubling to 10 briefly collapsed the gap with PRO, so PRO moved to 20 to keep the
-   ladder intact. The count is still the weaker half of PRO's story — what you can actually do
-   with the output (PowerPoint, PNG, watermark-free links) is the half that gates a feature
-   rather than a quantity. Infinity rather than
-   a sentinel like -1 or 0, so "remaining" and "percent used" stay ordinary arithmetic and the
-   unlimited case falls out of the same expressions instead of needing a branch everywhere. */
+/* Wordgenie generations included with each plan — ONE shared pool, spent by books and
+   presentations alike: Standard 10/mo (a 5 base plus 5 extra), PRO 20/mo (10 base plus 10
+   extra), Premium and Agency unlimited. Infinity rather than a sentinel like -1 or 0, so
+   "remaining" and "percent used" stay ordinary arithmetic and the unlimited case falls out of
+   the same expressions instead of needing a branch everywhere.
+
+   There used to be a second map here, PRESENTATION_LIMITS (Standard 5, PRO 10), modelling
+   presentations as their own capped pool separate from manuscripts. That was never true of the
+   actual offer — the "extra" 5/10 is fungible, usable for either — and the two increment
+   actions each clamped against their own map, so a presentation never drew down the number the
+   composer's gate actually checks (`manuscriptGenerationsUsed`). In practice this meant
+   presentations were unmetered: `presentationGenerationsUsed` climbed and stopped at 5 or 10,
+   but nothing that gates generation ever read it. `combinedGenerationsUsed` below is the fix —
+   one limit, two counters kept only so the account page can show what the pool went to.
+
+   What PRO actually unlocks is real and worth keeping distinct from the count: the export
+   surface, not the ability to generate. Standard exports PDF and shares a link carrying a
+   watermark; PRO adds PowerPoint and PNG and drops the watermark. That's a different gate shape
+   from the rest — the feature is available, the output is limited — and it has nothing to do
+   with how many generations either tier gets. */
 export const MANUSCRIPT_LIMITS: Record<PlanId, number> = {
   standard: 10,
   pro: 20,
@@ -114,23 +124,12 @@ export function manuscriptLimitFor(plan: PlanId): number {
   return MANUSCRIPT_LIMITS[plan];
 }
 
-/* Presentations are metered on every tier, not gated to PRO and above — Standard gets 5 a month
-   and PRO gets 10, on a pool separate from manuscripts. What PRO actually unlocks is the export
-   surface, not the ability to make one: Standard exports PDF and shares a link carrying a
-   watermark, PRO adds PowerPoint and PNG and drops the watermark. That distinction matters to
-   the deck, because it is a different gate shape from the rest — the feature is available, the
-   output is limited.
-   Premium and Agency are Infinity to mirror MANUSCRIPT_LIMITS. Confirm before this ships:
-   the counts above were given for Standard and PRO only. */
-export const PRESENTATION_LIMITS: Record<PlanId, number> = {
-  standard: 5,
-  pro: 10,
-  premium: Infinity,
-  agency: Infinity,
-};
-
-export function presentationLimitFor(plan: PlanId): number {
-  return PRESENTATION_LIMITS[plan];
+/** Books generated plus presentations generated — the one number the shared pool is actually
+    spent against. Everything that gates generation should compare this to `manuscriptLimitFor`,
+    never `manuscriptGenerationsUsed` alone; the two per-kind counters exist only so the account
+    page can show the split, not to gate anything on their own. */
+export function combinedGenerationsUsed(s: Pick<FlowStore, 'manuscriptGenerationsUsed' | 'presentationGenerationsUsed'>): number {
+  return s.manuscriptGenerationsUsed + s.presentationGenerationsUsed;
 }
 
 /* Monthly allowances roll over on the 1st. Derived from the clock rather than stored, so the
@@ -197,6 +196,7 @@ const initialState: FlowState = {
   isImporting: false,
   showAccount: false,
   accountTab: 'profile',
+  accountTabRequestId: 0,
   promoActive: false,
   promoVariant: 'offer',
   profilePhoto: null,
@@ -205,6 +205,9 @@ const initialState: FlowState = {
 export const useFlowStore = create<FlowStore>((set) => ({
   ...initialState,
   homeKey: 0,
+  bumpHomeKey: () => set((s) => ({ homeKey: s.homeKey + 1 })),
+  welcomeIntroTrigger: 0,
+  triggerWelcomeIntro: () => set((s) => ({ welcomeIntroTrigger: s.welcomeIntroTrigger + 1 })),
   lastPathname: null,
   setLastPathname: (path) => set({ lastPathname: path }),
 
@@ -375,7 +378,21 @@ export const useFlowStore = create<FlowStore>((set) => ({
   setImporting: (importing) => set({ isImporting: importing }),
 
   // Falls back to 'profile' on open so a previous deep-link can't leak into the next visit.
-  setShowAccount: (show, tab) => set({ showAccount: show, accountTab: show ? tab ?? 'profile' : 'profile' }),
+  // The plan row's actual bug: this used to write accountTab and stop there. MyAccountView only
+  // consumes accountTab through useState's initial value, so it's read once on mount — opening
+  // My Account fresh (from a route where it's a conditionally-mounted overlay) picked it up fine,
+  // but the sidebar's plan row calling this while the view was ALREADY mounted (the dedicated
+  // /account route, where MyAccountView is always rendered, or any route where the overlay was
+  // already open) changed the store's accountTab with nothing downstream to notice. The request
+  // id bumps unconditionally, every call, so MyAccountView's effect has something to key off that
+  // changes even when the destination tab repeats — e.g. billing → user clicks Profile locally →
+  // sidebar's plan row again, which asks for billing a second time.
+  setShowAccount: (show, tab) =>
+    set((s) => ({
+      showAccount: show,
+      accountTab: show ? tab ?? 'profile' : 'profile',
+      accountTabRequestId: show ? s.accountTabRequestId + 1 : s.accountTabRequestId,
+    })),
   setPromoActive: (on) => set({ promoActive: on }),
   setPromoVariant: (v) => set({ promoVariant: v }),
 
@@ -383,17 +400,21 @@ export const useFlowStore = create<FlowStore>((set) => ({
 
   resetFlow: () => set((s) => ({ ...initialState, sidebarOpen: s.sidebarOpen })),
 
-  bumpHomeKey: () => set((s) => ({ homeKey: s.homeKey + 1 })),
-
   manuscriptGenerationsUsed: 0,
-  // Capped at whatever the viewer's own plan includes, so a PRO user can reach 10 and a Premium
-  // user is never capped at all.
+  // Both actions clamp against the ONE shared limit, not a limit of their own — a book and a
+  // presentation draw from the same pool, so whichever gets generated first is the one that
+  // should make the other scarcer. Each still only increments its own counter, so the account
+  // page can report the books/presentations split; neither counter is a gate by itself.
   incrementManuscriptGenerations: () =>
-    set((s) => ({ manuscriptGenerationsUsed: Math.min(s.manuscriptGenerationsUsed + 1, manuscriptLimitFor(s.currentPlan)) })),
+    set((s) => (combinedGenerationsUsed(s) >= manuscriptLimitFor(s.currentPlan)
+      ? s
+      : { manuscriptGenerationsUsed: s.manuscriptGenerationsUsed + 1 })),
 
   presentationGenerationsUsed: 0,
   incrementPresentationGenerations: () =>
-    set((s) => ({ presentationGenerationsUsed: Math.min(s.presentationGenerationsUsed + 1, presentationLimitFor(s.currentPlan)) })),
+    set((s) => (combinedGenerationsUsed(s) >= manuscriptLimitFor(s.currentPlan)
+      ? s
+      : { presentationGenerationsUsed: s.presentationGenerationsUsed + 1 })),
 }));
 
 // Dev-only console access, e.g. `useFlowStore.setState({ manuscriptGenerationsUsed: 5 })`

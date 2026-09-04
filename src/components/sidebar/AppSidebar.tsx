@@ -25,7 +25,7 @@ const UPGRADE_PITCH: Partial<Record<PlanId, { target: PlanId; line: string }>> =
   pro:      { target: 'premium', line: 'Premium adds print books and audiobooks' },
 };
 
-type PopupType = 'projects' | 'media' | 'learning' | null;
+type PopupType = 'projects' | 'media' | 'learning' | 'account' | null;
 
 /* ─────────────────────────────────────────
    Sub-popup: Projects
@@ -257,6 +257,66 @@ const LC_ITEMS = [
   },
 ];
 
+/* Same shape as MediaPopup — arrow, white card, one item per row — sized for two items instead
+   of four, and the only popup in this rail whose rows actually do something (Media's and
+   Learning Center's are prototype placeholders with no onClick).
+   `top` is clamped against the viewport, the same technique LearningPopup uses — and needed even
+   more here, since the account row is the LOWEST trigger in the whole sidebar. An unclamped
+   `anchorTop - 8` ran the popup's own ~84px height past the bottom of the screen, clipping
+   "Log out" — the one item a user actually came here for. POPUP_HEIGHT is the two 34px rows plus
+   the content wrapper's 8px top/bottom padding. */
+const ACCOUNT_POPUP_HEIGHT = 84;
+function AccountPopup({ anchorTop, sidebarRight, onAccountSettings, onLogout }: {
+  anchorTop: number;
+  sidebarRight: number;
+  onAccountSettings: () => void;
+  onLogout: () => void;
+}) {
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        left: sidebarRight + 4,
+        top: Math.min(anchorTop - 8, window.innerHeight - ACCOUNT_POPUP_HEIGHT - 8),
+        width: 168,
+        background: '#fff',
+        borderRadius: 12,
+        boxShadow: '0px 2px 20px rgba(0,0,0,0.08)',
+        zIndex: 9999,
+      }}
+    >
+      {/* Arrow — behind content */}
+      <div style={{ position: 'absolute', left: -8, top: 20, width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 0 }}>
+        <div style={{ width: 21, height: 21, background: '#fff', borderRadius: 4, transform: 'rotate(-45deg)', boxShadow: '-2px 2px 6px rgba(0,0,0,0.06)' }} />
+      </div>
+      {/* Content — above arrow */}
+      <div style={{ position: 'relative', zIndex: 1, padding: '8px 0', background: '#fff', borderRadius: 12, display: 'flex', flexDirection: 'column' }}>
+        <button
+          onClick={onAccountSettings}
+          className="cursor-pointer text-left"
+          style={{ display: 'flex', alignItems: 'center', width: '100%', height: 34, padding: '0 16px', fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 400, lineHeight: '18px', color: '#001633', background: 'transparent', border: 'none' }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = '#F6F7F9'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+        >
+          Account settings
+        </button>
+        {/* Prototype stand-in — there's no real session to end, so this returns to Home rather
+            than a login screen that doesn't exist yet. #D62929 is the same red every other
+            exit/destructive action in the account view uses (Revoke access, Cancel Account). */}
+        <button
+          onClick={onLogout}
+          className="cursor-pointer text-left"
+          style={{ display: 'flex', alignItems: 'center', width: '100%', height: 34, padding: '0 16px', fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 400, lineHeight: '18px', color: '#D62929', background: 'transparent', border: 'none' }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = '#FEF2F2'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+        >
+          Log out
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function LearningPopup({ anchorTop, sidebarRight }: { anchorTop: number; sidebarRight: number }) {
   return (
     <div
@@ -397,6 +457,7 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
   const projectsRef = useRef<HTMLButtonElement>(null);
   const mediaRef = useRef<HTMLButtonElement>(null);
   const learningRef = useRef<HTMLButtonElement>(null);
+  const accountRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   const hydrateSidebarPref = useFlowStore((s) => s.hydrateSidebarPref);
@@ -425,6 +486,7 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
         !projectsRef.current?.contains(target) &&
         !mediaRef.current?.contains(target) &&
         !learningRef.current?.contains(target) &&
+        !accountRef.current?.contains(target) &&
         !(document.getElementById('sidebar-popup-portal')?.contains(target))
       ) {
         setActivePopup(null);
@@ -572,16 +634,22 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
               {/* Bottom section — the two utility items, then your plan and who you are. */}
               <div style={{ borderTop: '1px solid #F0F2F5', padding: '10px 12px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
 
-                {/* Learning Center */}
+                {/* Learning Center. The chevron marks one thing only in this rail: a flyout opens
+                    to the right of this row. Media has it and behaves that way; Projects navigates
+                    and correctly has none. This row opened a flyout with no chevron — the one
+                    place the rule was broken. */}
                 <button
                   ref={learningRef}
-                  style={bottomItemStyle}
+                  style={{ ...bottomItemStyle, justifyContent: 'space-between' }}
                   onClick={() => openPopup('learning', learningRef)}
                   onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
                   onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                 >
-                  <LearningIcon />
-                  Learning Center
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <LearningIcon />
+                    Learning Center
+                  </span>
+                  <ChevronRight />
                 </button>
 
                 {/* Promote */}
@@ -623,9 +691,13 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                     One click target, not two. The badge is decoration on the row rather than a
                     nested button — two hit areas in a 34px row is a keyboard and touch problem,
                     and Teachable's row behaves the same way. */}
+                {/* Goes straight to the plan-comparison page, not My Account's billing tab — a
+                    click here states no specific task, so the full 4-plan comparison IS the
+                    right destination, not one click short of it behind a second button.
+                    See upgrade_affordance_research / feedback_step_header_pattern. */}
                 <button
                   style={{ ...bottomItemStyle, justifyContent: 'space-between', fontSize: 13 }}
-                  onClick={() => setShowAccount(true, 'billing')}
+                  onClick={() => router.push('/account/upgrade')}
                   onMouseEnter={(e) => (e.currentTarget.style.background = '#F6F7F9')}
                   onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                 >
@@ -633,14 +705,26 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                     <PlanIcon />
                     {PLAN_LABELS[currentPlan]} plan
                   </span>
-                  {/* Absent for the top tiers — nothing above them to sell. */}
+                  {/* Absent for the top tiers — nothing above them to sell.
+
+                      Reads as a button, not a tag. It was 10px/800 all-caps on a pale #EAF1FF
+                      tint — which is exactly TierBadge's shape, so it announced a tier rather than
+                      an action, and on the one row in the rail that has something to offer. This
+                      is the product's own primary button in miniature: #006EFE, white, weight 600,
+                      sentence case. No new treatment, and nothing mistakes it for a label.
+
+                      Still one hit area, per the note above — the pill is painted on the row and
+                      the row is the target, so a keyboard user gets one stop announcing "Standard
+                      plan, Upgrade" rather than two. Looking like a button while the row does the
+                      clicking is safe here because the row already goes exactly where the pill
+                      promises: the billing tab. */}
                   {pitch && (
                     <span style={{
-                      ...nsSidebar, fontSize: 10, fontWeight: 800, letterSpacing: '0.4px',
-                      color: '#0053C7', background: '#EAF1FF', borderRadius: 5,
-                      padding: '3px 6px', lineHeight: '12px', flexShrink: 0,
+                      ...nsSidebar, fontSize: 12, fontWeight: 600, color: '#fff',
+                      background: '#006EFE', borderRadius: 6, padding: '0 10px', height: 22,
+                      display: 'inline-flex', alignItems: 'center', lineHeight: 1, flexShrink: 0,
                     }}>
-                      UPGRADE
+                      Upgrade
                     </span>
                   )}
                 </button>
@@ -650,27 +734,43 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                     arbitrary break in it. */}
                 <div aria-hidden style={{ height: 1, background: '#F0F2F5', margin: '2px 0' }} />
 
-                {/* User profile / My Account — identity only. The plan sits in the row above,
-                    where it's the subject; repeating it here would be a duplicate. */}
+                {/* User profile / My Account — identity, plus the one thing missing from the whole
+                    rail: a way to sign out. The row used to open My Account directly; a click now
+                    opens this two-item menu instead, since there was nowhere in the product a
+                    user could actually log out from. Account settings does what the row used to
+                    do — same destination, one click further in, because it's no longer the row's
+                    only job.
+                    Opens to the right, via the same portal/popup mechanism Media and Learning
+                    Center use, rather than a dropdown of its own above the row — one popup
+                    system in this rail, not two, and ChevronRight already means "opens beside
+                    the sidebar" everywhere else it appears. */}
                 <button
+                  ref={accountRef}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px',
                     borderRadius: 8, height: 40, width: '100%', border: 'none', cursor: 'pointer',
-                    background: activeNav === 'account' ? '#EEF5FF' : 'transparent',
+                    background: activePopup === 'account' || activeNav === 'account' ? '#EEF5FF' : 'transparent',
                   }}
-                  onClick={() => setShowAccount(true)}
+                  onClick={() => openPopup('account', accountRef)}
                   onMouseEnter={(e) => { if (activeNav === 'account') return; e.currentTarget.style.background = '#F6F7F9'; }}
-                  onMouseLeave={(e) => { if (activeNav === 'account') return; e.currentTarget.style.background = 'transparent'; }}
+                  onMouseLeave={(e) => { if (activeNav === 'account') return; e.currentTarget.style.background = activePopup === 'account' ? '#EEF5FF' : 'transparent'; }}
                 >
-                  <div style={{ width: 22, height: 22, borderRadius: '50%', background: profilePhoto ? 'transparent' : '#E0E5EB', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: '#8596AD', flexShrink: 0 }}>
+                  {/* 26 rather than 22 — the row is 40 tall against the other foot rows' 34, so it
+                      has the height to carry it, and an avatar is a face rather than an icon: it
+                      is the one thing in this block that should not be sized to the 18px glyphs
+                      above it. The initials track the circle at ~0.4 of its width, so they scale
+                      with it instead of swimming in it. 28 is the ceiling for a 40px row — beyond
+                      it the disc starts touching the row's edges. */}
+                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: profilePhoto ? 'transparent' : '#E0E5EB', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#8596AD', flexShrink: 0 }}>
                     {profilePhoto
                       ? <img src={profilePhoto} alt="avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                       : 'CW'
                     }
                   </div>
-                  <span style={{ flex: 1, fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 400, lineHeight: '18px', color: activeNav === 'account' ? '#006EFE' : '#001633', textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  <span style={{ flex: 1, fontFamily: "'Nunito Sans', sans-serif", fontSize: 14, fontWeight: 400, lineHeight: '18px', color: activePopup === 'account' || activeNav === 'account' ? '#006EFE' : '#001633', textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     Casper Weldings
                   </span>
+                  <ChevronRight />
                 </button>
               </div>
 
@@ -696,6 +796,16 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
             {activePopup === 'learning' && (
               <motion.div key="learning-popup" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} transition={{ duration: 0.15 }}>
                 <LearningPopup anchorTop={popupAnchor.top} sidebarRight={popupAnchor.right} />
+              </motion.div>
+            )}
+            {activePopup === 'account' && (
+              <motion.div key="account-popup" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} transition={{ duration: 0.15 }}>
+                <AccountPopup
+                  anchorTop={popupAnchor.top}
+                  sidebarRight={popupAnchor.right}
+                  onAccountSettings={() => { setActivePopup(null); setShowAccount(true); }}
+                  onLogout={() => { setActivePopup(null); router.push('/'); }}
+                />
               </motion.div>
             )}
           </AnimatePresence>
@@ -792,16 +902,32 @@ function LearningIcon() {
   );
 }
 
-/* Outline stroke at 1.5px to sit with the 400-weight row label, matching the other foot icons.
-   A card outline rather than a padlock or a crown: the row states which plan you're on, and
-   only carries an upgrade badge as a secondary. Padlocks appeared in none of the sidebars
-   studied, and the deck's own recommendation is against them. */
+/* Layers, meaning "which level you're on" — the row states your plan and carries the upgrade
+   badge only as a secondary.
+
+   Not a card, which was the previous glyph: a card is the universal mark for a payment method,
+   not a plan. Air's settings nav is the clearest case against it — "Current Plan" and "Invoices &
+   Billing" are separate rows with separate icons, and only billing gets the card. Kit's card sits
+   on a row labelled "Billing" too. Ours says "plan".
+   Not a padlock (absent from every sidebar studied, and called out as negative), and not a crown
+   or star: the crown is Premium's own mark and can't sit on a Standard user's row, and
+   TierBadge.tsx already concluded the star/crown decode doesn't survive outside the pricing
+   modal. So the glyph is tier-invariant and the label names the plan — the same division of
+   labour TierBadge uses, where text names the tier and any icon is decoration.
+   Not a gauge or meter either: that promises the count this row deliberately withholds.
+
+   Drawn at 0.9 to match the house weight. Every other icon in this rail is a filled path tracing
+   an outline whose walls measure ~0.875 (LearningIcon's ring runs r=7 to r=6.125; MediaIcon's
+   frame 2→16 outside, 2.875→15.125 inside). This one is stroked rather than filled, which is an
+   authoring difference the eye can't see; what it could see was the old 1.5px stroke sitting at
+   nearly double that weight, inside a 20×20 viewBox that also rendered it at 0.9× everything
+   else. Bounds here are 2.4–15.6 on both axes, centred on 9, to sit in the same field. */
 function PlanIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" style={{ flexShrink: 0 }}>
-      <rect x="2.5" y="4.5" width="15" height="11" rx="2" stroke="#667C98" strokeWidth="1.5" />
-      <path d="M2.5 8.5h15" stroke="#667C98" strokeWidth="1.5" />
-      <path d="M5.5 12h3" stroke="#667C98" strokeWidth="1.5" strokeLinecap="round" />
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ flexShrink: 0 }}>
+      <path d="M9 2.4L15.4 5.8L9 9.2L2.6 5.8L9 2.4Z" stroke="#667C98" strokeWidth="0.9" strokeLinejoin="round" />
+      <path d="M2.6 9L9 12.4L15.4 9" stroke="#667C98" strokeWidth="0.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.6 12.2L9 15.6L15.4 12.2" stroke="#667C98" strokeWidth="0.9" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

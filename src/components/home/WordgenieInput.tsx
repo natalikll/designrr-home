@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useFlowEngine } from '@/hooks/useFlowEngine';
-import { useFlowStore, manuscriptLimitFor, presentationLimitFor, allowanceResetLabel, allowanceStateFor, planRank, PLAN_LABELS, type PlanId } from '@/stores/flowStore';
+import { useFlowStore, manuscriptLimitFor, combinedGenerationsUsed, allowanceResetLabel, allowanceStateFor, planRank, PLAN_LABELS, type PlanId } from '@/stores/flowStore';
 import { Tooltip } from '@/components/ui/Tooltip';
 import { SettingsPillRow } from '@/components/presentation/SettingsPillRow';
 import { UpgradePlanModal, MANUSCRIPT_ALLOWANCES } from '@/components/account/MyAccountView';
@@ -32,15 +32,15 @@ interface WordgenieInputProps {
 const FLOW_COPY = {
   book: {
     noun: 'book',
-    /* Fires just after someone committed to a book, so it can't open by selling them a
-       presentation — that would be a bait-and-switch on the thing they just asked for. It
-       confirms the book first, then names presentations as the reason the allowance doubled.
-       Stating the reason is what does the steering: "10 generations, shared" is technically
-       correct and gives nobody a motive; "doubled because Wordgenie makes presentations now"
-       is equally true and supplies one. Still no claim that any of them are earmarked — they
-       aren't, and saying so would be the lie we've avoided everywhere else. */
-    introHeadline: (limit: number) => `${limit} generations a month — now for slides as well as books.`,
-    introBody: (limit: number) => `Wordgenie writes a full manuscript from your idea. You can now ask it for a presentation instead — that's why the monthly allowance doubled to ${limit}. A book and a presentation each cost one, so they're yours to spend either way. Need more later?`,
+    /* Headline states one fact alone — Material's dialog guidance calls for a brief, single
+       statement, not several ideas stacked together, which is what this looked like when it
+       also tried to confirm plan inclusion and pitch presentations in the same breath. "Extra"
+       risked reading as a bonus on its own, so "Included in your plan" opens the body to head
+       that off immediately. The extra amount is a real number (half of the current limit,
+       since it doubled), but it isn't earmarked — a book generation spends from the same pool,
+       so nothing here claims presentations get their own reserved five. */
+    introHeadline: (limit: number) => `${limit / 2} extra generations a month.`,
+    introBody: (limit: number) => `Included in your plan, since Wordgenie can now write full presentations, not just manuscripts. Try the extra room on a presentation. Need more later?`,
     proBenefitIntro: 'Upgrade your plan to keep creating books with Wordgenie — compare Pro, Premium, and Agency Premium below.',
     showStandardFallback: true,
   },
@@ -326,18 +326,18 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   const { handleHeroSubmit } = useFlowEngine();
   const currentPlan = useFlowStore((s) => s.currentPlan);
   const manuscriptsUsed = useFlowStore((s) => s.manuscriptGenerationsUsed);
-  const manuscriptsRemaining = Math.max(manuscriptLimitFor(currentPlan) - manuscriptsUsed, 0);
   const presentationsUsed = useFlowStore((s) => s.presentationGenerationsUsed);
-  const presentationsRemaining = Math.max(presentationLimitFor(currentPlan) - presentationsUsed, 0);
 
-  // Which pool this instance gates against — book flow (no onSubmit) always uses the
-  // book pool; a caller opts into the presentation pool via presentationMode. Plain
-  // landing submits (onSubmit set, presentationMode unset) still skip gating entirely,
-  // unchanged from before.
+  // Which flavour this instance gates as — book flow (no onSubmit) always reads as a book;
+  // a caller opts into presentation copy via presentationMode. Plain landing submits (onSubmit
+  // set, presentationMode unset) still skip gating entirely, unchanged from before.
   const flowKind: FlowKind = presentationMode ? 'presentation' : 'book';
-  // One shared allowance — a presentation and a book cost the same generation.
+  // One shared allowance — a presentation and a book cost the same generation, so what's left
+  // has to fall as either gets made. This used to read `manuscriptsRemaining` alone, which meant
+  // a presentation never made a book scarcer (or vice versa) despite the copy right here already
+  // saying otherwise — the gate just wasn't computing what its own comment claimed.
   const GENERATION_LIMIT = manuscriptLimitFor(currentPlan);
-  const generationsRemaining = manuscriptsRemaining;
+  const generationsRemaining = Math.max(GENERATION_LIMIT - combinedGenerationsUsed({ manuscriptGenerationsUsed: manuscriptsUsed, presentationGenerationsUsed: presentationsUsed }), 0);
   /* Premium and Agency are unlimited, so there's no number to count down and nothing to warn
      about. Every allowance affordance — the readout by the send button, the alert strip, the
      near-limit and exhausted modals — keys off this rather than each testing the plan itself. */
@@ -362,8 +362,15 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
 
   /* Only once a mode is committed to: on the landing state no pool has been chosen yet, so a
      count there would answer a question nobody asked. (HomePageStandard only sets selectedMode
-     for book, hence the presentationMode arm.) */
+     for book, hence the presentationMode arm.) Gates the one-time welcome modal only — see
+     `isPoolGated` below for the bar and the submit block, which don't wait on mode selection. */
   const isMeteredComposer = (!onSubmit || presentationMode) && (!!selectedMode || presentationMode);
+
+  /* Whether this instance spends from the shared pool at all, regardless of whether a mode chip
+     has been picked yet. The generic homepage box (no onSubmit, no mode selected) already enforces
+     this on submit — handleSubmit blocks it with the exhausted modal — so the bar and the disabled
+     send state need to agree with that block instead of staying silent until the mode is chosen. */
+  const isPoolGated = !onSubmit || presentationMode;
 
   /* 80% and 100% are the documented pair for usage alerts. Both grounds are the same amber —
      the sentences differ completely, which separates the two states more sharply than a shade
@@ -383,15 +390,20 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   /* The bar only exists when it has something to say, and it is now the only place the count
      appears in the flow. Base44 and Claude both keep the surface clean until the limit and then
      speak in place; monthly refilling allowances are silent in normal use across every product
-     we checked. Below the threshold the number lives in My Account, not here. */
-  const showAlertBar = isMeteredComposer && (nearingLimit || (!isUnlimited && generationsRemaining <= 0));
+     we checked. Below the threshold the number lives in My Account, not here.
+     Keyed on `isPoolGated`, not `isMeteredComposer` — the general "what would you like to
+     create?" box spends from the same pool before any mode is chosen, so it shows the same
+     warning rather than only blocking silently once the user tries to submit. */
+  const showAlertBar = isPoolGated && (nearingLimit || (!isUnlimited && generationsRemaining <= 0));
   const alertTone = showAlertBar ? ALERT_TONE : null;
 
-  // v4 intro — gated behind the first actual submit, not mode-selection, so someone
-  // heading for "Use Standard Wordgenie" instead never sees v4-specific copy meant
-  // for the flow they didn't choose. Three states beyond that first welcome: a near-limit
-  // nudge at 80% used (still fully optional — "Continue" stays primary), and an exhausted
-  // stop at 100% (the only point where the upgrade CTA earns to be the prominent choice).
+  // v4 intro — fires once, the first time this composer actually becomes metered (a mode
+  // is committed to), not gated behind a submit. Proactive disclosure beats reactive: Emergent
+  // and Lovable both tell a new user their allowance before any action, on the screen where
+  // that action happens, rather than waiting for a click or a wall. Two states beyond that
+  // first welcome: a near-limit nudge at 80% used (still fully optional — "Continue" stays
+  // primary), and an exhausted stop at 100% (the only point where the upgrade CTA earns to be
+  // the prominent choice).
   const [showV4Intro, setShowV4Intro] = useState(false);
   const [showExhaustedModal, setShowExhaustedModal] = useState(false);
   const [showExhaustedStandardStub, setShowExhaustedStandardStub] = useState(false);
@@ -400,7 +412,6 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   // presentation one too, since a single instance can switch flowKind across renders
   // (e.g. HomePage's mode chips) without remounting.
   const [seenIntroThisSession, setSeenIntroThisSession] = useState<Record<FlowKind, boolean>>({ book: false, presentation: false });
-  const [pendingSubmitText, setPendingSubmitText] = useState<string | null>(null);
   const v4IntroCtaRef = useRef<HTMLButtonElement>(null);
   const exhaustedCtaRef = useRef<HTMLButtonElement>(null);
 
@@ -434,6 +445,29 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
 
   const introKey = (kind: FlowKind) => kind === 'presentation' ? 'dsgn_wordgenie_presentation_intro_seen' : 'dsgn_wordgenie_v4_intro_seen';
 
+  // First entry, not first submit: fires the moment a mode is committed to and this
+  // composer starts metering, before anything is typed. Nothing to introduce on an
+  // unlimited plan — the modal is entirely about the monthly allowance, and with Infinity
+  // in the template it read "You've got Infinity free generations a month."
+  useEffect(() => {
+    if (!isMeteredComposer || isUnlimited) return;
+    const alreadySeenIntro = seenIntroThisSession[flowKind]
+      || (typeof window !== 'undefined' && localStorage.getItem(introKey(flowKind)) === 'true');
+    if (!alreadySeenIntro) setShowV4Intro(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMeteredComposer, isUnlimited, flowKind]);
+
+  // Dev-only: the plan preview pill's "Welcome" button bumps this counter to force the modal
+  // open on demand, regardless of mode selection or whether it's already been dismissed —
+  // the whole point is to preview it without clearing localStorage and re-navigating. Still
+  // respects `isUnlimited`, since there's genuinely nothing to show on Premium/Agency.
+  const welcomeIntroTrigger = useFlowStore((s) => s.welcomeIntroTrigger);
+  useEffect(() => {
+    if (welcomeIntroTrigger === 0 || isUnlimited) return;
+    setShowV4Intro(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [welcomeIntroTrigger]);
+
   const proceedWithSubmit = (text: string) => {
     submittingRef.current = true;
     setValue('');
@@ -449,29 +483,17 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
     if (!value.trim() || submittingRef.current) return;
     const trimmed = value.trim();
 
-    // Book flow (no onSubmit override) and presentation flow (onSubmit + presentationMode)
-    // both gate on their own free-generation pool. Plain landing submits (onSubmit set,
-    // presentationMode unset) still skip straight through, unchanged from before.
-    const isGatedFlow = !onSubmit || presentationMode;
-    if (isGatedFlow) {
-      if (generationsRemaining <= 0) {
-        // Exhausted: starting the chat flow would only dead-end several steps later,
-        // after the user's already invested the time. Catch it here instead.
-        setShowExhaustedModal(true);
-        return;
-      }
-      /* Nothing to introduce on an unlimited plan — the modal is entirely about the monthly
-         allowance, and with Infinity in the template it read "You've got Infinity free
-         generations a month." Premium hears about presentations from the launch strip, which
-         shows to every tier precisely because a launch is news rather than an upsell. */
-      const alreadySeenIntro = isUnlimited
-        || seenIntroThisSession[flowKind]
-        || (typeof window !== 'undefined' && localStorage.getItem(introKey(flowKind)) === 'true');
-      if (!alreadySeenIntro) {
-        setPendingSubmitText(trimmed);
-        setShowV4Intro(true);
-        return;
-      }
+    // Book flow (no onSubmit override), the generic landing box (also no onSubmit, mode not
+    // yet chosen) and presentation flow (onSubmit + presentationMode) all gate on the shared
+    // free-generation pool — see `isPoolGated`. Plain landing submits with an unrelated
+    // onSubmit (presentationMode unset) still skip straight through, unchanged from before.
+    // The intro welcome no longer lives here — it already fired on entry, before this could
+    // be typed.
+    if (isPoolGated && generationsRemaining <= 0) {
+      // Exhausted: starting the chat flow would only dead-end several steps later,
+      // after the user's already invested the time. Catch it here instead.
+      setShowExhaustedModal(true);
+      return;
     }
 
     proceedWithSubmit(trimmed);
@@ -483,20 +505,15 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
     setShowV4Intro(false);
   };
 
-  // Primary CTA: acknowledge the intro and submit the prompt that triggered it.
+  // Both the primary CTA and the X/Escape/backdrop just acknowledge the welcome now —
+  // it fires before anything's typed, so there's never a pending prompt to resume.
   const resolveV4Intro = () => {
     markV4IntroSeen();
-    const text = pendingSubmitText;
-    setPendingSubmitText(null);
-    if (text) proceedWithSubmit(text);
-    else textareaRef.current?.focus();
+    textareaRef.current?.focus();
   };
 
-  // X / Escape / backdrop: acknowledge the intro but don't submit — the user gets their
-  // prompt back to reconsider, matching what a close control means everywhere else.
   const dismissV4Intro = () => {
     markV4IntroSeen();
-    setPendingSubmitText(null);
     textareaRef.current?.focus();
   };
 
@@ -575,7 +592,7 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   /* Two separate reasons the button can't fire, kept distinct: nothing typed yet, versus nothing
      left to spend. Enter still routes through handleSubmit, which opens the exhausted modal —
      so the keyboard explains the block rather than silently swallowing it. */
-  const outOfGenerations = isMeteredComposer && !isUnlimited && generationsRemaining <= 0;
+  const outOfGenerations = isPoolGated && !isUnlimited && generationsRemaining <= 0;
   /* Out of generations reads as disabled but stays clickable, so clicking it opens the same
      exhausted modal that Enter does. Truly disabling it made the two disagree — click did
      nothing, Enter explained — and a dead control that answers "why?" beats one that just sits
@@ -793,7 +810,7 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
                   cost of the action rather than the balance left. Nothing in the study puts a
                   remaining balance on an action button, and products metering a monthly
                   allowance — Claude, Base44, HubSpot, Sprig, Coda — show nothing in the flow at
-                  all until the limit. The allowance is disclosed on first submit by the intro
+                  all until the limit. The allowance is disclosed on first entry by the intro
                   modal, then by the bar at 80% and 100%, and in full in My Account. */}
               {/* Disabled once the allowance is gone. This is the feature, and the feature is
                   what a limit disables — the way out stays live as the Upgrade link in the bar
@@ -834,10 +851,10 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
         </div>
     </motion.div>
 
-    {/* One-time welcome — first submit only, per flow (book and presentation each get their
-        own, since they're separate pools). A true first encounter, before any usage exists
-        to point back to, so there's no stat and no Pro pitch here — just what Wordgenie is
-        and that the 5 generations are a no-strings gift. */}
+    {/* One-time welcome — fires on first entry, per flow (book and presentation each get their
+        own, since they're separate pools), before anything is typed. A true first encounter,
+        before any usage exists to point back to, so there's no stat and no Pro pitch here —
+        just what Wordgenie is and that the 5 generations are a no-strings gift. */}
     {showV4Intro && (
       <ModalShell onClose={dismissV4Intro} labelId="v4-intro-heading" initialFocusRef={v4IntroCtaRef}>
         <button
@@ -862,7 +879,7 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
             >
               Upgrade your plan
             </button>
-            {FLOW_COPY[flowKind].showStandardFallback && <>, or switch to Standard Wordgenie anytime.</>}
+            {FLOW_COPY[flowKind].showStandardFallback && <>, or use Standard Wordgenie for books once these run out.</>}
           </p>
 
           <div className="flex items-center justify-end" style={{ marginTop: 22 }}>

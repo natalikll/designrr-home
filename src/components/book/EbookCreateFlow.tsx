@@ -291,10 +291,13 @@ function ThemesModal({ docTitle, initial, onSave, onClose }: {
 
 /* ── template cover mock ────────────────────────────────────────────────────── */
 
-function TemplateCover({ t, height = 300, title }: { t: Template; height?: number; title?: string }) {
+function TemplateCover({ t, height = 300, ratio, fill, title }: { t: Template; height?: number; ratio?: string; fill?: boolean; title?: string }) {
   const isLight = t.bg === '#f8f8f6' || t.bg === '#fff';
+  // `position: relative` so the light-cover accent bar below anchors to the cover. Without it the
+  // bar resolved against whatever ancestor happened to be positioned — now the grey stage — and
+  // painted across the tile's foot instead of the cover's.
   return (
-    <div style={{ width: '100%', height, background: t.bg, borderRadius: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px 16px', gap: 8, overflow: 'hidden', flexShrink: 0 }}>
+    <div style={{ position: 'relative', width: '100%', ...(fill ? { height: '100%' } : ratio ? { aspectRatio: ratio } : { height }), background: t.bg, borderRadius: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px 16px', gap: 8, overflow: 'hidden', flexShrink: 0 }}>
       <div style={{ width: 40, height: 3, borderRadius: 2, background: t.accentColor, marginBottom: 4 }} />
       <div style={{ textAlign: 'center', fontSize: 13, fontWeight: 800, fontFamily: 'Georgia, serif', color: t.textColor, lineHeight: 1.25, textTransform: 'uppercase', letterSpacing: 1, maxWidth: '82%', wordBreak: 'break-word' }}>
         {title ?? t.name}
@@ -315,14 +318,28 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
   // customer was seeing "Pro" on templates they can already use, and "Try for free" on ones
   // that are simply free to them.
   const showBadge = t.isPro && shouldShowTierBadge(currentPlan, 'pro');
+  // This badge, plus the lightbox's "Unlock with Pro" on a locked template, is the whole upgrade
+  // affordance on this screen. The header's "Upgrade to use all Pro templates" link was removed
+  // because it was the general-upgrade variant of the same offer, competing with the intent-driven
+  // one: a browsing surface's generic CTA, which is the shape that measured worst in the funnel.
+  // A locked card the author actually wants states the offer at the moment it means something.
   return (
-    <div className="flex flex-col cursor-pointer" style={{ gap: 10 }}
+    <div className="flex flex-col cursor-pointer" style={{ gap: 12 }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onClick={onClick}>
-      <div className="relative overflow-hidden"
-        style={{ borderRadius: 8, border: `1.5px solid ${hovered ? '#006EFE' : '#E8EBF2'}`, transition: 'border-color 0.15s, box-shadow 0.15s', boxShadow: hovered ? '0 4px 16px rgba(0,110,254,0.12)' : '0 2px 8px rgba(0,0,0,0.06)' }}>
-        <TemplateCover t={t} height={260} />
+      {/* The live product's treatment: a landscape grey stage with the cover standing on it as a
+          portrait sheet. The card is the stage, not the cover — which is why an earlier pass that
+          made the whole card portrait, and the one before it that stretched a fixed-height cover
+          across a 1fr column into a landscape block, both read wrong.
+          The real gallery lets tall covers bleed past the tile's foot and clips them mid-title.
+          Ours sizes the sheet to fit the stage instead: same treatment, without losing the words
+          a cover exists to show. */}
+      <div className="relative overflow-hidden flex items-center justify-center"
+        style={{ aspectRatio: '5 / 3', background: '#F4F6F9', borderRadius: 10, padding: '10px 0' }}>
+        <div style={{ height: '100%', aspectRatio: '17 / 22', borderRadius: 4, overflow: 'hidden', boxShadow: '0 2px 10px rgba(15,23,51,0.16)' }}>
+          <TemplateCover t={t} fill />
+        </div>
         {/* Positioned exactly as BookTypeSelector places its badge — the platform's existing
             badge-on-a-card treatment, and the closest analogue to this gallery. 8/8 rather than
             10/10, no shadow, and lineHeight 0 on the wrapper so the inline-flex pill doesn't sit
@@ -337,15 +354,21 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
           </div>
         )}
         {hovered && (
-          <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.32)' }}>
+          <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'rgba(15,23,51,0.34)' }}>
             <span style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: '#006EFE', borderRadius: 8, padding: '8px 18px' }}>Preview</span>
           </div>
         )}
       </div>
-      <p style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', lineHeight: '18px' }}>{t.name}</p>
+      <p style={{ ...ns, fontSize: 14, fontWeight: 500, color: '#15191F', lineHeight: '19px' }}>{t.name}</p>
     </div>
   );
 }
+
+/* Lightbox page geometry. 17/22 is Letter portrait — the Page Size the gallery defaults to. */
+const PREVIEW_H = 480;
+const PREVIEW_W = Math.round((PREVIEW_H * 17) / 22);   // 371
+const THUMB_W = 76;
+const THUMB_H = Math.round((THUMB_W * 22) / 17);       // 98
 
 function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
   t: Template;
@@ -385,17 +408,30 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
         style={{ width: '85vw', maxWidth: 1240, maxHeight: '88vh', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,0.3)' }}
         onClick={e => e.stopPropagation()}
       >
-        {/* left preview — image fills the full panel width (minus padding), no artificial cap */}
-        <div className="flex flex-col flex-1 min-w-0 justify-center" style={{ padding: '40px 32px', gap: 16 }}>
-          <TemplateCover t={current} height={520} title={DOC_TITLE} />
-          <div className="flex" style={{ gap: 8 }}>
+        {/* Left preview — a page, so height-led with the width derived from the page ratio, on the
+            same grey stage the gallery cards use. Filling the panel's full width at a fixed 520
+            height turned every cover into a landscape slab: a slide, not a book. 17/22 is Letter
+            portrait, matching the Page Size the gallery defaults to. */}
+        <div className="flex flex-col flex-1 min-w-0 items-center justify-center" style={{ background: '#F4F6F9', padding: '40px 32px', gap: 18 }}>
+          <div style={{ width: PREVIEW_W, height: PREVIEW_H, borderRadius: 6, overflow: 'hidden', boxShadow: '0 8px 28px rgba(15,23,51,0.20)', flexShrink: 0 }}>
+            <TemplateCover t={current} fill title={DOC_TITLE} />
+          </div>
+
+          {/* Page thumbnails: a centred row of pages at the same ratio, not full-width bars. Cover
+              first, then the interior spreads. */}
+          <div className="flex flex-shrink-0" style={{ gap: 10 }}>
             {[0, 1, 2].map(i => (
-              <div key={i} style={{ flex: 1, borderRadius: 4, overflow: 'hidden', border: i === 0 ? '2px solid #006EFE' : '1.5px solid #E0E5EB' }}>
+              <div key={i} style={{ width: THUMB_W, height: THUMB_H, borderRadius: 4, overflow: 'hidden', border: i === 0 ? '2px solid #006EFE' : '1px solid #E0E5EB', background: '#fff' }}>
                 {i === 0
-                  ? <TemplateCover t={current} height={68} title={DOC_TITLE} />
-                  : <div style={{ height: 68, background: '#fff', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                      <div style={{ width: '65%', height: 4, background: '#E0E5EB', borderRadius: 2 }}/>
-                      {[90, 75, 85, 60, 80].map((w, j) => <div key={j} style={{ width: `${w}%`, height: 2.5, background: '#F0F2F5', borderRadius: 2 }}/>)}
+                  // The cover rendered at full size and scaled down, so the thumbnail is a true
+                  // miniature. TemplateCover's internals are fixed px — a 13px title and a 40px
+                  // accent rule — which at a fifth of the width would have swamped the page.
+                  ? <div style={{ width: PREVIEW_W, height: PREVIEW_H, transform: `scale(${THUMB_W / PREVIEW_W})`, transformOrigin: 'top left' }}>
+                      <TemplateCover t={current} fill title={DOC_TITLE} />
+                    </div>
+                  : <div style={{ height: '100%', background: '#fff', padding: '9px 8px', display: 'flex', flexDirection: 'column', gap: 3.5 }}>
+                      <div style={{ width: '65%', height: 4, background: '#E0E5EB', borderRadius: 2, marginBottom: 2 }}/>
+                      {[90, 75, 85, 60, 80, 70, 88].map((w, j) => <div key={j} style={{ width: `${w}%`, height: 2.5, background: '#F0F2F5', borderRadius: 2 }}/>)}
                     </div>}
               </div>
             ))}
@@ -411,27 +447,22 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
             </svg>
           </button>
 
-          {/* Name first, tier after it. The gold star in a black tile that used to lead this row
-              was the last of the bespoke tier marks — it named no plan, and a glyph only decodes
-              inside the pricing modal where the plan name sits beside it.
-              Only the tier goes here. "Try for free" has its own line below, and stating it twice
-              in two different shapes would be worse than stating it once as a sentence. Unlike a
-              card, this view has room for both facts: that it is a Pro template, and that this
-              particular one can be used without upgrading. */}
+          {/* Name first, badge after it — the same badge the card in the gallery shows, at the same
+              default size and by the same rule: "Try for free" replaces "Pro" rather than sitting
+              beside it. A template must not change its mark between the grid and the preview of
+              that grid item; an author picks a card by its badge and then has to recognise it here.
+              This deliberately drops two earlier one-offs — the `size="lg"` variant, and a green
+              "Try for free — no upgrade needed" sentence carrying the offer in prose while the
+              badge said "Pro". The gold star in a black tile that used to lead this row is long
+              gone for the same reason: it named no plan. */}
           <div className="flex items-center" style={{ gap: 10, marginBottom: 12 }}>
             <h3 style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#15191F' }}>{current.name}</h3>
             {current.isPro && shouldShowTierBadge(currentPlan, 'pro') && (
-              // Larger here than in the grid: it sits beside a 20px title rather than in a
-              // corner, and at grid size it read as a stray chip next to the name.
-              <span style={{ lineHeight: 0, flexShrink: 0 }}><TierBadge tier="pro" size="lg" /></span>
+              <span style={{ lineHeight: 0, flexShrink: 0 }}>
+                {current.tryForFree ? <OfferBadge label="Try for free" /> : <TierBadge tier="pro" />}
+              </span>
             )}
           </div>
-
-          {current.isPro && current.tryForFree && (
-            <p style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: '#3F6152', marginBottom: 12 }}>
-              Try for free — no upgrade needed
-            </p>
-          )}
 
           <p style={{ ...ns, fontSize: 13, color: '#52637A', lineHeight: 1.6, marginBottom: 20 }}>
             You&apos;ll be able to play with the template &amp; change covers inside the editor
@@ -515,43 +546,44 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
     const matchType = typeFilter === 'All' || (typeFilter === 'Pro' ? t.isPro : true);
     return matchSearch && matchTheme && matchType;
   });
-  const proCount = TEMPLATES.filter(t => t.isPro).length;
   const visibleThemeOptions = THEME_OPTIONS.filter(o => o.label.toLowerCase().includes(themeSearch.toLowerCase()));
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-white">
-      {/* One bar, actions at both edges — the shape PresentationStepHeader uses (navigation left,
-          action right) rather than a row that exists only to hold Back while the page's other
-          action floats down beside the h1. Nowhere else in the product puts a button on a title
-          row, and a bar carrying a single control reads as an empty strip. */}
-      <div className="flex-shrink-0 border-b border-[#E0E5EB] flex items-center justify-between" style={{ padding: '14px 32px' }}>
+      <div className="flex-1 overflow-y-auto" style={{ padding: '28px 32px 40px' }}>
+        {/* Back sits in the content column above the title — the shape OutlineReviewView uses for
+            a titled step view, down to the button's own geometry. The bordered bar this replaces
+            was invented for this screen: nothing else in the product frames a step's Back in its
+            own strip, and directly under the wizard's header the rule read as a second header. */}
         <button onClick={onBack} className="flex items-center cursor-pointer"
-          style={{ gap: 6, ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '7px 14px' }}
+          style={{ gap: 6, marginBottom: 16, ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '7px 14px' }}
           onMouseEnter={e => { e.currentTarget.style.background = '#F4F6F9'; }}
           onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
           Back
         </button>
 
-        {/* Same geometry as Back, so the two read as a pair of bar actions; blue rather than
-            filled, because the page's real primary action is choosing a template and an upgrade
-            button shouldn't outrank it. The trailing arrow is gone — it implied leaving the app,
-            and this opens a modal. */}
-        {proCount > 0 && (
-          <button
-            onClick={() => setUpgradeCtx({ message: `Unlock all ${proCount} Pro templates`, planId: 'pro', feature: 'Pro Templates' })}
-            className="flex items-center cursor-pointer"
-            style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#0053C7', background: '#fff', border: '1px solid #C9DCF7', borderRadius: 8, padding: '7px 14px' }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#F4F8FF'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
-          >
-            Upgrade to use all Pro templates
-          </button>
+        {/* Title block: h1 tight to its description at 8, the whole block clear of the filters at
+            24 — OutlineReviewView's rhythm. Before this the gaps ran 16/22/24, close enough to
+            read as one flat stack where nothing grouped with anything.
+            The "Upgrade to use all Pro templates" link that used to sit opposite the title is
+            gone; see the note on TemplateCard's badge for why the intent-driven path is the only
+            upgrade affordance this screen needs. */}
+        {/* The description slot carries its 8px gap only when there is a description; with no theme
+            filter the title takes the full 24 to the controls itself, rather than an empty
+            paragraph holding the space open. */}
+        <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#15191F', marginBottom: themesFilter.length > 0 ? 8 : 24 }}>Choose a template</h1>
+        {themesFilter.length > 0 && (
+          <p style={{ ...ns, fontSize: 14, color: '#52637A', marginBottom: 24 }}>
+            {filtered.length} of {TEMPLATES.length} templates match your themes.{' '}
+            {/* The way out of a narrow theme pick. Without it a two-theme selection can strand an
+                author on "No templates found" with no hint that the filter caused it. */}
+            <button onClick={() => setThemesFilter([])} className="cursor-pointer"
+              style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#006EFE', background: 'none', border: 'none', padding: 0 }}>
+              Show all {TEMPLATES.length}
+            </button>
+          </p>
         )}
-      </div>
-
-      <div className="flex-1 overflow-y-auto" style={{ padding: '28px 32px 40px' }}>
-        <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#15191F', marginBottom: 22 }}>Choose a template</h1>
 
         {/* Filters */}
         <div className="flex items-center relative" style={{ gap: 12, marginBottom: 24 }}>
@@ -675,7 +707,7 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
         {/* Unified grid — Pro templates are badged inline, not segregated into a skippable row */}
         {filtered.length === 0
           ? <p style={{ ...ns, fontSize: 14, color: '#8596AD', textAlign: 'center', marginTop: 60 }}>No templates found.</p>
-          : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20 }}>
+          : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '28px 24px' }}>
               {filtered.map(t => (
                 <TemplateCard key={t.id} t={t} onClick={() => setPreview(t)} />
               ))}
@@ -1176,8 +1208,7 @@ function WritingContentView({ onChooseFormat }: { onChooseFormat: () => void }) 
             <div style={{ width: 1, height: 16, background: '#E0E5EB' }} />
             <span className="flex items-center" style={{ gap: 5, ...ns, fontSize: 13, color: '#29A341' }}>
               <svg width="20" height="14" viewBox="1 5 25.5 18" fill="none">
-                <path d="M16.3205 8.98969C15.3213 7.56945 13.6752 6.64688 11.8109 6.64688C8.84797 6.64688 6.43242 8.98203 6.30227 11.9105C6.2793 12.4082 5.95773 12.8446 5.48688 13.013C3.81781 13.6026 2.62344 15.1913 2.62344 17.0594C2.62344 19.429 4.54133 21.3469 6.91094 21.3469H20.9984C23.0273 21.3469 24.6734 19.7008 24.6734 17.6719C24.6734 16.2631 23.881 15.0381 22.7134 14.4218C22.2005 14.15 21.9478 13.5605 22.1086 13.0016C22.1852 12.7374 22.2234 12.4541 22.2234 12.1594C22.2234 10.4673 20.853 9.09688 19.1609 9.09688C18.6901 9.09688 18.246 9.20406 17.8479 9.39164C17.3081 9.64812 16.665 9.47969 16.3205 8.98969Z" fill="#29A341"/>
-                <path d="M17.756 13.2045L12.856 18.1045C12.6187 18.3418 12.2282 18.3418 11.9909 18.1045L9.54086 15.6545C9.30352 15.4171 9.30352 15.0266 9.54086 14.7893C9.7782 14.552 10.1687 14.552 10.406 14.7893L12.4234 16.8067L16.8909 12.3393C17.1282 12.102 17.5187 12.102 17.756 12.3393C17.9934 12.5766 17.9934 12.9671 17.756 13.2045Z" fill="#29A341"/>
+                <path d="M16.3205 8.98969C15.3213 7.56945 13.6752 6.64688 11.8109 6.64688C8.84797 6.64688 6.43242 8.98203 6.30227 11.9105C6.2793 12.4082 5.95773 12.8446 5.48688 13.013C3.81781 13.6026 2.62344 15.1913 2.62344 17.0594C2.62344 19.429 4.54133 21.3469 6.91094 21.3469H20.9984C23.0273 21.3469 24.6734 19.7008 24.6734 17.6719C24.6734 16.2631 23.881 15.0381 22.7134 14.4218C22.2005 14.15 21.9478 13.5605 22.1086 13.0016C22.1852 12.7374 22.2234 12.4541 22.2234 12.1594C22.2234 10.4673 20.853 9.09688 19.1609 9.09688C18.6901 9.09688 18.246 9.20406 17.8479 9.39164C17.3081 9.64812 16.665 9.47969 16.3205 8.98969ZM11.8109 5.42188C14.0887 5.42188 16.1023 6.55117 17.3234 8.28531C17.8785 8.02117 18.5025 7.87188 19.1609 7.87188C21.5305 7.87188 23.4484 9.78977 23.4484 12.1594C23.4484 12.569 23.391 12.9633 23.2838 13.3384C24.838 14.1577 25.8984 15.7923 25.8984 17.6719C25.8984 20.3784 23.7049 22.5719 20.9984 22.5719H6.91094C3.86758 22.5719 1.39844 20.1027 1.39844 17.0594C1.39844 14.6553 2.93734 12.6149 5.08109 11.857C5.23805 8.27766 8.18953 5.42188 11.8109 5.42188ZM17.756 13.2045L12.856 18.1045C12.6187 18.3418 12.2282 18.3418 11.9909 18.1045L9.54086 15.6545C9.30352 15.4171 9.30352 15.0266 9.54086 14.7893C9.7782 14.552 10.1687 14.552 10.406 14.7893L12.4234 16.8067L16.8909 12.3393C17.1282 12.102 17.5187 12.102 17.756 12.3393C17.9934 12.5766 17.9934 12.9671 17.756 13.2045Z" fill="#29A341"/>
               </svg>
               Saved
             </span>
@@ -1185,16 +1216,16 @@ function WritingContentView({ onChooseFormat }: { onChooseFormat: () => void }) 
           <div className="flex items-center" style={{ gap: 4 }}>
             {/* Undo */}
             <button className="flex items-center justify-center cursor-pointer rounded-md hover:bg-[#F4F6F9] transition-colors" style={{ width: 36, height: 36, border: 'none', background: 'none' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3D4A5C" strokeWidth="1.8" strokeLinecap="round"><path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 2.3-5.7L3 7"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3D4A5C" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
             </button>
             {/* Redo */}
             <button className="flex items-center justify-center cursor-pointer rounded-md hover:bg-[#F4F6F9] transition-colors" style={{ width: 36, height: 36, border: 'none', background: 'none' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C5CDD9" strokeWidth="1.8" strokeLinecap="round"><path d="M21 7v6h-6"/><path d="M21 13a9 9 0 1 1-2.3-5.7L21 7"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C5CDD9" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
             </button>
             <div style={{ width: 1, height: 16, background: '#E0E5EB', margin: '0 4px' }} />
             {/* Mic */}
             <button className="flex items-center justify-center cursor-pointer rounded-md hover:bg-[#F4F6F9] transition-colors" style={{ width: 36, height: 36, border: 'none', background: 'none' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="1.8" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/><path d="M8 22h8"/></svg>
             </button>
             <button onClick={onChooseFormat}
               style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: 'pointer', whiteSpace: 'nowrap', marginLeft: 4 }}

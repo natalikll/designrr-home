@@ -117,6 +117,12 @@ export interface FlowState {
      billing, since a click there says nothing about which plan is wanted and needs the full
      comparison rather than a modal guessing. */
   accountTab: 'profile' | 'password' | 'preferences' | 'billing';
+  /* Bumped on every setShowAccount(true, tab) call, whether or not the tab actually changed.
+     MyAccountView only reads accountTab into its own tab state on mount, so a caller re-requesting
+     the SAME tab while the view is already open (e.g. the sidebar's plan row, clicked again after
+     the user wandered to a different tab locally) needs something that changes every time it's
+     asked for, not just when the destination differs from last time. */
+  accountTabRequestId: number;
   /* Whether a campaign is currently running. The home strip is campaign-only — between
      campaigns it renders nothing — so this is the switch that turns that season on and off. */
   promoActive: boolean;
