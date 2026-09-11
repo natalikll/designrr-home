@@ -86,10 +86,10 @@ const viewsKey = (promoId: string) => `dsgn_promo_views_${promoId}`;
    was the first attempt and it read as pasted in: nothing else in this product is a block of
    solid colour, so it belonged to a different design system rather than looking deliberately
    temporary. Ditto and Visual Electric both ship one, but their whole surface is high-contrast —
-   ours is white cards, soft tints and 1px borders, and the band had no context to sit in.
-   A soft tint plus a 1px border is the app's card language, so the strip belongs; the campaign
-   signal is concentrated in the chip instead, which is Kajabi's move — keep the band calm and
-   put the energy in one small element.
+   ours is white cards and soft tints, and the band had no context to sit in.
+   A soft tint alone is enough to read as the app's own card language, so the strip belongs; the
+   campaign signal is concentrated in the chip instead, which is Kajabi's move — keep the band
+   calm and put the energy in one small element.
 
    The hues are each argued rather than picked. The offer takes brand blue, following the
    deck's own recommendation that upgrades stay in brand colour. The launch takes the purple
@@ -102,11 +102,11 @@ const viewsKey = (promoId: string) => `dsgn_promo_views_${promoId}`;
    to. Every foreground clears 6.3:1 on its ground and the chips 6.9:1. */
 const STRIP_TONE = {
   offer: {
-    bg: '#D5E4FF', border: '#B7CFF7', line: '#15191F', meta: '#3F5170',
+    bg: '#D5E4FF', line: '#15191F', meta: '#3F5170',
     cta: '#0043A8', close: '#3F5170', chipBg: '#0053C7', chipFg: '#FFFFFF',
   },
   announcement: {
-    bg: '#EFE7FF', border: '#D6C4F7', line: '#2E1065', meta: '#5B4A8A',
+    bg: '#EFE7FF', line: '#2E1065', meta: '#5B4A8A',
     cta: '#5B21B6', close: '#5B4A8A', chipBg: '#6D28D9', chipFg: '#FFFFFF',
   },
 } as const;
@@ -174,7 +174,6 @@ export function PlanTopStrip() {
           className="flex items-center justify-center relative"
           style={{
             background: tone.bg,
-            border: `1px solid ${tone.border}`,
             borderRadius: 12,
             padding: '9px 52px',
             gap: 8,

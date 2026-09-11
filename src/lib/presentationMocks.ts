@@ -60,6 +60,8 @@ export interface MockSlide {
   bgImageUrl?: string;
   imageUrl?: string;
   textColorOverride?: string;
+  titleBgColor?: string;
+  contentBgColor?: string;
   ruleColorOverride?: string;
   titleFontFamily?: string;
   contentFontFamily?: string;
@@ -71,6 +73,7 @@ export interface MockSlide {
   contentTextAlign?: 'left' | 'center' | 'right' | 'justify';
   contentAlign?: 'top' | 'center' | 'bottom';
   listStyle?: 'none' | 'bullet' | 'numbered';
+  pointSpacing?: 'compact' | 'standard' | 'relaxed';
   slidePhotos?: SlidePhoto[];
   titleOffset?: TextOffset;
   contentOffset?: TextOffset;

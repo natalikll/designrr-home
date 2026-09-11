@@ -8,6 +8,7 @@ import { useFlowStore, manuscriptLimitFor, combinedGenerationsUsed, allowanceRes
 import { Tooltip } from '@/components/ui/Tooltip';
 import { SettingsPillRow } from '@/components/presentation/SettingsPillRow';
 import { UpgradePlanModal, MANUSCRIPT_ALLOWANCES } from '@/components/account/MyAccountView';
+import { AISparkleIcon } from '@/components/presentation/presentationIcons';
 
 interface WordgenieInputProps {
   onSubmit?: (value: string) => void;
@@ -32,23 +33,11 @@ interface WordgenieInputProps {
 const FLOW_COPY = {
   book: {
     noun: 'book',
-    /* Headline states one fact alone — Material's dialog guidance calls for a brief, single
-       statement, not several ideas stacked together, which is what this looked like when it
-       also tried to confirm plan inclusion and pitch presentations in the same breath. "Extra"
-       risked reading as a bonus on its own, so "Included in your plan" opens the body to head
-       that off immediately. The extra amount is a real number (half of the current limit,
-       since it doubled), but it isn't earmarked — a book generation spends from the same pool,
-       so nothing here claims presentations get their own reserved five. */
-    introHeadline: (limit: number) => `${limit / 2} extra generations a month.`,
-    introBody: (limit: number) => `Included in your plan, since Wordgenie can now write full presentations, not just manuscripts. Try the extra room on a presentation. Need more later?`,
     proBenefitIntro: 'Upgrade your plan to keep creating books with Wordgenie — compare Pro, Premium, and Agency Premium below.',
     showStandardFallback: true,
   },
   presentation: {
     noun: 'presentation',
-    /* No push needed here — they're already making one. This just explains the shared pool. */
-    introHeadline: (limit: number) => `You've got ${limit} generations a month.`,
-    introBody: (limit: number) => `Wordgenie turns your idea into a full slide deck — or a full manuscript, if you ask for a book instead. Your ${limit} monthly generations cover both, and each one costs one. Need more later?`,
     proBenefitIntro: 'Upgrade your plan to keep creating presentations with Wordgenie — compare Pro, Premium, and Agency Premium below.',
     showStandardFallback: false,
   },
@@ -80,8 +69,10 @@ function ModalHeader({ headline, id }: { headline: ReactNode; id?: string }) {
   return (
     <div style={{ padding: '26px 32px 4px' }}>
       <div className="flex items-center" style={{ gap: 8, marginBottom: 14 }}>
+        {/* The official mark (AISparkleIcon), not the generic star this used to draw —
+            same source as the header lockup and every AI-generate affordance elsewhere. */}
         <div style={{ width: 34, height: 34, borderRadius: 9, background: '#EAF1FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="#006EFE"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" /></svg>
+          <AISparkleIcon size={17} />
         </div>
         <span style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#8596AD' }}>Wordgenie AI v4</span>
       </div>
@@ -397,22 +388,12 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
   const showAlertBar = isPoolGated && (nearingLimit || (!isUnlimited && generationsRemaining <= 0));
   const alertTone = showAlertBar ? ALERT_TONE : null;
 
-  // v4 intro — fires once, the first time this composer actually becomes metered (a mode
-  // is committed to), not gated behind a submit. Proactive disclosure beats reactive: Emergent
-  // and Lovable both tell a new user their allowance before any action, on the screen where
-  // that action happens, rather than waiting for a click or a wall. Two states beyond that
-  // first welcome: a near-limit nudge at 80% used (still fully optional — "Continue" stays
-  // primary), and an exhausted stop at 100% (the only point where the upgrade CTA earns to be
-  // the prominent choice).
-  const [showV4Intro, setShowV4Intro] = useState(false);
+  // Two states beyond entry: a near-limit nudge at 80% used (still fully optional —
+  // "Continue" stays primary), and an exhausted stop at 100% (the only point where the
+  // upgrade CTA earns to be the prominent choice).
   const [showExhaustedModal, setShowExhaustedModal] = useState(false);
   const [showExhaustedStandardStub, setShowExhaustedStandardStub] = useState(false);
   const [showUpgradeFromIntro, setShowUpgradeFromIntro] = useState(false);
-  // Keyed per flow kind — dismissing the book intro shouldn't silently suppress the
-  // presentation one too, since a single instance can switch flowKind across renders
-  // (e.g. HomePage's mode chips) without remounting.
-  const [seenIntroThisSession, setSeenIntroThisSession] = useState<Record<FlowKind, boolean>>({ book: false, presentation: false });
-  const v4IntroCtaRef = useRef<HTMLButtonElement>(null);
   const exhaustedCtaRef = useRef<HTMLButtonElement>(null);
 
   // Auto-resize textarea
@@ -443,31 +424,6 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
     };
   }, []);
 
-  const introKey = (kind: FlowKind) => kind === 'presentation' ? 'dsgn_wordgenie_presentation_intro_seen' : 'dsgn_wordgenie_v4_intro_seen';
-
-  // First entry, not first submit: fires the moment a mode is committed to and this
-  // composer starts metering, before anything is typed. Nothing to introduce on an
-  // unlimited plan — the modal is entirely about the monthly allowance, and with Infinity
-  // in the template it read "You've got Infinity free generations a month."
-  useEffect(() => {
-    if (!isMeteredComposer || isUnlimited) return;
-    const alreadySeenIntro = seenIntroThisSession[flowKind]
-      || (typeof window !== 'undefined' && localStorage.getItem(introKey(flowKind)) === 'true');
-    if (!alreadySeenIntro) setShowV4Intro(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMeteredComposer, isUnlimited, flowKind]);
-
-  // Dev-only: the plan preview pill's "Welcome" button bumps this counter to force the modal
-  // open on demand, regardless of mode selection or whether it's already been dismissed —
-  // the whole point is to preview it without clearing localStorage and re-navigating. Still
-  // respects `isUnlimited`, since there's genuinely nothing to show on Premium/Agency.
-  const welcomeIntroTrigger = useFlowStore((s) => s.welcomeIntroTrigger);
-  useEffect(() => {
-    if (welcomeIntroTrigger === 0 || isUnlimited) return;
-    setShowV4Intro(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [welcomeIntroTrigger]);
-
   const proceedWithSubmit = (text: string) => {
     submittingRef.current = true;
     setValue('');
@@ -497,24 +453,6 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
     }
 
     proceedWithSubmit(trimmed);
-  };
-
-  const markV4IntroSeen = () => {
-    setSeenIntroThisSession((prev) => ({ ...prev, [flowKind]: true }));
-    if (typeof window !== 'undefined') localStorage.setItem(introKey(flowKind), 'true');
-    setShowV4Intro(false);
-  };
-
-  // Both the primary CTA and the X/Escape/backdrop just acknowledge the welcome now —
-  // it fires before anything's typed, so there's never a pending prompt to resume.
-  const resolveV4Intro = () => {
-    markV4IntroSeen();
-    textareaRef.current?.focus();
-  };
-
-  const dismissV4Intro = () => {
-    markV4IntroSeen();
-    textareaRef.current?.focus();
   };
 
   const dismissExhaustedModal = () => {
@@ -850,50 +788,6 @@ export default function WordgenieInput({ onSubmit, hideHeader, showSettings, exc
           </div>
         </div>
     </motion.div>
-
-    {/* One-time welcome — fires on first entry, per flow (book and presentation each get their
-        own, since they're separate pools), before anything is typed. A true first encounter,
-        before any usage exists to point back to, so there's no stat and no Pro pitch here —
-        just what Wordgenie is and that the 5 generations are a no-strings gift. */}
-    {showV4Intro && (
-      <ModalShell onClose={dismissV4Intro} labelId="v4-intro-heading" initialFocusRef={v4IntroCtaRef}>
-        <button
-          onClick={dismissV4Intro}
-          className="absolute flex items-center justify-center hover:opacity-60 transition-opacity cursor-pointer"
-          style={{ top: 20, right: 20, width: 24, height: 24, background: 'none', border: 'none', padding: 0 }}
-          aria-label="Close"
-        >
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <path d="M14 4L4 14M4 4l10 10" stroke="#29323D" strokeWidth="1.2" strokeLinecap="round" />
-          </svg>
-        </button>
-
-        <ModalHeader id="v4-intro-heading" headline={FLOW_COPY[flowKind].introHeadline(GENERATION_LIMIT)} />
-
-        <div style={{ padding: '8px 32px 24px' }}>
-          <p style={{ ...ns, fontSize: 14, color: '#29323D', lineHeight: 1.6, margin: 0 }}>
-            {FLOW_COPY[flowKind].introBody(GENERATION_LIMIT)}{' '}
-            <button
-              onClick={() => { markV4IntroSeen(); setShowUpgradeFromIntro(true); }}
-              style={{ color: '#006EFE', fontWeight: 600, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline' }}
-            >
-              Upgrade your plan
-            </button>
-            {FLOW_COPY[flowKind].showStandardFallback && <>, or use Standard Wordgenie for books once these run out.</>}
-          </p>
-
-          <div className="flex items-center justify-end" style={{ marginTop: 22 }}>
-            <button
-              ref={v4IntroCtaRef}
-              onClick={resolveV4Intro}
-              style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '10px 20px', cursor: 'pointer' }}
-            >
-              Get started
-            </button>
-          </div>
-        </div>
-      </ModalShell>
-    )}
 
     {/* 100% used — the only state where "Continue" genuinely isn't an option, so the
         upgrade CTA earns to be the prominent choice. "Use Standard Wordgenie instead"

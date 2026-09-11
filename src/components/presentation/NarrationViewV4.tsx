@@ -4968,7 +4968,7 @@ export default function NarrationViewV4() {
   const NEUTRAL_THEME: MockTheme = { id: 'none', name: 'None', bg: '#FFFFFF', titleColor: '#15191F', accentColor: '#C8CDD9', slides: [] };
   const theme = (selectedThemeId && selectedThemeId !== 'blank')
     ? (MOCK_THEMES.find(t => t.id === selectedThemeId) ?? MOCK_THEMES[0])
-    : (storeSlides.length > 0 ? NEUTRAL_THEME : MOCK_THEMES[0]);
+    : NEUTRAL_THEME;
 
   // Reopening a saved video (from /projects) should restore exactly how it was left,
   // not re-derive fresh scripts/audio from the slides. Captured once at mount, then

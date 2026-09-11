@@ -238,7 +238,7 @@ export default function PresentationEntryView() {
             >
               <HomeWordgenieInput
                 showSettings
-                excludeSettings={['tone', 'density']}
+                excludeSettings={['tone', 'density', 'language']}
                 placeholder="What should your presentation be about?"
                 selectedMode={{ label: 'Presentation', icon: <PresentationChipIcon />, onRemove: () => router.push('/') }}
                 onSubmit={handleSubmit}

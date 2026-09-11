@@ -18,6 +18,13 @@ import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { FilmstripItem } from './FilmstripItem';
 import { ns, DuplicateIcon, TrashIcon, AISparkleIcon } from './presentationIcons';
 
+// Vertical gap between bullet points (not line-height, which only affects wrapping within one
+// bullet). '2.5%' was the old hardcoded value — kept as 'standard' so existing slides look
+// unchanged until someone picks a different spacing.
+const POINT_SPACING_GAP: Record<'compact' | 'standard' | 'relaxed', string> = {
+  compact: '1.2%', standard: '2.5%', relaxed: '4.5%',
+};
+
 const ZOOM_OPTIONS = [33, 50, 75, 90, 100, 125, 150, 175, 200];
 const ZOOM_MIN = 25;
 const ZOOM_MAX = 250;
@@ -580,6 +587,20 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
   const contentFontSize = slide.contentFontSize ? `${slide.contentFontSize}px` : 'clamp(10px,1.3vw,14px)';
   const ps: React.CSSProperties = { ...ns, fontFamily: contentFamily, fontSize: contentFontSize, fontWeight: slide.contentFontWeight ?? 400, color: textColor, opacity: 0.85, lineHeight: 1.5, outline: 'none', flex: 1, ...(contentTA ? { textAlign: contentTA } : {}) };
 
+  // Inline "hug" highlight — a span sized to the text itself, not the block it sits in, so it
+  // doesn't fight flex:1/text-align on the title or bullet paragraph that wraps it. Split by
+  // block (title vs content), matching titleFontFamily/contentFontFamily's precedent, so it
+  // actually respects whichever block the right panel's "Text — Title/Content" header says is
+  // focused, rather than recoloring the whole slide at once. Standard (non-fig-) title and
+  // bullet rendering only; fig- (Ascend/Aurora) slides are out of scope for now, same as the
+  // Spacing control above.
+  const hl = (text: string, block: 'title' | 'content'): React.ReactNode => {
+    const bg = block === 'title' ? slide.titleBgColor : slide.contentBgColor;
+    return bg
+      ? <span style={{ background: bg, padding: '1px 6px', borderRadius: 4, boxDecorationBreak: 'clone', WebkitBoxDecorationBreak: 'clone' } as React.CSSProperties}>{text}</span>
+      : text;
+  };
+
   const slideListStyle = slide.listStyle ?? 'bullet';
 
   const rule = (w = 36) => <div style={{ width: w, height: 3, borderRadius: 2, background: theme.accentColor, flexShrink: 0 }}/>;
@@ -593,7 +614,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
   const contentPh = editable && slide.points.length === 0;
 
   const bullets = (pts: string[], off = 0) => (
-    <div className="flex flex-col" style={{ gap: '2.5%' }}>
+    <div className="flex flex-col" style={{ gap: POINT_SPACING_GAP[slide.pointSpacing ?? 'standard'] }}>
       {pts.map((pt, i) => {
         const globalIdx = off + i;
         const isRewiring = aiRewritingPointIndex === globalIdx;
@@ -605,7 +626,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         return (
           <div key={i} className="group/pt flex items-start" style={{ gap: marker ? 6 : 0 }}>
             {marker}
-            <p {...ep(v => onPointChange?.(globalIdx, v))} style={{ ...ps, flex: 1, opacity: isRewiring ? 0.4 : undefined, transition: 'opacity 0.2s' }}>{pt}</p>
+            <p {...ep(v => onPointChange?.(globalIdx, v))} style={{ ...ps, flex: 1, opacity: isRewiring ? 0.4 : undefined, transition: 'opacity 0.2s' }}>{hl(pt, 'content')}</p>
             {editable && onAiRewritePoint && (
               <button
                 onClick={e => { e.stopPropagation(); onAiRewritePoint(globalIdx); }}
@@ -753,16 +774,16 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
 
   if (layout === 'centered') return (
     <div className="w-full h-full flex flex-col items-center text-center" style={{ padding: '8% 10%', justifyContent: alignJustify }}>
-      {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ textAlign: 'center', ...ts('clamp(22px,4vw,40px)') }}>{slide.title}</h2>)}
+      {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ textAlign: 'center', ...ts('clamp(22px,4vw,40px)') }}>{hl(slide.title, 'title')}</h2>)}
       <div style={{ width: 48, height: 4, borderRadius: 2, background: theme.accentColor, margin: '14px auto' }}/>
-      {slide.type !== 'headline' && wrapC(<div className="flex flex-col" style={{ gap: 4 }}>{slide.points.map((pt, i) => <p key={i} {...ep(v => onPointChange?.(i, v))} style={{ textAlign: 'center', ...ps, marginTop: 4 }}>{pt}</p>)}</div>)}
+      {slide.type !== 'headline' && wrapC(<div className="flex flex-col" style={{ gap: 4 }}>{slide.points.map((pt, i) => <p key={i} {...ep(v => onPointChange?.(i, v))} style={{ textAlign: 'center', ...ps, marginTop: 4 }}>{hl(pt, 'content')}</p>)}</div>)}
     </div>
   );
 
   if (layout === 'image-right') return (
     <div className="w-full h-full flex">
       <div className="flex flex-col" style={{ flex: '0 0 55%', padding: '7% 5% 7% 7%', justifyContent: alignJustify }}>
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={ts('clamp(15px,2.2vw,24px)')}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={ts('clamp(15px,2.2vw,24px)')}>{hl(slide.title, 'title')}</h2>)}
         <div style={{ margin: '4% 0 5%' }}>{rule()}</div>
         {wrapC(bullets(slide.points))}
       </div>
@@ -778,7 +799,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         <ImageZone imageUrl={slide.imageUrl} editable={editable} onImageClick={onImageClick}/>
       </div>
       <div className="flex flex-col" style={{ flex: 1, padding: '7% 7% 7% 5%', justifyContent: alignJustify }}>
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={ts('clamp(15px,2.2vw,24px)')}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={ts('clamp(15px,2.2vw,24px)')}>{hl(slide.title, 'title')}</h2>)}
         <div style={{ margin: '4% 0 5%' }}>{rule()}</div>
         {wrapC(bullets(slide.points))}
       </div>
@@ -789,7 +810,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
     const half = Math.ceil(slide.points.length / 2);
     return (
       <div className="w-full h-full flex flex-col" style={{ padding: '6% 7%', justifyContent: alignJustify }}>
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={ts('clamp(15px,2.2vw,24px)')}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={ts('clamp(15px,2.2vw,24px)')}>{hl(slide.title, 'title')}</h2>)}
         <div style={{ margin: '3% 0 4%' }}>{rule()}</div>
         {wrapC(
           <div className="flex flex-1 min-h-0" style={{ gap: '4%' }}>
@@ -803,7 +824,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
 
   if (layout === 'big-title') return (
     <div className="w-full h-full flex flex-col items-center justify-center text-center" style={{ padding: '10% 12%' }}>
-      {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ textAlign: 'center', ...ts('clamp(28px,5.5vw,56px)') }}>{slide.title}</h2>)}
+      {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ textAlign: 'center', ...ts('clamp(28px,5.5vw,56px)') }}>{hl(slide.title, 'title')}</h2>)}
       {slide.type !== 'headline' && slide.points[0] && wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ textAlign: 'center', ...ps, marginTop: '5%', fontSize: slide.contentFontSize ? `${slide.contentFontSize}px` : 'clamp(12px,1.8vw,18px)', opacity: 0.6 }}>{slide.points[0]}</p>)}
     </div>
   );
@@ -811,7 +832,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
   if (layout === 'split') return (
     <div className="w-full h-full flex">
       <div className="flex flex-col justify-center flex-shrink-0" style={{ width: slide.type === 'headline' ? '100%' : '38%', background: theme.accentColor, padding: '8% 6%' }}>
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...ts('clamp(13px,2vw,22px)'), color: '#fff', lineHeight: 1.25 }}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...ts('clamp(13px,2vw,22px)'), color: '#fff', lineHeight: 1.25 }}>{hl(slide.title, 'title')}</h2>)}
         <div style={{ width: 28, height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.5)', marginTop: '8%' }}/>
       </div>
       {slide.type !== 'headline' && <div className="flex flex-col justify-center flex-1" style={{ padding: '7% 7% 7% 6%' }}>{wrapC(bullets(slide.points))}</div>}
@@ -820,7 +841,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
 
   if (layout === 'minimal') return (
     <div className="w-full h-full flex flex-col items-center justify-center text-center" style={{ padding: '12% 16%' }}>
-      {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ textAlign: 'center', ...ts('clamp(18px,3vw,32px)', 600) }}>{slide.title}</h2>)}
+      {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ textAlign: 'center', ...ts('clamp(18px,3vw,32px)', 600) }}>{hl(slide.title, 'title')}</h2>)}
       <div style={{ width: 32, height: 2, borderRadius: 2, background: theme.accentColor, margin: '6% auto' }}/>
       {slide.type !== 'headline' && slide.points[0] && wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ textAlign: 'center', ...ps, opacity: 0.55 }}>{slide.points[0]}</p>)}
     </div>
@@ -866,7 +887,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         {circles}
         <div className="relative w-full h-full flex flex-col" style={{ padding: centered ? '8% 12%' : '10% 8% 10% 9%', justifyContent: centered ? 'center' : 'flex-end', alignItems: centered ? 'center' : 'flex-start', gap: 10 }}>
           {figEyebrow('PRESENTATION', centered ? 'center' : 'left')}
-          {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(28px,5.6vw,60px)'), textAlign: centered ? 'center' : 'left', marginTop: 6 }}>{slide.title}</h2>)}
+          {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(28px,5.6vw,60px)'), textAlign: centered ? 'center' : 'left', marginTop: 6 }}>{hl(slide.title, 'title')}</h2>)}
           {wrapC(
             <div className="flex flex-col" style={{ gap: 8, alignItems: centered ? 'center' : 'flex-start' }}>
               {(slide.points[0] || editable) && <p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.7vw,18px)'), textAlign: centered ? 'center' : 'left', opacity: 0.7, maxWidth: 620 }}>{slide.points[0]}</p>}
@@ -893,7 +914,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         {v === '3' && <div style={{ position: 'absolute', right: '4%', top: '50%', transform: 'translateY(-50%)' }}>{figGhostNum(1, 'clamp(80px,14vw,180px)')}</div>}
         {centered && figRule(48, 3, { margin: '0 auto' })}
         {wrapC(figEyebrow(slide.points[0] || 'SECTION 01', centered ? 'center' : 'left'))}
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(28px,5.6vw,60px)'), textAlign: centered ? 'center' : 'left', maxWidth: v === '3' ? '62%' : undefined }}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(28px,5.6vw,60px)'), textAlign: centered ? 'center' : 'left', maxWidth: v === '3' ? '62%' : undefined }}>{hl(slide.title, 'title')}</h2>)}
       </div>
     );
   }
@@ -913,7 +934,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         {v === '1' && <span style={figGradientTextStyle({ position: 'absolute', top: '4%', left: centered ? '8%' : '9%', fontFamily: figTitleFont, fontWeight: 800, fontSize: 'clamp(80px,14vw,180px)', color: withAlpha(theme.accentColor, 0.10), lineHeight: 1 })}>&ldquo;</span>}
         {v === '3' && figRule(48, 3, { margin: centered ? '0 auto' : undefined })}
         {figEyebrow('QUOTE', centered ? 'center' : 'left')}
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.6vw,40px)'), textAlign: centered ? 'center' : 'left', maxWidth: 900 }}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.6vw,40px)'), textAlign: centered ? 'center' : 'left', maxWidth: 900 }}>{hl(slide.title, 'title')}</h2>)}
         {v === '3' && figRule(48, 3, { margin: centered ? '0 auto' : undefined })}
         {wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.6vw,16px)'), textAlign: centered ? 'center' : 'left', opacity: 0.55 }}>{slide.points[0]}</p>)}
       </div>
@@ -929,7 +950,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         {theme.accentGradient && figGlowBlob({ bottom: -200, right: -140, width: 460, height: 460, opacity: 0.24 })}
         {figEyebrow('THANK YOU', align === 'center' ? 'center' : (v === '3' ? 'left' : 'left'))}
         {figRule(48, 3, { margin: align === 'center' ? '0 auto' : undefined })}
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(28px,5.6vw,60px)'), textAlign: align === 'center' ? 'center' : (v === '3' ? 'right' : 'left') }}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(28px,5.6vw,60px)'), textAlign: align === 'center' ? 'center' : (v === '3' ? 'right' : 'left') }}>{hl(slide.title, 'title')}</h2>)}
         {wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.5vw,15px)'), textAlign: align === 'center' ? 'center' : (v === '3' ? 'right' : 'left'), opacity: 0.55 }}>{slide.points[0]}</p>)}
       </div>
     );
@@ -942,7 +963,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
       return (
         <div className="w-full h-full flex" style={{ padding: '8% 7%', gap: '6%' }}>
           <div className="flex flex-col flex-shrink-0" style={{ width: '38%', justifyContent: 'center' }}>
-            {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(20px,3.4vw,32px)')}>{slide.title}</h2>)}
+            {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(20px,3.4vw,32px)')}>{hl(slide.title, 'title')}</h2>)}
           </div>
           <div className="flex-1" style={{ overflow: 'hidden' }}>
             {wrapC(<div className="flex flex-col" style={{ gap: '6%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ruleAbove: true }))}</div>)}
@@ -952,7 +973,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
     }
     return (
       <div className="w-full h-full flex flex-col" style={{ padding: '7% 8%' }}>
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{hl(slide.title, 'title')}</h2>)}
         {wrapC(
           v === '2' ? (
             <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', columnGap: '6%', rowGap: '5%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ghost: true }))}</div>
@@ -971,7 +992,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
     const stacked = v === '3';
     return (
       <div className="w-full h-full flex flex-col" style={{ padding: '7% 8%' }}>
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{hl(slide.title, 'title')}</h2>)}
         {wrapC(
           stacked ? (
             <div className="flex flex-col" style={{ gap: '6%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ruleAbove: true }))}</div>
@@ -990,7 +1011,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
       return (
         <div className="w-full h-full flex" style={{ padding: '8% 7%', gap: '6%' }}>
           <div className="flex flex-col flex-shrink-0" style={{ width: '38%', justifyContent: 'center' }}>
-            {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(20px,3.4vw,32px)')}>{slide.title}</h2>)}
+            {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(20px,3.4vw,32px)')}>{hl(slide.title, 'title')}</h2>)}
           </div>
           <div className="flex-1" style={{ overflow: 'hidden' }}>
             {wrapC(<div className="grid" style={{ gridTemplateColumns: '1fr 1fr', columnGap: '6%', rowGap: '6%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ruleAbove: true }))}</div>)}
@@ -1000,7 +1021,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
     }
     return (
       <div className="w-full h-full flex flex-col" style={{ padding: '7% 8%' }}>
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{hl(slide.title, 'title')}</h2>)}
         {wrapC(<div className="grid" style={{ gridTemplateColumns: '1fr 1fr', columnGap: '6%', rowGap: '5%' }}>{slide.points.map((pt, i) => figItem(pt, i, { ghost: v === '2' }))}</div>)}
       </div>
     );
@@ -1012,7 +1033,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
     const textBlock = (
       <div className="flex flex-col" style={{ gap: 10, justifyContent: 'center' }}>
         {figEyebrow('PRESENTATION')}
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(22px,4vw,42px)')}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(22px,4vw,42px)')}>{hl(slide.title, 'title')}</h2>)}
         {wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.5vw,15px)'), opacity: 0.75 }}>{slide.points[0]}</p>)}
       </div>
     );
@@ -1042,7 +1063,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
     const textBlock = (
       <div className="flex flex-col" style={{ gap: 10, justifyContent: 'center' }}>
         {figEyebrow('PRESENTATION')}
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(22px,4vw,42px)')}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={figTitleStyle('clamp(22px,4vw,42px)')}>{hl(slide.title, 'title')}</h2>)}
         {wrapC(<p {...ep(v => onPointChange?.(0, v))} style={{ ...figBodyStyle('clamp(11px,1.5vw,15px)'), opacity: 0.75 }}>{slide.points[0]}</p>)}
       </div>
     );
@@ -1080,7 +1101,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
         <div className="absolute inset-0" style={{ background: scrim, pointerEvents: 'none' }}/>
         <div className="relative flex flex-col" style={{ gap: 12 }}>
           {theme.accentGradient && figEyebrow('FEATURE')}
-          {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(26px,5vw,52px)'), color: '#fff' }}>{slide.title}</h2>)}
+          {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(26px,5vw,52px)'), color: '#fff' }}>{hl(slide.title, 'title')}</h2>)}
         </div>
       </div>
     );
@@ -1128,7 +1149,7 @@ function SlideContent({ slide, theme, editable, onTitleChange, onPointChange, on
     );
     return (
       <div className="w-full h-full flex flex-col" style={{ padding: '7% 8%' }}>
-        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{slide.title}</h2>)}
+        {wrapTA(<h2 {...ep(v => onTitleChange?.(v))} style={{ ...figTitleStyle('clamp(20px,3.4vw,32px)'), marginBottom: '4%' }}>{hl(slide.title, 'title')}</h2>)}
         {wrapC(panels)}
       </div>
     );
@@ -1719,6 +1740,13 @@ const TEXT_COLORS = [
   '#5326BD', '#E54B4B', '#29A341', '#F4C430',
 ] as const;
 
+// Soft/pastel by default (unlike TEXT_COLORS) so default dark text stays legible without also
+// needing to flip textColorOverride — a highlight only wraps part of the text, so there's no
+// single safe "invert" the way the slide Background swatches do for the whole slide.
+const HIGHLIGHT_COLORS = [
+  '#FEF3C7', '#D1FAE5', '#DBEAFE', '#FCE7F3', '#EDE9FE',
+] as const;
+
 const ALIGN_OPTS: { value: 'left' | 'center' | 'right' | 'justify'; icon: React.ReactNode; title: string }[] = [
   { value: 'left',    title: 'Align left',    icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><line x1="3" y1="18" x2="17" y2="18"/></svg> },
   { value: 'center',  title: 'Align center',  icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="5" y1="18" x2="19" y2="18"/></svg> },
@@ -1730,6 +1758,12 @@ const LIST_OPTS: { value: 'none' | 'bullet' | 'numbered'; label: string; icon: R
   { value: 'none',     label: 'None',     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="16" x2="20" y2="16"/></svg> },
   { value: 'bullet',   label: 'Bullet',   icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="4" cy="8" r="1.5" fill="currentColor" stroke="none"/><line x1="8" y1="8" x2="20" y2="8"/><circle cx="4" cy="12" r="1.5" fill="currentColor" stroke="none"/><line x1="8" y1="12" x2="20" y2="12"/><circle cx="4" cy="16" r="1.5" fill="currentColor" stroke="none"/><line x1="8" y1="16" x2="20" y2="16"/></svg> },
   { value: 'numbered', label: 'Numbered', icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><text x="1" y="9" style={{ fontSize: 8, fontWeight: 700, fill: 'currentColor', stroke: 'none', fontFamily: 'sans-serif' }}>1.</text><text x="1" y="14" style={{ fontSize: 8, fontWeight: 700, fill: 'currentColor', stroke: 'none', fontFamily: 'sans-serif' }}>2.</text><text x="1" y="19" style={{ fontSize: 8, fontWeight: 700, fill: 'currentColor', stroke: 'none', fontFamily: 'sans-serif' }}>3.</text><line x1="10" y1="8" x2="20" y2="8"/><line x1="10" y1="13" x2="20" y2="13"/><line x1="10" y1="18" x2="20" y2="18"/></svg> },
+];
+
+const SPACING_OPTS: { value: 'compact' | 'standard' | 'relaxed'; label: string; icon: React.ReactNode }[] = [
+  { value: 'compact',  label: 'Compact',  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="16" x2="20" y2="16"/></svg> },
+  { value: 'standard', label: 'Standard', icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg> },
+  { value: 'relaxed',  label: 'Relaxed',  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="4" y1="3" x2="20" y2="3"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="21" x2="20" y2="21"/></svg> },
 ];
 
 const barChevron = <svg width="8" height="5" viewBox="0 0 8 5" fill="none"><path d="M1 1l3 3 3-3" stroke="#8C97A8" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
@@ -2027,10 +2061,9 @@ function PhotoFormatBar({ photo, isIcon, onColorChange, onSetBackground, onResiz
   );
 }
 
-function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode, focusedBlock, onFontSizeChange, onFontFamilyChange, onFontWeightChange, onTextColorChange, onListStyleChange, onTextAlignChange, onThemeChange, onBgColorChange, onBgImageChange, onBgToSlidePhoto, onContentAlignChange, selectedPhotoId, onPhotoColorChange, onPhotoSetBackground, onPhotoResize, onTransitionChange, onApplyTransitionToAll, transitionAppliedToAll }: {
+function RightPanel({ slide, theme, onTypeChange, rightPanelMode, focusedBlock, onFontSizeChange, onFontFamilyChange, onFontWeightChange, onTextColorChange, onTextBgColorChange, onListStyleChange, onSpacingChange, onTextAlignChange, onThemeChange, onBgColorChange, onBgImageChange, onBgToSlidePhoto, onContentAlignChange, selectedPhotoId, onPhotoColorChange, onPhotoSetBackground, onPhotoResize, onTransitionChange, onApplyTransitionToAll, transitionAppliedToAll }: {
   slide: PresentationSlide | null;
   theme: MockTheme;
-  onLayoutChange: (l: SlideLayout) => void;
   onTypeChange: (t: SlideType) => void;
   rightPanelMode: 'slide' | 'text';
   focusedBlock: 'title' | 'content' | null;
@@ -2038,7 +2071,9 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
   onFontFamilyChange: (family: string) => void;
   onFontWeightChange: (weight: number) => void;
   onTextColorChange: (color: string) => void;
+  onTextBgColorChange: (color: string | undefined) => void;
   onListStyleChange: (style: 'bullet' | 'numbered' | 'none') => void;
+  onSpacingChange: (spacing: 'compact' | 'standard' | 'relaxed') => void;
   onTextAlignChange: (align: 'left' | 'center' | 'right' | 'justify') => void;
   onThemeChange: (id: string) => void;
   onBgColorChange: (color: string | undefined) => void;
@@ -2055,7 +2090,6 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
 }) {
   const [photoLockAspect, setPhotoLockAspect] = useState(true);
   const selectedPhoto = slide?.slidePhotos?.find(p => p.id === selectedPhotoId) ?? null;
-  const currentLayout: SlideLayout = slide?.layout ?? (slide?.type === 'headline' ? 'centered' : 'standard');
   const curTransitionType = slide?.transitionType ?? 'fade';
   const curTransitionMs = slide?.transitionMs ?? 600;
 
@@ -2063,7 +2097,9 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
   const curFamily = focusedBlock === 'title' ? (slide?.titleFontFamily ?? "'Nunito Sans', sans-serif") : (slide?.contentFontFamily ?? "'Nunito Sans', sans-serif");
   const curWeight = focusedBlock === 'title' ? (slide?.titleFontWeight ?? 700) : (slide?.contentFontWeight ?? 400);
   const curColor  = slide?.textColorOverride ?? theme.titleColor;
+  const curBgColor = focusedBlock === 'title' ? slide?.titleBgColor : slide?.contentBgColor;
   const curList: 'none' | 'bullet' | 'numbered' = slide?.listStyle ?? 'bullet';
+  const curSpacing: 'compact' | 'standard' | 'relaxed' = slide?.pointSpacing ?? 'standard';
   const curAlign  = (focusedBlock === 'title' ? slide?.titleTextAlign : slide?.contentTextAlign) ?? 'left';
 
   const section = (label: string, children: React.ReactNode) => (
@@ -2077,16 +2113,6 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
     <p style={{ ...ns, fontSize: 9.5, fontWeight: 700, color: '#A8B3C4', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8 }}>{text}</p>
   );
 
-
-  // Every slide, headline or content, picks from the same 3 layouts — matches the
-  // Ascend template families below, which are likewise always scoped to 3 siblings.
-  const universalLayouts: SlideLayout[] = ['centered', 'big-title', 'minimal'];
-  // Ascend template layouts (fig-<family>-<1|2|3>) are scoped to their own 3 sibling variants,
-  // rather than mixed into the generic layout list above.
-  const curFigFamily = figFamilyOf(currentLayout);
-  const visibleLayouts = curFigFamily
-    ? LAYOUTS.filter(l => figFamilyOf(l.id) === curFigFamily)
-    : LAYOUTS.filter(l => universalLayouts.includes(l.id));
 
   return (
     <div className="flex-shrink-0 h-full overflow-y-auto border-l border-border-light bg-white" style={{ width: RIGHT_PANEL_W, overflowX: 'hidden' }}>
@@ -2176,8 +2202,39 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
             </div>
           </div>
 
+          {/* Highlight — a colored block hugging the text itself, not the font color */}
+          <div style={{ padding: '12px 14px', borderBottom: '1px solid #F2F3F7' }}>
+            {miniLabel('Highlight')}
+            <div className="flex items-center" style={{ gap: 5 }}>
+              <Tooltip label="None" position="top">
+                <button
+                  onMouseDown={e => { e.preventDefault(); onTextBgColorChange(undefined); }}
+                  className="cursor-pointer flex-shrink-0"
+                  style={{ width: 22, height: 22, borderRadius: '50%', background: '#fff', border: 'none', padding: 0, position: 'relative', overflow: 'hidden', boxShadow: !curBgColor ? '0 0 0 2px #fff, 0 0 0 3.5px #006EFE' : '0 0 0 1px rgba(0,0,0,0.12)' }}
+                >
+                  <svg width="22" height="22" viewBox="0 0 22 22" style={{ position: 'absolute', top: 0, left: 0 }}><line x1="4" y1="18" x2="18" y2="4" stroke="#E54B4B" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                </button>
+              </Tooltip>
+              {HIGHLIGHT_COLORS.map(hex => {
+                const active = curBgColor === hex;
+                return (
+                  <button key={hex}
+                    onMouseDown={e => { e.preventDefault(); onTextBgColorChange(hex); }}
+                    className="cursor-pointer flex-shrink-0"
+                    style={{ width: 22, height: 22, borderRadius: '50%', background: hex, border: 'none', padding: 0, boxShadow: active ? '0 0 0 2px #fff, 0 0 0 3.5px #006EFE' : '0 0 0 1px rgba(0,0,0,0.12)' }}
+                  />
+                );
+              })}
+              <label className="cursor-pointer flex-shrink-0 flex items-center justify-center" title="Custom colour"
+                style={{ width: 22, height: 22, borderRadius: '50%', border: '1px dashed #C8CDD8', background: '#F7F8FA', position: 'relative', overflow: 'hidden' }}>
+                <svg width="11" height="11" viewBox="0 0 640 640" fill="#8E99AB" style={{ pointerEvents: 'none' }}><path d={paintBucketPath}/></svg>
+                <input type="color" value={curBgColor?.startsWith('#') ? curBgColor : '#FEF3C7'} onChange={e => onTextBgColorChange(e.target.value)} className="absolute opacity-0 cursor-pointer" style={{ width: '100%', height: '100%', top: 0, left: 0 }}/>
+              </label>
+            </div>
+          </div>
+
           {/* List */}
-          <div style={{ padding: '12px 14px' }}>
+          <div style={{ padding: '12px 14px', borderBottom: '1px solid #F2F3F7' }}>
             {miniLabel('List')}
             <div style={{ display: 'flex', gap: 5 }}>
               {LIST_OPTS.map(o => {
@@ -2185,6 +2242,26 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
                 return (
                   <button key={o.value}
                     onMouseDown={e => { e.preventDefault(); onListStyleChange(o.value); }}
+                    className="flex-1 flex flex-col items-center justify-center cursor-pointer"
+                    style={{ height: 46, borderRadius: 7, border: '1px solid ' + (active ? '#006EFE' : '#E6E8EF'), background: active ? '#006EFE' : '#F7F8FA', gap: 3, color: active ? '#fff' : '#52637A' }}>
+                    {o.icon}
+                    <span style={{ ...ns, fontSize: 10, fontWeight: active ? 600 : 500 }}>{o.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Spacing — vertical gap between bullets, not line-height (which only affects
+              wrapping within one bullet) */}
+          <div style={{ padding: '12px 14px' }}>
+            {miniLabel('Spacing')}
+            <div style={{ display: 'flex', gap: 5 }}>
+              {SPACING_OPTS.map(o => {
+                const active = curSpacing === o.value;
+                return (
+                  <button key={o.value}
+                    onMouseDown={e => { e.preventDefault(); onSpacingChange(o.value); }}
                     className="flex-1 flex flex-col items-center justify-center cursor-pointer"
                     style={{ height: 46, borderRadius: 7, border: '1px solid ' + (active ? '#006EFE' : '#E6E8EF'), background: active ? '#006EFE' : '#F7F8FA', gap: 3, color: active ? '#fff' : '#52637A' }}>
                     {o.icon}
@@ -2257,23 +2334,6 @@ function RightPanel({ slide, theme, onLayoutChange, onTypeChange, rightPanelMode
               </div>
             );
           })()}
-          {!selectedPhoto && section('Layout', (
-            <div className="grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: 7 }}>
-              {visibleLayouts.map(l => {
-                const isSel = l.id === currentLayout;
-                return (
-                  <div key={l.id} className="flex flex-col" style={{ gap: 5 }}>
-                    <button onClick={() => onLayoutChange(l.id)} className="flex flex-col items-start cursor-pointer" style={{ borderRadius: 7, border: isSel ? '1.5px solid #006EFE' : '1.5px solid #E3E6EC', background: isSel ? '#EFF6FF' : '#fff', padding: 4, overflow: 'hidden' }}>
-                      <div className="w-full overflow-hidden" style={{ borderRadius: 4, background: '#fff' }}>
-                        {slide ? <SlideThumbnail slide={{ ...slide, layout: l.id }} theme={theme} rounded={false}/> : <LayoutThumbSVG layout={l.id}/>}
-                      </div>
-                    </button>
-                    <span style={{ ...ns, fontSize: 10.5, fontWeight: isSel ? 600 : 500, color: isSel ? '#006EFE' : '#52637A' }}>{l.name}</span>
-                  </div>
-                );
-              })}
-            </div>
-          ))}
           {!selectedPhoto && section('Background', (
             <div className="flex flex-col" style={{ gap: 8 }}>
               <div className="flex items-center" style={{ gap: 6 }}>
@@ -3167,7 +3227,19 @@ export function PresentationEditorView() {
   const isBlankSlide = (s: PresentationSlide) =>
     s.title === 'New slide' || (s.title === '' && s.points.length === 0) || (s.points.length > 0 && s.points.every(p => p === 'Add a point…'));
 
-  const handleAddTemplateSlides = (mode: 'add' | 'replace' = 'add') => {
+  // Restyle only — pure MockTheme fields (bg/titleColor/accentColor/accentGradient/figTitleFont),
+  // no slide content touched. Mirrors how SelectThemeView picks a theme at generation time: set
+  // the id, let existing slides (which carry no per-slide color/font overrides unless the user
+  // set one) resolve their look from it. handleAddTemplateSlides below stays the separate,
+  // content-changing action — this only ever calls setSelectedThemeId.
+  const handleApplyTemplateStyle = () => {
+    const tmpl = MOCK_THEMES.find(t => t.id === templateDetailId);
+    if (!tmpl) return;
+    setSelectedThemeId(tmpl.id);
+    setLeftPanel('slides');
+  };
+
+  const handleAddTemplateSlides = () => {
     const tmpl = MOCK_THEMES.find(t => t.id === templateDetailId);
     if (!tmpl) return;
     // Full spread — a slide's look (bg/photo/fonts/alignment) lives in these fields, not just
@@ -3180,17 +3252,13 @@ export function PresentationEditorView() {
         id: `${s.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         points: [...s.points],
       } as PresentationSlide));
-    if (mode === 'replace') {
-      setSlides(toAdd);
-    } else {
-      setSlides(prev => {
-        const idx = prev.findIndex(s => s.id === activeSlideId);
-        const insertAt = idx >= 0 ? idx + 1 : prev.length;
-        const next = [...prev];
-        next.splice(insertAt, 0, ...toAdd);
-        return next;
-      });
-    }
+    setSlides(prev => {
+      const idx = prev.findIndex(s => s.id === activeSlideId);
+      const insertAt = idx >= 0 ? idx + 1 : prev.length;
+      const next = [...prev];
+      next.splice(insertAt, 0, ...toAdd);
+      return next;
+    });
     setActiveSlideId(toAdd[0].id);
     setLeftPanel('slides');
   };
@@ -3696,16 +3764,18 @@ export function PresentationEditorView() {
                           })}
                         </div>
                       </div>
-                      <div className="flex-shrink-0 flex flex-col items-center" style={{ padding: '12px 16px', borderTop: '1px solid #F0F2F5', gap: 8 }}>
-                        <button onClick={() => handleAddTemplateSlides('add')} className="w-full cursor-pointer" style={{ height: 38, borderRadius: 8, border: 'none', background: '#006EFE', ...ns, fontSize: 13, fontWeight: 600, color: '#fff', cursor: 'pointer', transition: 'background 0.15s' }}>
-                          {checkedSlideIds.length === 0 || checkedSlideIds.length === tmpl.slides.length
-                            ? 'Add all to deck'
-                            : `Add ${checkedSlideIds.length} slide${checkedSlideIds.length !== 1 ? 's' : ''} to deck`}
+                      <div className="flex-shrink-0 flex flex-col" style={{ padding: '12px 16px', borderTop: '1px solid #F0F2F5', gap: 8 }}>
+                        <button onClick={handleApplyTemplateStyle} className="w-full flex items-center justify-center cursor-pointer" style={{ height: 38, borderRadius: 8, border: 'none', background: '#006EFE', ...ns, fontSize: 13, fontWeight: 600, color: '#fff', cursor: 'pointer', gap: 6, transition: 'background 0.15s' }}
+                          onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
+                          Apply style
                         </button>
-                        <button onClick={() => handleAddTemplateSlides('replace')} className="w-full cursor-pointer" style={{ height: 38, borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 600, color: '#52637A', cursor: 'pointer', transition: 'border-color 0.15s, background 0.15s' }}
+                        <button onClick={handleAddTemplateSlides} className="w-full flex items-center justify-center cursor-pointer" style={{ height: 38, borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', ...ns, fontSize: 13, fontWeight: 600, color: '#3B4453', cursor: 'pointer', gap: 6, transition: 'border-color 0.15s, background 0.15s' }}
                           onMouseEnter={e => { e.currentTarget.style.borderColor = '#C8CDD9'; e.currentTarget.style.background = '#F7F8FA'; }}
                           onMouseLeave={e => { e.currentTarget.style.borderColor = '#E0E5EB'; e.currentTarget.style.background = '#fff'; }}>
-                          Replace all slides instead
+                          {checkedSlideIds.length === 0 || checkedSlideIds.length === tmpl.slides.length
+                            ? 'Add all slides to deck'
+                            : `Add ${checkedSlideIds.length} slide${checkedSlideIds.length !== 1 ? 's' : ''} to deck`}
                         </button>
                       </div>
                     </>
@@ -4206,7 +4276,6 @@ export function PresentationEditorView() {
         <RightPanel
           slide={activeSlide}
           theme={theme}
-          onLayoutChange={l => activeSlide && updateLayout(activeSlide.id, l)}
           onTypeChange={t => {
             if (!activeSlide) return;
             const noPoints = !activeSlide.points || activeSlide.points.length === 0;
@@ -4240,7 +4309,9 @@ export function PresentationEditorView() {
           onFontFamilyChange={family => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, focusedBlock === 'title' ? { titleFontFamily: family } : { contentFontFamily: family }); }}
           onFontWeightChange={weight => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, focusedBlock === 'title' ? { titleFontWeight: weight } : { contentFontWeight: weight }); }}
           onTextColorChange={color => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, { textColorOverride: color }); }}
+          onTextBgColorChange={color => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, focusedBlock === 'title' ? { titleBgColor: color } : { contentBgColor: color }); }}
           onListStyleChange={style => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, { listStyle: style }); }}
+          onSpacingChange={spacing => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, { pointSpacing: spacing }); }}
           onTextAlignChange={align => { if (!activeSlide) return; updateSlidePartial(activeSlide.id, focusedBlock === 'title' ? { titleTextAlign: align } : { contentTextAlign: align }); }}
           onThemeChange={setSelectedThemeId}
           onBgColorChange={color => {

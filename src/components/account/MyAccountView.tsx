@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useFlowStore, manuscriptLimitFor, combinedGenerationsUsed, allowanceResetLabel } from '@/stores/flowStore';
 import { createPortal } from 'react-dom';
 import { Tooltip } from '@/components/ui/Tooltip';
+import { AISparkleIcon } from '@/components/presentation/presentationIcons';
 
 type Tab = 'profile' | 'password' | 'preferences' | 'billing';
 
@@ -2223,35 +2224,39 @@ function BillingTab() {
             </button>
           }
         />
-        <div style={{ padding: '20px 24px 24px' }}>
-          <div style={{ background: 'linear-gradient(135deg, #F0F6FF 0%, #EEF2FF 100%)', border: '1px solid #CCE2FF', borderRadius: 12, padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div className="flex items-center" style={{ gap: 12 }}>
-              <div>
-                {/* No tier icon here either, for the same reason it's gone from the upgrade
-                    grid and comparison table: it told a reader nothing the name didn't already. */}
-                <p style={{ ...ns, fontSize: 24, fontWeight: 700, color: '#001633', lineHeight: '32px' }}>{billingPlanData.name}</p>
-                {/* Was "$27 lifetime access · Renews Apr 1, 2026" — a one-time purchase that
-                    renews is a contradiction, and the date was hardcoded to a point already five
-                    months in the past regardless of when this renders. Price and period are the
-                    only facts this card states outright now; when the generation allowance
-                    resets is a live, computed fact and belongs to the Plan usage section below,
-                    which already states it per row rather than once, since Standard and PRO can
-                    fall on different cycles. */}
-                <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#667C98', lineHeight: '18px' }}>{billingPlanData.price} {billingPlanData.period}</p>
-              </div>
-            </div>
+        <div className="flex flex-col" style={{ gap: 20, padding: '20px 24px 24px' }}>
+          {/* No decorative gradient/border box — Plan usage right below states just as
+              important information in a plain layout, and the two stacked cards read as one
+              inconsistent unit when only one of them is dressed up. Same reasoning that already
+              dropped the tier icon: it added weight, not information. Gap to the next group is
+              20px against 8px within the feature list — comfortably over the 2x that keeps
+              "plan identity" and "what's included" reading as two groups, not one run-on list. */}
+          <div>
+            <p style={{ ...ns, fontSize: 24, fontWeight: 700, color: '#001633', lineHeight: '32px' }}>{billingPlanData.name}</p>
+            {/* Was "$27 lifetime access · Renews Apr 1, 2026" — a one-time purchase that
+                renews is a contradiction, and the date was hardcoded to a point already five
+                months in the past regardless of when this renders. Price and period are the
+                only facts this card states outright now; when the generation allowance
+                resets is a live, computed fact and belongs to the Plan usage section below,
+                which already states it per row rather than once, since Standard and PRO can
+                fall on different cycles. */}
+            <p style={{ ...ns, fontSize: 13, fontWeight: 400, color: '#667C98', lineHeight: '18px' }}>{billingPlanData.price} {billingPlanData.period}</p>
+          </div>
+          <div className="flex flex-col" style={{ gap: 10 }}>
+            {/* Names the group before it's read, the same way "Plan usage" names its section —
+                a squint at this card alone should still tell name+price from what's included. */}
+            <p style={{ ...ns, fontSize: 11, fontWeight: 600, color: '#8596AD', letterSpacing: '0.04em', textTransform: 'uppercase', lineHeight: '14px' }}>Includes</p>
             {/* Was a run of wrapped inline chips in brand blue — every entry read as a link,
                 and stacked checklist rows are the shape Apollo, Melio, Fabric and Dribbble all
                 use for "what this plan includes". One item per line, plain text, a quiet grey
-                check rather than blue. */}
-            <div className="flex flex-col" style={{ gap: 8 }}>
-              {billingPlanData.features.map((f) => (
-                <span key={f} className="flex items-center" style={{ gap: 8, ...ns, fontSize: 13.5, color: '#29323D', fontWeight: 400 }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12"/></svg>
-                  {f}
-                </span>
-              ))}
-            </div>
+                check rather than blue. Stroke is 1.5px to match this row's regular (400) text
+                weight — 2.5px was sized for bold text nothing here has. */}
+            {billingPlanData.features.map((f) => (
+              <span key={f} className="flex items-center" style={{ gap: 8, ...ns, fontSize: 13.5, color: '#29323D', fontWeight: 400 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="20 6 9 17 4 12"/></svg>
+                {f}
+              </span>
+            ))}
           </div>
         </div>
       </SectionCard>
@@ -2264,20 +2269,17 @@ function BillingTab() {
           description="What you've used this cycle, and when it resets."
         />
         <div className="flex flex-col px-6 pb-6" style={{ gap: 24, paddingTop: 20 }}>
-          {/* One row, not two. Presentations were shown as their own allowance with their own
-              limit (Standard 5, PRO 10) — but that was never a real separate pool, it's the same
-              generations books draw from; see the note above MANUSCRIPT_LIMITS in flowStore.ts.
-              Stating it as two limits double-counted the total (a Standard customer read "10 +
-              5 = 15" when the true ceiling is 10) and buried the one fact this section exists to
-              be honest about: a presentation and a book cost the same generation. That fact is
-              now stated plainly rather than implied by two numbers that didn't add up. */}
+          {/* One row, not two, and one pool, not a split. Presentations were once shown as their
+              own allowance with their own limit (Standard 5, PRO 10) — but that was never a real
+              separate pool, it's the same generations books draw from; see the note above
+              MANUSCRIPT_LIMITS in flowStore.ts. A book/presentation breakdown on the bar itself
+              said the opposite of that on purpose or not — it read as per-type accounting, which
+              is exactly the thing this section exists to correct. One fill, one number. */}
           {(() => {
             const limit = manuscriptLimitFor(billingPlan);
             const unlimited = !Number.isFinite(limit);
             const used = Math.min(combinedGenerationsUsed({ manuscriptGenerationsUsed: manuscriptsUsed, presentationGenerationsUsed: presentationsUsed }), unlimited ? Infinity : limit);
             const pct = unlimited ? 0 : Math.min(Math.round((used / limit) * 100), 100);
-            const bookPct = unlimited || used === 0 ? 0 : Math.round((manuscriptsUsed / used) * pct);
-            const presentationPct = unlimited ? 0 : Math.max(pct - bookPct, 0);
             const exhausted = !unlimited && used >= limit;
             // Only worth saying while it's still true and still actionable — once someone has
             // already made a presentation, or has no generations left this cycle, the fact no
@@ -2287,8 +2289,10 @@ function BillingTab() {
               <div className="flex flex-col" style={{ gap: 8 }}>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center" style={{ gap: 10 }}>
-                    <div className="flex items-center justify-center flex-shrink-0" style={{ width: 32, height: 32, borderRadius: '50%', background: '#F0F6FF' }}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="#006EFE"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" /></svg>
+                    {/* AISparkleIcon — the official mark, same component as the composer's
+                        lockup and every AI-generate affordance, not a one-off redrawn copy. */}
+                    <div className="flex items-center justify-center flex-shrink-0" style={{ width: 32, height: 32, borderRadius: '50%', background: '#F0F2FF' }}>
+                      <AISparkleIcon size={16} />
                     </div>
                     <div>
                       <p style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#15191F', lineHeight: '18px' }}>Wordgenie generations</p>
@@ -2299,41 +2303,30 @@ function BillingTab() {
                       </p>
                     </div>
                   </div>
-                  <span style={{ ...ns, fontSize: 12, fontWeight: 400, color: exhausted ? '#D62929' : '#8596AD', lineHeight: '16px' }}>
+                  {/* Stays neutral even at zero — running out of an allowance you were already
+                      told about isn't a failure, the same reasoning the 80%/100% composer
+                      checkpoints use. No red anywhere in this row. */}
+                  <span style={{ ...ns, fontSize: 12, fontWeight: 400, color: '#8596AD', lineHeight: '16px' }}>
                     {unlimited ? 'Unlimited' : `${limit - used} remaining`}
                   </span>
                 </div>
                 {/* No bar when there's no ceiling — a progress track with nothing to fill toward
-                    would imply a limit that doesn't exist. */}
+                    would imply a limit that doesn't exist. One fill regardless of source or how
+                    full it is, in Wordgenie's own brand gradient — the same one on the composer's
+                    send button — rather than a flat colour invented just for this bar. */}
                 {!unlimited && (
-                  <div className="flex" style={{ height: 6, borderRadius: 999, background: '#E0E5EB', overflow: 'hidden' }}>
-                    {/* Two fills in one track rather than one — the split is the fact this row
-                        exists to disclose, so it belongs in the bar itself, not only in a legend
-                        underneath it. Books first, then presentations, matching the legend order. */}
-                    {bookPct > 0 && <div style={{ height: '100%', width: `${bookPct}%`, background: exhausted ? 'linear-gradient(90deg, #006EFE, #D62929)' : '#006EFE', transition: 'width 0.4s ease' }} />}
-                    {presentationPct > 0 && <div style={{ height: '100%', width: `${presentationPct}%`, background: '#5326BD', transition: 'width 0.4s ease' }} />}
-                  </div>
-                )}
-                {!unlimited && (manuscriptsUsed > 0 || presentationsUsed > 0) && (
-                  <div className="flex items-center" style={{ gap: 14 }}>
-                    <span className="flex items-center" style={{ gap: 5, ...ns, fontSize: 11.5, color: '#8596AD' }}>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#006EFE', flexShrink: 0 }} />
-                      {manuscriptsUsed} book{manuscriptsUsed === 1 ? '' : 's'}
-                    </span>
-                    <span className="flex items-center" style={{ gap: 5, ...ns, fontSize: 11.5, color: '#8596AD' }}>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#5326BD', flexShrink: 0 }} />
-                      {presentationsUsed} presentation{presentationsUsed === 1 ? '' : 's'}
-                    </span>
+                  <div style={{ height: 6, borderRadius: 999, background: '#E0E5EB', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(259.1deg, #006EFE -2.17%, #5326BD 103.16%)', transition: 'width 0.4s ease' }} />
                   </div>
                 )}
                 {/* What actually happens at zero — stated the same way the old copy did, minus
                     the "on its own allowance, below" pointer, since there's no second row to
-                    point to any more. */}
+                    point to any more, and minus the export-format aside, which belonged to a
+                    different feature (Publish, Issue 12) and had drifted in here by mistake. */}
                 {!unlimited && (
                   <p style={{ ...ns, fontSize: 12, color: '#8596AD', lineHeight: '17px' }}>
                     Wordgenie stops generating once you reach {limit}; everything you&apos;ve already
-                    created stays editable. Every plan can export a presentation as PDF — PRO adds
-                    PowerPoint, PNG, and drops the watermark from shared links.
+                    created stays editable.
                   </p>
                 )}
                 {/* The honest version of the nudge this row used to skip entirely. It says the

@@ -68,6 +68,7 @@ export function SelectThemeView() {
   const setSelectedManuscriptId = usePresentationFlowStore((s) => s.setSelectedManuscriptId);
   const setSelectedSectionIds = usePresentationFlowStore((s) => s.setSelectedSectionIds);
   const generateSlides = usePresentationFlowStore((s) => s.generateSlides);
+  const setSlides = usePresentationFlowStore((s) => s.setSlides);
   const selectedThemeId = usePresentationFlowStore((s) => s.selectedThemeId);
   const setSelectedThemeId = usePresentationFlowStore((s) => s.setSelectedThemeId);
   const [generating, setGenerating] = useState(false);
@@ -83,6 +84,13 @@ export function SelectThemeView() {
   }, []);
 
   const handleGenerate = () => {
+    // The mount effect above always pre-generates a manuscript deck (needed so a real template
+    // choice has content to show), regardless of which card ends up selected. "Blank slide"
+    // means exactly that — one empty slide to start typing into — so it overrides that
+    // pre-generated deck here rather than carrying all of it into the editor.
+    if (selectedThemeId === 'blank') {
+      setSlides([{ id: `blank-${Date.now()}`, title: 'New slide', type: 'content', points: ['Add a point…'], layout: 'standard' }]);
+    }
     setGenerating(true);
     setTimeout(() => router.push('/presentation/editor'), 500);
   };

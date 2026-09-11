@@ -46,11 +46,6 @@ interface FlowActions {
   resetFlow: () => void;
   homeKey: number;
   bumpHomeKey: () => void;
-  // A counter rather than a boolean: WordgenieInput fires the welcome modal off a change to
-  // this value, so clicking the dev trigger twice in a row (e.g. after dismissing) fires again
-  // even though the value would otherwise be the same "true".
-  welcomeIntroTrigger: number;
-  triggerWelcomeIntro: () => void;
   manuscriptGenerationsUsed: number;
   incrementManuscriptGenerations: () => void;
   // Same shared pool as manuscripts, tracked as its own counter only so usage can be reported by
@@ -206,8 +201,6 @@ export const useFlowStore = create<FlowStore>((set) => ({
   ...initialState,
   homeKey: 0,
   bumpHomeKey: () => set((s) => ({ homeKey: s.homeKey + 1 })),
-  welcomeIntroTrigger: 0,
-  triggerWelcomeIntro: () => set((s) => ({ welcomeIntroTrigger: s.welcomeIntroTrigger + 1 })),
   lastPathname: null,
   setLastPathname: (path) => set({ lastPathname: path }),
 

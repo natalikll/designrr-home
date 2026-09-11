@@ -193,7 +193,7 @@ export default function HomePage() {
                   <HomeWordgenieInput
                     hideHeader={mode !== 'book'}
                     showSettings={mode === 'presentation'}
-                    excludeSettings={mode === 'presentation' ? ['tone', 'density'] : undefined}
+                    excludeSettings={mode === 'presentation' ? ['tone', 'density', 'language'] : undefined}
                     selectedMode={selectedModeData}
                     placeholder={mode ? PLACEHOLDERS[mode] : 'What would you like to create today?'}
                     onSubmit={handleSubmit}

@@ -2,7 +2,7 @@
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter, usePathname } from 'next/navigation';
-import { useFlowStore, PLAN_LABELS, type PlanId } from '@/stores/flowStore';
+import { useFlowStore, type PlanId } from '@/stores/flowStore';
 import { createPortal } from 'react-dom';
 import { useState, useRef, useEffect, useCallback } from 'react';
 
@@ -703,9 +703,15 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                 >
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <PlanIcon />
-                    {PLAN_LABELS[currentPlan]} plan
+                    Plan
                   </span>
-                  {/* Absent for the top tiers — nothing above them to sell.
+                  {/* Generic label, not the tier name — Teachable's own row just says "Plan", and
+                      across every sidebar/nav plan indicator we surveyed (Rows, Mixpanel, Mobbin,
+                      Artlist, Later, Kit, Higgsfield, Quicken, Etsy, Workable) the standing nav
+                      item never names the tier; the specific plan lives on the page this links to.
+                      See oran_upgrade_flow_feedback research thread.
+
+                      Absent for the top tiers — nothing above them to sell.
 
                       Reads as a button, not a tag. It was 10px/800 all-caps on a pale #EAF1FF
                       tint — which is exactly TierBadge's shape, so it announced a tier rather than
@@ -714,8 +720,8 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
                       sentence case. No new treatment, and nothing mistakes it for a label.
 
                       Still one hit area, per the note above — the pill is painted on the row and
-                      the row is the target, so a keyboard user gets one stop announcing "Standard
-                      plan, Upgrade" rather than two. Looking like a button while the row does the
+                      the row is the target, so a keyboard user gets one stop announcing "Plan,
+                      Upgrade" rather than two. Looking like a button while the row does the
                       clicking is safe here because the row already goes exactly where the pill
                       promises: the billing tab. */}
                   {pitch && (
