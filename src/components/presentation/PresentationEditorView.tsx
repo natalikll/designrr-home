@@ -3521,9 +3521,10 @@ export function PresentationEditorView() {
             </button>
           </Tooltip>
 
-          {/* A/B toggle — disabled for now, option A (right panel) only. textEditorMode defaults to
-              'panel' above. Restore this block (and its flanking dividers) to bring back the A/B
-              switch and floating-toolbar (option B) mode:
+          {/* A/B toggle — switches between text/photo controls living in the right
+              panel (A) and a floating toolbar over the canvas (B, see TextFormatBar/
+              PhotoFormatBar below). Was commented out with textEditorMode stuck on
+              its 'panel' default, which is why mode B never had a way to render. */}
           <div style={{ width: 1, height: 18, background: '#E8EBF2', margin: '0 6px', flexShrink: 0 }}/>
           <div className="flex items-center" style={{ gap: 1, height: 26, padding: 2, borderRadius: 8, background: '#F0F2F5', flexShrink: 0 }}>
             {([['panel', 'A'], ['bar', 'B']] as const).map(([mode, label]) => {
@@ -3544,7 +3545,6 @@ export function PresentationEditorView() {
             })}
           </div>
           <div style={{ width: 1, height: 18, background: '#E8EBF2', margin: '0 6px', flexShrink: 0 }}/>
-          */}
 
           {/* Zoom picker */}
           <div ref={zoomRef} className="relative">

@@ -749,6 +749,7 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
 /* ── step 4: review ─────────────────────────────────────────────────────────── */
 
 function ReviewView({ template, onPublish }: { template: Template; onPublish: () => void }) {
+  const router = useRouter();
   const [loaded, setLoaded] = useState(false);
   const [progress, setProgress] = useState(0);
   const rafRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -816,7 +817,7 @@ function ReviewView({ template, onPublish }: { template: Template; onPublish: ()
       <div className="flex-1 flex flex-col overflow-hidden" style={{ padding: '20px 16px' }}>
         {/* Action bar */}
         <div className="flex items-center justify-end flex-shrink-0" style={{ gap: 10, marginBottom: 16 }}>
-          <button style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => router.push('/book/editor')} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             Edit design
           </button>
@@ -944,7 +945,7 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
           Back
         </button>
         <div className="flex items-center" style={{ gap: 10 }}>
-          <button style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => router.push('/book/editor')} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             Edit design
           </button>
