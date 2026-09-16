@@ -1429,6 +1429,8 @@ const ICONS = {
   alignCenter: 'M17 10H7M21 6H3M21 14H3M17 18H7',
   alignRight: 'M21 10H7M21 6H3M21 14H3M21 18H7',
   alignJustify: 'M21 10H3M21 6H3M21 14H3M21 18H3',
+  // Clock face + counter-clockwise sweep — the right rail's "History" tab.
+  history: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 7v5l4 2',
 };
 
 /* ── Insert panel content, curated and grouped (not one long flat scroll) ───── */
@@ -1630,7 +1632,7 @@ function insertMediaAt(editor: Editor, pos: number, kind: MediaPickerKind, src: 
 }
 
 function ChapterEditor({
-  page, theme, isSelected, currentSelection, isDragActive, onSelection, onAddChapterAfter, onSplitChapter, onBeginChapterEdit, onWordCountChange, onAltStatusChange, onEditorFocus, onContentChange, titleHtml, onTitleChange, moveDragRef, onMoveDragActiveChange, zoom, pageNumbers, pageNumberIndex, chapterNumber, onMediaDropped, getFieldEditor,
+  page, theme, isSelected, currentSelection, isDragActive, onSelection, onAddChapterAfter, onSplitChapter, onBeginChapterEdit, onWordCountChange, onAltStatusChange, onEditorFocus, onContentChange, titleHtml, onTitleChange, moveDragRef, onMoveDragActiveChange, zoom, pageNumbers, pageNumberIndex, chapterNumber, onMediaDropped, onSetOpenerImage, getFieldEditor,
 }: {
   page: ChapterPage;
   theme: ThemeDef;
@@ -1673,6 +1675,11 @@ function ChapterEditor({
   // this chapter, so the picker (state lives one level up, in BookEditorView)
   // can close itself — the job it was open for is done.
   onMediaDropped?: () => void;
+  // Sets this chapter's opener photo directly from a drop — the same media-picker
+  // payload/raw-file drop AuthorAvatarPanel now accepts, so the opener placeholder
+  // isn't a click-only dead end for the drag gesture its sibling "Ready to place"
+  // card explicitly invites.
+  onSetOpenerImage: (chapterId: string, src: string) => void;
   // Looks up a *live* field/chapter Editor by its registry key — the title's
   // own SimpleFieldEditor is uncontrolled after mount (only takes initialHtml),
   // so "Suggest a title" needs this to push a new value into its already-mounted
@@ -1682,6 +1689,24 @@ function ChapterEditor({
 }) {
   const scale = zoom / 100;
   const [dragOver, setDragOver] = useState(false);
+  // The opener-photo placeholder's own drop target — separate from `dragOver`
+  // above (the whole page accepting an Insert-panel tile), since this one only
+  // ever accepts an image and lives in a much smaller region.
+  const [openerDragOver, setOpenerDragOver] = useState(false);
+  const handleOpenerDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setOpenerDragOver(false);
+    const mediaPayload = e.dataTransfer.getData('text/insert-media');
+    if (mediaPayload) {
+      try {
+        const { kind, src } = JSON.parse(mediaPayload) as { kind: string; src: string };
+        if (kind === 'image') onSetOpenerImage(page.id, src);
+      } catch { /* malformed payload, ignore */ }
+      return;
+    }
+    const file = e.dataTransfer.files?.[0];
+    if (file) void readImageFile(file).then((result) => { if ('src' in result) onSetOpenerImage(page.id, result.src); });
+  };
   // Whole-page tint (dragOver) says "this chapter accepts drops" — this says
   // exactly where, tracking the cursor to the nearest real insertion point the
   // way Notion/Google Docs show a line between blocks while dragging, rather
@@ -2368,8 +2393,15 @@ function ChapterEditor({
         page.openerImage ? (
           <div
             onClick={() => onSelection({ kind: 'openerImage', chapterId: page.id })}
-            style={{ position: 'relative', margin: '-55px -63px 20px', height: 220, cursor: 'pointer', overflow: 'hidden' }}
-            title="Click to replace this photo"
+            onDragEnter={(e) => { e.preventDefault(); setOpenerDragOver(true); }}
+            onDragOver={(e) => e.preventDefault()}
+            onDragLeave={() => setOpenerDragOver(false)}
+            onDrop={handleOpenerDrop}
+            style={{
+              position: 'relative', margin: '-55px -63px 20px', height: 220, cursor: 'pointer', overflow: 'hidden',
+              outline: openerDragOver ? `2px dashed ${BLUE}` : 'none', outlineOffset: -4,
+            }}
+            title="Click to replace this photo, or drag one here"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={page.openerImage} alt="" style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -2380,7 +2412,13 @@ function ChapterEditor({
             </div>
           </div>
         ) : (
-          <div style={{ position: 'relative' }}>
+          <div
+            onDragEnter={(e) => { e.preventDefault(); setOpenerDragOver(true); }}
+            onDragOver={(e) => e.preventDefault()}
+            onDragLeave={() => setOpenerDragOver(false)}
+            onDrop={handleOpenerDrop}
+            style={{ position: 'relative', outline: openerDragOver ? `2px dashed ${BLUE}` : 'none', outlineOffset: 4 }}
+          >
             <div style={{ height: 4, width: 56, background: theme.accentColor, borderRadius: 2, marginBottom: 14 }} />
             <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
               <span style={{ ...ns, fontSize: 11.5, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: theme.accentColor }}>Chapter</span>
@@ -2389,6 +2427,7 @@ function ChapterEditor({
             <button
               onClick={() => onSelection({ kind: 'openerImage', chapterId: page.id })}
               className="cursor-pointer"
+              title="Click to choose a photo, or drag one here"
               style={{
                 ...ns, fontSize: 11.5, fontWeight: 600, color: SLATE, background: 'none',
                 border: `1px dashed ${BORDER}`, borderRadius: RADIUS_SM, padding: '6px 10px', marginBottom: 4,
@@ -3227,7 +3266,7 @@ function CoverCanvasStatic({ page, theme, fieldContent }: { page: SimplePage; th
    focus keeps working) — once selected, a small floating handle above the box is the
    only draggable surface, unambiguous since it only exists once already selected. */
 function CoverCanvasEditable({
-  page, theme, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onUpdateElement, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex,
+  page, theme, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onUpdateElement, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex, overlayOpen,
 }: {
   page: SimplePage;
   theme: ThemeDef;
@@ -3243,6 +3282,7 @@ function CoverCanvasEditable({
   onReorderElement: (pageId: string, elementId: string, dir: 'front' | 'back') => void;
   onDuplicateElement: (pageId: string, elementId: string) => void;
   onDeleteElement: (pageId: string, elementId: string) => void;
+  overlayOpen: boolean;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const elements = page.coverElements ?? [];
@@ -3393,7 +3433,7 @@ function CoverCanvasEditable({
 
       <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="header" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
       <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="footer" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
-      {selectedId && (() => {
+      {selectedId && !overlayOpen && (() => {
         const selectedEl = elements.find((e) => e.id === selectedId);
         return (
           <FloatingBarPortal boxRef={stageRef} edge="bottom" offset={10}>
@@ -3413,7 +3453,7 @@ function CoverCanvasEditable({
 }
 
 function SimplePageBlock({
-  page, theme, pages, chapterHtml, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onUpdateElement, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex,
+  page, theme, pages, chapterHtml, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onUpdateElement, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex, overlayOpen, onSetBackmatterPhoto,
 }: {
   page: SimplePage;
   theme: ThemeDef;
@@ -3431,6 +3471,11 @@ function SimplePageBlock({
   onReorderElement: (pageId: string, elementId: string, dir: 'front' | 'back') => void;
   onDuplicateElement: (pageId: string, elementId: string) => void;
   onDeleteElement: (pageId: string, elementId: string) => void;
+  onSetBackmatterPhoto: (pageId: string, src: string) => void;
+  // True while a full-screen overlay (Publish, Preview) is open — see
+  // CoverCanvasEditable's own use of this, which hides its floating bar so it
+  // can't visually bleed on top of the overlay's content.
+  overlayOpen: boolean;
 }) {
   const focusRing = (
     <style jsx global>{`
@@ -3477,6 +3522,7 @@ function SimplePageBlock({
           onDeleteElement={onDeleteElement}
           pageNumbers={pageNumbers}
           pageNumberIndex={pageNumberIndex}
+          overlayOpen={overlayOpen}
         />
       </>
     );
@@ -3531,7 +3577,12 @@ function SimplePageBlock({
       {focusRing}
       <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="header" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
       <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="footer" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
-      <AuthorAvatarPanel accentColor={theme.accentColor} photo={page.authorPhoto} onClick={() => onSelection({ kind: 'backmatterAvatar', pageId: page.id })} />
+      <AuthorAvatarPanel
+        accentColor={theme.accentColor}
+        photo={page.authorPhoto}
+        onClick={() => onSelection({ kind: 'backmatterAvatar', pageId: page.id })}
+        onDropImage={(src) => onSetBackmatterPhoto(page.id, src)}
+      />
       <div style={{ flex: 1, minWidth: 0, padding: '56px 48px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <h2 style={{ fontFamily: theme.headingFont, color: theme.headingColor, fontSize: 22, margin: '0 0 10px' }}>About the Author</h2>
         <SimpleFieldEditor
@@ -3553,14 +3604,38 @@ function SimplePageBlock({
 // rectangle primitives the Growth cover's person silhouette uses (works for every
 // theme without forcing a stock photo on it). `onClick` (editable context only —
 // PreviewPage passes none) selects it so the Media rail's PhotoSourcePanel opens.
-function AuthorAvatarPanel({ accentColor, photo, onClick }: { accentColor: string; photo?: string; onClick?: () => void }) {
+function AuthorAvatarPanel({ accentColor, photo, onClick, onDropImage }: { accentColor: string; photo?: string; onClick?: () => void; onDropImage?: (src: string) => void }) {
+  const [dragOver, setDragOver] = useState(false);
   return (
     <div
       onClick={onClick}
-      title={onClick ? 'Click to add/replace the author photo' : undefined}
+      // Same two payloads ChapterEditor's chapter-body drop already accepts: a
+      // media-picker "ready to place" card (text/insert-media), or a raw OS file
+      // dragged straight from Finder — this placeholder only ever accepted a
+      // click before, which silently did nothing for either drag gesture even
+      // though the "Drag into the book" card two panels over invites exactly this.
+      onDragEnter={onDropImage ? (e) => { e.preventDefault(); setDragOver(true); } : undefined}
+      onDragOver={onDropImage ? (e) => e.preventDefault() : undefined}
+      onDragLeave={onDropImage ? () => setDragOver(false) : undefined}
+      onDrop={onDropImage ? (e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const mediaPayload = e.dataTransfer.getData('text/insert-media');
+        if (mediaPayload) {
+          try {
+            const { kind, src } = JSON.parse(mediaPayload) as { kind: string; src: string };
+            if (kind === 'image') onDropImage(src);
+          } catch { /* malformed payload, ignore */ }
+          return;
+        }
+        const file = e.dataTransfer.files?.[0];
+        if (file) void readImageFile(file).then((result) => { if ('src' in result) onDropImage(result.src); });
+      } : undefined}
+      title={onClick ? 'Click to add/replace the author photo, or drag one here' : undefined}
       style={{
         flexShrink: 0, width: '34%', background: photo ? undefined : `${accentColor}26`,
         display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: onClick ? 'pointer' : undefined, position: 'relative',
+        outline: dragOver ? `2px dashed ${BLUE}` : 'none', outlineOffset: -3,
       }}
     >
       {photo ? (
@@ -4402,13 +4477,14 @@ function TextSelectionBubbleMenu({ editor }: { editor: Editor }) {
             style={{ ...ns, flex: 1, minWidth: 0, fontSize: 12.5, border: 'none', outline: 'none', padding: '0 6px', color: INK }}
           />
           {linkActive && (
-            <button
-              onClick={() => { editor.chain().focus().extendMarkRange('link').unsetLink().run(); setLinkEditing(false); }}
-              style={btnStyle(false)}
-              title="Remove link"
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#B91C1C" strokeWidth="1.8" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-            </button>
+            <Tooltip label="Remove link" position="top">
+              <button
+                onClick={() => { editor.chain().focus().extendMarkRange('link').unsetLink().run(); setLinkEditing(false); }}
+                style={btnStyle(false)}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#B91C1C" strokeWidth="1.8" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            </Tooltip>
           )}
           <button
             onClick={applyLink}
@@ -4419,14 +4495,24 @@ function TextSelectionBubbleMenu({ editor }: { editor: Editor }) {
         </div>
       ) : (
         <div style={barStyle} onPointerDown={(e) => e.stopPropagation()}>
-          <button onClick={() => editor.chain().focus().toggleBold().run()} style={{ ...btnStyle(editor.isActive('bold')), fontWeight: 800 }}>B</button>
-          <button onClick={() => editor.chain().focus().toggleItalic().run()} style={{ ...btnStyle(editor.isActive('italic')), fontStyle: 'italic' }}>I</button>
-          <button onClick={() => editor.chain().focus().toggleUnderline().run()} style={{ ...btnStyle(editor.isActive('underline')), textDecoration: 'underline' }}>U</button>
-          <button onClick={() => editor.chain().focus().toggleStrike().run()} style={{ ...btnStyle(editor.isActive('strike')), textDecoration: 'line-through' }}>S</button>
+          <Tooltip label="Bold" position="top">
+            <button onClick={() => editor.chain().focus().toggleBold().run()} style={{ ...btnStyle(editor.isActive('bold')), fontWeight: 800 }}>B</button>
+          </Tooltip>
+          <Tooltip label="Italic" position="top">
+            <button onClick={() => editor.chain().focus().toggleItalic().run()} style={{ ...btnStyle(editor.isActive('italic')), fontStyle: 'italic' }}>I</button>
+          </Tooltip>
+          <Tooltip label="Underline" position="top">
+            <button onClick={() => editor.chain().focus().toggleUnderline().run()} style={{ ...btnStyle(editor.isActive('underline')), textDecoration: 'underline' }}>U</button>
+          </Tooltip>
+          <Tooltip label="Strikethrough" position="top">
+            <button onClick={() => editor.chain().focus().toggleStrike().run()} style={{ ...btnStyle(editor.isActive('strike')), textDecoration: 'line-through' }}>S</button>
+          </Tooltip>
           {divider}
-          <button onClick={openLink} style={btnStyle(linkActive)} title="Link">
-            <LinkIcon />
-          </button>
+          <Tooltip label="Link" position="top">
+            <button onClick={openLink} style={btnStyle(linkActive)}>
+              <LinkIcon />
+            </button>
+          </Tooltip>
         </div>
       )}
     </BubbleMenu>
@@ -5922,6 +6008,15 @@ function PublisherOverlay({
   // since the whole point of this panel is that nothing looks silently fine.
   const [exportWarning, setExportWarning] = useState('');
 
+  // Matches PreviewOverlay's identical listener — every other full-screen overlay
+  // in this file closes on Escape, and this one (reached at the single highest-
+  // stakes moment in the flow) was the one exception.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   const results = runChecks({ metadata, chapters, missingAltCount, hasCoverImage });
   const stats = summarise(results);
   const groups: CheckResult['group'][] = ['Metadata', 'Structure', 'Accessibility', 'Packaging', 'Retailer'];
@@ -6362,105 +6457,53 @@ function relativeTimeLabel(ts: number): string {
   return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} at ${time}`;
 }
 
-/* Reached from the toolbar's clock icon — modeled on Figma/Google Docs/Notion's
-   own version-history panel (researched directly, not guessed): a list of
-   timestamped checkpoints on one side, a full read-only preview of whichever
-   one is selected on the other, and a non-destructive Restore (see
-   restoreVersion — it pushes the state you're leaving as its own new
-   checkpoint first, so restoring is never a dead end). "Current version" is a
-   pinned first row rather than one of `versions`, so the list always has
-   something selected and the preview always has something to show even before
-   the first checkpoint exists. */
-function VersionHistoryOverlay({
-  versions, pages, chapterContent, fieldContent, theme, onRestore, onClose,
+/* The right rail's fourth tab, alongside Pages/Chapters/Properties — not a
+   separate full-screen route. Checked directly (not guessed) how Figma and
+   Google Docs actually present this: both keep you IN the document — a side
+   panel, with the canvas/page itself re-rendering to show whichever version
+   is selected — rather than a "leaving the editor" takeover. This used to
+   borrow PreviewOverlay's full-screen shape; now it's just a list, and
+   selecting a row is what drives the canvas's read-only swap plus the banner
+   above it (see viewingVersionId in the main render below). "Current version"
+   is a pinned first row rather than one of `versions`, so there's always
+   something selected. */
+function HistoryPanel({
+  versions, viewingVersionId, onSelectVersion,
 }: {
   versions: VersionEntry[];
-  pages: PageMeta[];
-  chapterContent: Record<string, string>;
-  fieldContent: Record<string, string>;
-  // The live theme, for the "Current version" row/preview — historical entries
-  // resolve their own theme from `selected.activeTheme` instead (see below).
-  theme: ThemeDef;
-  onRestore: (entry: VersionEntry) => void;
-  onClose: () => void;
+  viewingVersionId: string | null;
+  onSelectVersion: (id: string | null) => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = versions.find((v) => v.id === selectedId) ?? null;
-  const previewTheme = selected ? THEMES.find((t) => t.id === selected.activeTheme) ?? theme : theme;
-  const previewPages = selected ? selected.pages : pages;
-  const previewChapterContent = selected ? selected.chapterContent : chapterContent;
-  const previewFieldContent = selected ? selected.fieldContent : fieldContent;
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   return (
-    <div style={{ background: '#EEF0F3', zIndex: 200, display: 'flex', flexDirection: 'column', position: 'fixed', inset: 0 }}>
-      <div className="flex-shrink-0 flex items-center justify-between" style={{ height: 60, padding: '0 20px', borderBottom: `1px solid ${BORDER}`, background: '#fff' }}>
-        <button onClick={onClose} className="flex items-center cursor-pointer" style={{ gap: 6, ...ns, fontSize: 13, fontWeight: 500, color: SLATE, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: '7px 14px' }}>
-          <Icon d={ICONS.back} size={14} /> Back to editing
-        </button>
-        <div style={{ ...ns, fontSize: 13.5, fontWeight: 700, color: INK }}>Version history</div>
-        <div style={{ width: 120 }} />
-      </div>
-      <div className="flex-1 flex overflow-hidden" style={{ minHeight: 0 }}>
-        <div className="flex-1 overflow-y-auto" style={{ padding: '40px 24px 120px' }}>
-          <div style={{ width: PAGE_W, margin: '0 auto' }}>
-            {previewPages.map((p) => (
-              <div key={p.id} style={{ marginBottom: 40 }}>
-                <PreviewPage page={p} pages={previewPages} theme={previewTheme} chapterContent={previewChapterContent} fieldContent={previewFieldContent} />
-              </div>
-            ))}
-          </div>
+    <div style={{ padding: '16px 14px', overflowY: 'auto', height: '100%' }}>
+      <div style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: EYEBROW_COLOR, marginBottom: 8 }}>Version history</div>
+      <button
+        onClick={() => onSelectVersion(null)}
+        className="w-full text-left cursor-pointer"
+        style={{ display: 'block', padding: '10px', borderRadius: RADIUS_MD, border: 'none', background: !viewingVersionId ? '#EEF3FF' : 'transparent', marginBottom: 2 }}
+      >
+        <div style={{ ...ns, fontSize: 13, fontWeight: 600, color: !viewingVersionId ? BLUE : INK }}>Current version</div>
+        <div style={{ ...ns, fontSize: 11.5, color: SLATE }}>What you&apos;re editing now</div>
+      </button>
+      {versions.map((v) => {
+        const active = v.id === viewingVersionId;
+        return (
+          <button
+            key={v.id}
+            onClick={() => onSelectVersion(v.id)}
+            className="w-full text-left cursor-pointer"
+            style={{ display: 'block', padding: '10px', borderRadius: RADIUS_MD, border: 'none', background: active ? '#EEF3FF' : 'transparent', marginBottom: 2 }}
+          >
+            <div style={{ ...ns, fontSize: 13, fontWeight: 600, color: active ? BLUE : INK }}>{relativeTimeLabel(v.savedAt)}</div>
+            <div style={{ ...ns, fontSize: 11.5, color: SLATE }}>{new Date(v.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
+          </button>
+        );
+      })}
+      {versions.length === 0 && (
+        <div style={{ ...ns, fontSize: 12.5, color: SLATE, padding: '10px', lineHeight: 1.5 }}>
+          No earlier checkpoints yet — they&apos;ll show up here once you&apos;ve made changes and paused for a bit.
         </div>
-        <div className="flex-shrink-0 flex flex-col" style={{ width: 280, borderLeft: `1px solid ${BORDER}`, background: '#fff' }}>
-          <div style={{ padding: '16px 16px 0' }}>
-            <div style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: EYEBROW_COLOR }}>History</div>
-          </div>
-          <div className="flex-1 overflow-y-auto" style={{ padding: '10px' }}>
-            <button
-              onClick={() => setSelectedId(null)}
-              className="w-full text-left cursor-pointer"
-              style={{ display: 'block', padding: '10px', borderRadius: RADIUS_MD, border: 'none', background: !selected ? '#EEF3FF' : 'transparent', marginBottom: 2 }}
-            >
-              <div style={{ ...ns, fontSize: 13, fontWeight: 600, color: !selected ? BLUE : INK }}>Current version</div>
-              <div style={{ ...ns, fontSize: 11.5, color: SLATE }}>What you&apos;re editing now</div>
-            </button>
-            {versions.map((v) => {
-              const active = v.id === selectedId;
-              return (
-                <button
-                  key={v.id}
-                  onClick={() => setSelectedId(v.id)}
-                  className="w-full text-left cursor-pointer"
-                  style={{ display: 'block', padding: '10px', borderRadius: RADIUS_MD, border: 'none', background: active ? '#EEF3FF' : 'transparent', marginBottom: 2 }}
-                >
-                  <div style={{ ...ns, fontSize: 13, fontWeight: 600, color: active ? BLUE : INK }}>{relativeTimeLabel(v.savedAt)}</div>
-                  <div style={{ ...ns, fontSize: 11.5, color: SLATE }}>{new Date(v.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
-                </button>
-              );
-            })}
-            {versions.length === 0 && (
-              <div style={{ ...ns, fontSize: 12.5, color: SLATE, padding: '10px', lineHeight: 1.5 }}>
-                No earlier checkpoints yet — they&apos;ll show up here a minute or so after you start editing.
-              </div>
-            )}
-          </div>
-          <div style={{ padding: 14, borderTop: `1px solid ${BORDER}` }}>
-            <button
-              onClick={() => selected && onRestore(selected)}
-              disabled={!selected}
-              className="w-full cursor-pointer"
-              style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: selected ? BLUE : '#C7CCD6', border: 'none', borderRadius: RADIUS_MD, padding: '10px 0' }}
-            >
-              Restore this version
-            </button>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -7382,7 +7425,7 @@ export function BookEditorView() {
      on Properties for that showed little more than "click an element to edit
      it" — a properties panel with nothing yet to show properties for. Pages
      gives an immediate, always-useful view of the book's structure instead. */
-  const [rightPanel, setRightPanel] = useState<'properties' | 'pages' | 'chapters'>('pages');
+  const [rightPanel, setRightPanel] = useState<'properties' | 'pages' | 'chapters' | 'history'>('pages');
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   /* Which page the Pages panel's grid highlights and the +/duplicate/delete bar
      acts on. Can't reuse `selection` for this directly — jumping to a page from
@@ -7398,8 +7441,38 @@ export function BookEditorView() {
   // book's own creation wizard. Scoped to whichever chapter is active, the
   // book's equivalent of Presentation's "for this slide."
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  const [aiMessages, setAiMessages] = useState<{ role: 'user' | 'ai'; text: string }[]>([
-    { role: 'ai', text: 'Ask me to rewrite a paragraph, change the tone, or draft new content for the current chapter.' },
+  // Below this, the app sidebar + both editor rails + both editor panels leave
+  // less than ~300px for a 720px page even with nothing else competing for
+  // room — the same starvation Wordgenie caused, just from ordinary window
+  // width instead. 1280 is picked so every width at or above it (1280/1366/
+  // 1440/1536/1920 — the common real laptop/desktop resolutions) is left
+  // alone; only genuinely cramped windows (a smaller external monitor, a
+  // tiled/half-split window, an old 1024×768 display) trigger it.
+  const [narrowViewport, setNarrowViewport] = useState(false);
+  useEffect(() => {
+    const update = () => setNarrowViewport(window.innerWidth < 1280);
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+  // Auto-collapsing for width alone (unlike Wordgenie, which is a deliberate
+  // mode the user just entered) risks reading as broken the first time someone
+  // on a narrower screen clicks Text/Media/Elements and nothing happens — this
+  // is the escape hatch: clicking the rail re-expands the panel on demand, and
+  // clicking the already-active tab collapses it again, same toggle convention
+  // the right rail already uses for Pages/Chapters/Properties.
+  const [panelForcedOpen, setPanelForcedOpen] = useState(false);
+  useEffect(() => { if (!narrowViewport) setPanelForcedOpen(false); }, [narrowViewport]);
+  // pills mirrors Presentation's own aiMessages shape — quick-reply chips under
+  // an AI message, same as its "notes for every slide" flow offers there. Ours
+  // just needs one entry point (the welcome message) rather than a whole
+  // second intent system, since there's no book-editor equivalent of that job.
+  const [aiMessages, setAiMessages] = useState<{ role: 'user' | 'ai'; text: string; pills?: string[] }[]>([
+    {
+      role: 'ai',
+      text: 'Ask me to rewrite a paragraph, change the tone, or draft new content for the current chapter.',
+      pills: ['Rewrite this paragraph', 'Fix grammar', 'Make it more concise', 'Suggest a title'],
+    },
   ]);
   const [aiInput, setAiInput] = useState('');
   const [draggedTile, setDraggedTile] = useState<string | null>(null);
@@ -7415,13 +7488,15 @@ export function BookEditorView() {
   // Defaults to the cover rather than nothing, so the inspector opens already
   // showing something relevant instead of an empty "select something" placeholder.
   const [selection, setSelection] = useState<Selection>({ kind: 'page', pageId: 'p-cover' });
-  // Unlike a cover image (already visible, discovered by clicking it), an unset
-  // opener/back-matter photo has nothing to click yet — its "Add photo" affordance
-  // jumps straight to the Media rail tab instead of leaving the user to find it,
-  // the one difference from the plain setSelection every other selection uses.
+  // An unset opener/back-matter photo has nothing to click yet — its "Add photo"
+  // affordance jumps straight to the Media rail tab instead of leaving the user
+  // to find it. A regular inline image gets the same jump for a different
+  // reason: focusing one is almost always "I want to swap/manage this photo,"
+  // so landing on Media directly beats making that a second, manual step via
+  // ImageInspector's own "Go to Media" link every time.
   const handleSelection = useCallback((sel: Selection) => {
     setSelection(sel);
-    if (sel.kind === 'openerImage' || sel.kind === 'backmatterAvatar') setRailTab('media');
+    if (sel.kind === 'openerImage' || sel.kind === 'backmatterAvatar' || sel.kind === 'image') setRailTab('media');
   }, []);
   const [wordCounts, setWordCounts] = useState<Record<string, number>>({});
   // Body word counts and title word counts separately, since they're two different
@@ -7445,6 +7520,13 @@ export function BookEditorView() {
   const [chapterContent, setChapterContent] = useState<Record<string, string>>({});
   const [fieldContent, setFieldContent] = useState<Record<string, string>>({});
   const [showPreview, setShowPreview] = useState(false);
+  // FloatingBarPortal (the cover's duplicate/delete pill) portals straight to
+  // document.body at zIndex 200 — the same value these full-screen overlays use
+  // — so whichever one mounts later in the DOM wins the tie and the pill can
+  // render on top of Publish/Preview's own content. Hiding it whenever either
+  // is open is simpler and safer than trying to out-rank two modals whose own
+  // z-index this component doesn't control.
+  const anyOverlayOpen = showPublishModal || showPreview;
   /* Browser spell-check was never turned on or off explicitly, so every editing
      surface silently inherited whatever the browser defaulted to. It's a real
      setting now (Book settings → Document), defaulting on. */
@@ -7452,7 +7534,10 @@ export function BookEditorView() {
   const [saveState, setSaveState] = useState<SaveState>('saved');
   const [hydrated, setHydrated] = useState(false);
   const [versions, setVersions] = useState<VersionEntry[]>([]);
-  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  // Which checkpoint the canvas is currently rendering read-only — null means
+  // "current version," i.e. the live, editable book. Drives both the History
+  // panel's selection and the canvas/banner swap in the main render below.
+  const [viewingVersionId, setViewingVersionId] = useState<string | null>(null);
   const hasProAccess = ownsPlan(currentPlan, 'pro');
   const lastVersionSavedAtRef = useRef(0);
   const [undoToast, setUndoToast] = useState<{ label: string; snapshot: Snapshot } | null>(null);
@@ -7471,6 +7556,10 @@ export function BookEditorView() {
   }, []);
 
   const theme = THEMES.find((t) => t.id === activeTheme) ?? THEMES[0];
+  // Non-null only while the canvas is showing a past checkpoint read-only
+  // instead of the live, editable book — see the History rail tab.
+  const viewingVersionEntry = versions.find((v) => v.id === viewingVersionId) ?? null;
+  const viewingVersionTheme = viewingVersionEntry ? THEMES.find((t) => t.id === viewingVersionEntry.activeTheme) ?? theme : theme;
   /* Which page the selection sits on, for the Pages panel's active outline. Every
      selection kind except 'none' carries either a pageId or a "chapterId::field"
      compound whose first segment is the page. */
@@ -7654,7 +7743,10 @@ export function BookEditorView() {
       if (html !== undefined) registered.editor.commands.setContent(html);
     }
     setUndoToast(null);
-    setShowVersionHistory(false);
+    // Back to viewing "current" — now the just-restored live state — rather
+    // than closing the panel outright, so the new checkpoint just pushed
+    // above is visible sitting at the top of the list.
+    setViewingVersionId(null);
   }, [pages, chapterContent, fieldContent, activeTheme, hasProAccess]);
 
   // Set alongside undoToast itself — marks the very next pages/content/selection
@@ -7833,10 +7925,11 @@ export function BookEditorView() {
   // Mocked exactly like Presentation's own in-editor chat (setTimeout + a
   // canned line) — no real model wired up, consistent with every other
   // AI-shaped feature in this prototype (GenerateImagePanel, qrModules).
-  const sendAiMessage = useCallback(() => {
-    const text = aiInput.trim();
-    if (!text) return;
-    setAiInput('');
+  // Split from sendAiMessage (below) the same way Presentation splits
+  // sendAiChatText/sendAiMessage — a pill click sends canned text directly,
+  // without going through the input field at all.
+  const sendAiChatText = useCallback((text: string) => {
+    if (!text.trim()) return;
     setAiMessages((prev) => [...prev, { role: 'user', text }]);
     const chapterTitle = pages.find((p) => p.id === activeChapterId)?.title;
     setTimeout(() => {
@@ -7845,7 +7938,14 @@ export function BookEditorView() {
         text: chapterTitle ? `Got it — working on "${text}" for "${chapterTitle}"…` : `Got it — working on "${text}"…`,
       }]);
     }, 600);
-  }, [aiInput, pages, activeChapterId]);
+  }, [pages, activeChapterId]);
+
+  const sendAiMessage = useCallback(() => {
+    const text = aiInput.trim();
+    if (!text) return;
+    setAiInput('');
+    sendAiChatText(text);
+  }, [aiInput, sendAiChatText]);
 
 
 
@@ -8164,24 +8264,6 @@ export function BookEditorView() {
 
           <div style={{ width: 1, height: 18, background: BORDER, margin: '0 6px', flexShrink: 0 }} />
 
-          <Tooltip label="Version history" position="bottom">
-            <button
-              onClick={() => setShowVersionHistory(true)}
-              className="flex items-center justify-center cursor-pointer"
-              style={{ width: 30, height: 30, borderRadius: RADIUS_MD, border: 'none', background: 'none' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = '#F4F6F9'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
-            >
-              {/* Clock face + counter-clockwise sweep — inline like the
-                  neighboring Split button, not a shared ICONS entry. */}
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={SLATE} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /><path d="M12 7v5l4 2" />
-              </svg>
-            </button>
-          </Tooltip>
-
-          <div style={{ width: 1, height: 18, background: BORDER, margin: '0 6px', flexShrink: 0 }} />
-
           <div className="relative" ref={zoomMenuRef}>
             <button
               onClick={() => setZoomOpen((v) => !v)}
@@ -8217,15 +8299,24 @@ export function BookEditorView() {
         {/* icon rail */}
         <div className="flex-shrink-0 h-full flex flex-col items-center bg-white" style={{ width: RAIL_W, borderRight: `1px solid ${BORDER}`, paddingTop: 12, gap: 4 }}>
           {([
+            // Templates leads because it already is the default tab (railTab's
+            // own initial state below) — every user's first look at this rail
+            // lands here, so it should also be first in the list rather than
+            // fourth of five. Matches Flipsnack/Canva too: choosing a look
+            // comes before the day-to-day insert tools.
+            { id: 'templates', label: 'Templates', icon: ICONS.templatesTab },
             { id: 'text', label: 'Text', icon: ICONS.textTab },
             { id: 'media', label: 'Media', icon: ICONS.image },
             { id: 'elements', label: 'Elements', icon: ICONS.shapesTab },
-            { id: 'templates', label: 'Templates', icon: ICONS.templatesTab },
             { id: 'booksettings', label: 'Book settings', icon: ICONS.settings },
           ] as const).map((item) => (
             <button
               key={item.id}
-              onClick={() => setRailTab(item.id)}
+              onClick={() => {
+                if (narrowViewport && railTab === item.id) { setPanelForcedOpen((v) => !v); return; }
+                setRailTab(item.id);
+                if (narrowViewport) setPanelForcedOpen(true);
+              }}
               className={`transition-colors duration-150${railTab === item.id ? '' : ' hover:bg-[#F6F7F9]'}`}
               style={{
                 width: '90%', height: 58, borderRadius: RADIUS_LG, border: 'none', cursor: 'pointer',
@@ -8239,8 +8330,30 @@ export function BookEditorView() {
           ))}
         </div>
 
-        {/* contextual panel */}
-        <div className="flex-shrink-0 h-full bg-white" style={{ width: PANEL_W, borderRight: `1px solid ${BORDER}` }}>
+        {/* contextual panel — collapses to make room for the canvas rather than
+            competing with it. Both this and the Wordgenie panel below are
+            flex-shrink-0 with nothing else yielding, so opening Wordgenie on top
+            of whichever insert-tool tab was already open (there's always one —
+            railTab has no "none" state) used to leave as little as ~212px of a
+            720px page visible — worst for exactly the case Wordgenie exists for:
+            rewriting a paragraph you can no longer see. narrowViewport extends
+            the same relief to ordinary window width: below 1280px the app
+            sidebar plus both editor rails plus both editor panels already leave
+            under ~300px of canvas with nothing else open. Wordgenie always wins
+            (there's genuinely no room once it's open); narrowViewport backs off
+            when panelForcedOpen — the click-to-reveal escape hatch above — is
+            set. Mirrors the Wordgenie panel's own width/border transition below
+            so every trigger reads as one deliberate handoff. */}
+        <div
+          className="flex-shrink-0 h-full bg-white"
+          style={{
+            width: aiPanelOpen || (narrowViewport && !panelForcedOpen) ? 0 : PANEL_W,
+            overflow: 'hidden',
+            borderRight: aiPanelOpen || (narrowViewport && !panelForcedOpen) ? 'none' : `1px solid ${BORDER}`,
+            transition: 'width 0.22s cubic-bezier(0.2,0,0.2,1)',
+            pointerEvents: aiPanelOpen || (narrowViewport && !panelForcedOpen) ? 'none' : 'auto',
+          }}
+        >
           {railTab === 'text' && (
             <div style={{ overflowY: 'auto', height: '100%' }}>
               <InsertPanel
@@ -8392,18 +8505,38 @@ export function BookEditorView() {
           </div>
           <div className="flex-1 overflow-y-auto flex flex-col" style={{ padding: 16, gap: 12, minWidth: 300 }}>
             {aiMessages.map((msg, i) => (
-              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                {msg.role === 'ai' && (
-                  <div className="flex items-center justify-center flex-shrink-0" style={{ width: 22, height: 22, borderRadius: '50%', background: '#F0EEFF', marginRight: 7 }}>
-                    <AISparkleIcon size={13} />
+              <div key={i} className="flex flex-col" style={{ alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start', gap: 8 }}>
+                <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`} style={{ width: '100%' }}>
+                  {msg.role === 'ai' && (
+                    <div className="flex items-end flex-shrink-0" style={{ marginRight: 7, marginBottom: 2 }}>
+                      <div className="flex items-center justify-center" style={{ width: 22, height: 22, borderRadius: '50%', background: '#F0EEFF' }}>
+                        <AISparkleIcon size={13} />
+                      </div>
+                    </div>
+                  )}
+                  <div style={{
+                    maxWidth: '82%', padding: '9px 12px', lineHeight: 1.5, borderRadius: msg.role === 'user' ? '12px 12px 3px 12px' : '12px 12px 12px 3px',
+                    background: msg.role === 'user' ? BLUE : '#F4F6F9', ...ns, fontSize: 13, color: msg.role === 'user' ? '#fff' : INK,
+                  }}>
+                    {msg.text}
+                  </div>
+                </div>
+                {msg.pills && (
+                  <div className="flex flex-wrap" style={{ gap: 6, paddingLeft: 29 }}>
+                    {msg.pills.map((pill) => (
+                      <button
+                        key={pill}
+                        onClick={() => sendAiChatText(pill)}
+                        className="cursor-pointer"
+                        style={{ ...ns, fontSize: 12, fontWeight: 500, color: '#7C5CFC', padding: '5px 11px', borderRadius: 20, border: '1.5px solid #DDD0FB', background: '#F9F7FF', textAlign: 'left' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = '#F0EEFF'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = '#F9F7FF'; }}
+                      >
+                        {pill}
+                      </button>
+                    ))}
                   </div>
                 )}
-                <div style={{
-                  maxWidth: '82%', padding: '9px 12px', lineHeight: 1.5, borderRadius: msg.role === 'user' ? '12px 12px 3px 12px' : '12px 12px 12px 3px',
-                  background: msg.role === 'user' ? BLUE : '#F4F6F9', ...ns, fontSize: 13, color: msg.role === 'user' ? '#fff' : INK,
-                }}>
-                  {msg.text}
-                </div>
               </div>
             ))}
           </div>
@@ -8430,20 +8563,57 @@ export function BookEditorView() {
         </div>
 
         {/* canvas */}
-        <div className="flex-1 min-w-0 h-full">
+        <div className="flex-1 min-w-0 h-full flex flex-col">
+        {/* The "viewing a past version" banner lives here, OUTSIDE the zoomed/
+            scrollable region below — position:sticky inside a transform:scale()
+            ancestor doesn't stick (see zoom-breaks-sticky), so this is a plain
+            flex row pinned above the scroll area instead of fighting that. */}
+        {viewingVersionEntry && (
+          <div className="flex-shrink-0 flex items-center justify-between" style={{ padding: '10px 20px', background: '#FFF7E0', borderBottom: '1px solid #F0DFA6' }}>
+            <span style={{ ...ns, fontSize: 13, color: INK }}>
+              Viewing a version from {relativeTimeLabel(viewingVersionEntry.savedAt)} — read only.
+            </span>
+            <div className="flex items-center" style={{ gap: 8 }}>
+              <button
+                onClick={() => setViewingVersionId(null)}
+                className="cursor-pointer"
+                style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: INK, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_SM, padding: '6px 12px' }}
+              >
+                Return to current
+              </button>
+              <button
+                onClick={() => restoreVersion(viewingVersionEntry)}
+                className="cursor-pointer"
+                style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: '#fff', background: BLUE, border: 'none', borderRadius: RADIUS_SM, padding: '6px 12px' }}
+              >
+                Restore this version
+              </button>
+            </div>
+          </div>
+        )}
         {/* overflow-x here used to be the implicit default (visible): at any
             viewport where the fixed side rails leave less than PAGE_W available,
             the centered page div overflowed sideways with nothing clipping it —
             it just rendered underneath the Inspector panel's opaque background,
             silently hiding real manuscript text with no scrollbar or warning. */}
-        <div className="h-full overflow-auto" style={{ background: '#EEF0F3', padding: '40px 24px 120px' }}>
+        <div className="flex-1 overflow-auto" style={{ background: '#EEF0F3', padding: '40px 24px 120px' }}>
           {/* `transform` doesn't affect layout, so the scroll container used to size
               itself to the unscaled document: above 100% the end of the book was
               unreachable, below it there was a large dead gap. The outer box is
               given the scaled height explicitly, measured off the inner one. */}
           <div style={{ width: PAGE_W * (zoom / 100), height: canvasHeight * (zoom / 100), margin: '0 auto' }}>
           <div ref={canvasInnerRef} style={{ width: PAGE_W, transform: `scale(${zoom / 100})`, transformOrigin: 'top left' }}>
-            {pages.map((p) => (
+            {viewingVersionEntry ? (
+              // Read-only: the same PreviewPage the Preview overlay and the
+              // History panel's old preview pane both already use — no new
+              // rendering path, just fed a checkpoint instead of live state.
+              viewingVersionEntry.pages.map((p) => (
+                <div key={p.id} style={{ marginBottom: 40 }}>
+                  <PreviewPage page={p} pages={viewingVersionEntry.pages} theme={viewingVersionTheme} chapterContent={viewingVersionEntry.chapterContent} fieldContent={viewingVersionEntry.fieldContent} />
+                </div>
+              ))
+            ) : (
+            pages.map((p) => (
               <div key={p.id} ref={(el) => { pageRefs.current[p.id] = el; }} style={{ marginBottom: 40 }}>
                 {p.type === 'chapter' ? (
                   <ChapterEditor
@@ -8456,6 +8626,7 @@ export function BookEditorView() {
                     isSelected={selection.kind === 'chapter' && selection.chapterId.split('::')[0] === p.id}
                     isDragActive={!!draggedTile || movingBlock}
                     onMediaDropped={() => setMediaPicker(null)}
+                    onSetOpenerImage={setOpenerImage}
                     getFieldEditor={(key) => editorRegistry.current.get(key)?.editor}
                     moveDragRef={moveDragRef}
                     onMoveDragActiveChange={setMovingBlock}
@@ -8499,10 +8670,13 @@ export function BookEditorView() {
                     onReorderElement={reorderCoverElement}
                     onDuplicateElement={duplicateCoverElement}
                     onDeleteElement={deleteCoverElement}
+                    overlayOpen={anyOverlayOpen}
+                    onSetBackmatterPhoto={setBackmatterPhoto}
                   />
                 )}
               </div>
-            ))}
+            ))
+            )}
           </div>
           </div>
         </div>
@@ -8524,6 +8698,8 @@ export function BookEditorView() {
               onDeletePage={deletePage}
               onReorder={reorderChapter}
             />
+          ) : rightPanel === 'history' ? (
+            <HistoryPanel versions={versions} viewingVersionId={viewingVersionId} onSelectVersion={setViewingVersionId} />
           ) : rightPanel === 'chapters' ? (
             /* Two tabs in one navigator pane — the structure of the book, and a way
                to search it. Word's Navigation Pane is the precedent. Moved here from
@@ -8626,7 +8802,15 @@ export function BookEditorView() {
         <div className="flex-shrink-0 h-full flex flex-col items-center bg-white" style={{ width: RAIL_W, borderLeft: `1px solid ${BORDER}`, paddingTop: 12, gap: 4 }}>
           {([
             { id: 'pages', label: 'Pages', icon: ICONS.pagesTab },
-            { id: 'chapters', label: 'Chapters', icon: ICONS.chapterBreak },
+            // ICONS.chapterBreak (a plain rectangle bisected by one line) reads as
+            // a blank box at 19px and doesn't evoke "list of chapters" the way
+            // Pages' stacked-sheets glyph evokes "pages" — its own name suggests
+            // it was drawn for inserting a page-break element, not for this tab.
+            // ICONS.list already means "a list of items" successfully elsewhere
+            // (the Text panel's List/Questions insert tiles) — same reuse pattern
+            // this file already applies to ICONS.image for Media.
+            { id: 'chapters', label: 'Chapters', icon: ICONS.list },
+            { id: 'history', label: 'History', icon: ICONS.history },
             { id: 'properties', label: 'Properties', icon: ICONS.propertiesTab },
           ] as const).map((item) => {
             const active = rightPanelOpen && rightPanel === item.id;
@@ -8702,18 +8886,6 @@ export function BookEditorView() {
           pageNumbers={pageNumbers}
           title={metadata.title || 'Untitled book'}
           onClose={() => setShowPreview(false)}
-        />
-      )}
-
-      {showVersionHistory && (
-        <VersionHistoryOverlay
-          versions={versions}
-          pages={pages}
-          chapterContent={chapterContent}
-          fieldContent={fieldContent}
-          theme={theme}
-          onRestore={restoreVersion}
-          onClose={() => setShowVersionHistory(false)}
         />
       )}
 
