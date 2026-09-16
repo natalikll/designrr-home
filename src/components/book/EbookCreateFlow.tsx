@@ -817,7 +817,7 @@ function ReviewView({ template, onPublish }: { template: Template; onPublish: ()
       <div className="flex-1 flex flex-col overflow-hidden" style={{ padding: '20px 16px' }}>
         {/* Action bar */}
         <div className="flex items-center justify-end flex-shrink-0" style={{ gap: 10, marginBottom: 16 }}>
-          <button onClick={() => router.push('/book/editor')} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => openInEditor(router, DOC_TITLE, template)} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             Edit design
           </button>
@@ -945,7 +945,7 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
           Back
         </button>
         <div className="flex items-center" style={{ gap: 10 }}>
-          <button onClick={() => router.push('/book/editor')} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => openInEditor(router, DOC_TITLE, template)} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             Edit design
           </button>
@@ -1197,6 +1197,86 @@ const MOCK_PARAGRAPHS = [
   "That pressure came with me everywhere. Into meetings. Into quiet weekend mornings. Into relationships. I was living under the assumption that if I just consumed more, thought more, prepared more, I'd finally feel ready. Whenever I hit a gap in my knowledge, I didn't lean in with curiosity. I panicked. I'd spend hours researching trying to feel on top of something before engaging with it. The irony was that the more I learned, the wider my sense of what I didn't know became—fueling the cycle. I was chasing a finish line that kept moving.",
   "The breaking point came during a week that, on paper, should have been unremarkable. I was facing a handful of small decisions—nothing life-altering—and I froze. I couldn't choose a direction for a project because I hadn't analyzed every precedent. I couldn't respond to a simple email because I wasn't sure of the perfect phrasing. My brain had become so trained to demand certainty that it had forgotten how to move without it. In that stillness, something shifted.",
 ];
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// BookEditorView.tsx owns this exact key/shape (see its own STORAGE_KEY/PersistedBook) —
+// duplicated here rather than imported since these are two independent prototype flows
+// with no shared module boundary today. Keep the field names/shape below in sync with
+// PersistedBook if that ever changes.
+const BOOK_EDITOR_STORAGE_KEY = 'designrr.book.editor.v1';
+
+// A cover page's background AND every chapter/TOC/backmatter page's background both
+// read from the same theme.bg — there's no separate "cover-only" background slot in
+// BookEditorView's theme model. So the wizard's vivid gradient can't safely become
+// theme.bg (it would paint every body page too, wrecking text legibility) — instead
+// it becomes a full-bleed background SHAPE on just the cover page's own coverElements,
+// which is already a per-page override independent of the shared theme. Body pages
+// stay on the safe, neutral 'statement-lettering' theme regardless of which template
+// was picked in the wizard.
+function flattenBg(bg: string): string {
+  const hexes = bg.match(/#[0-9a-fA-F]{3,8}/g);
+  if (!hexes || hexes.length === 0) return bg; // already a plain CSS color
+  return hexes[hexes.length - 1]; // gradients here run light→dark at 160deg; the darker stop is the safer flat fallback for light cover text
+}
+
+/* Converts what the wizard actually generated (a title + one heading/subheading/
+   paragraphs document — see WritingContentView above) into the exact JSON shape
+   BookEditorView's own loadBook()/PersistedBook expects, so "Edit design" opens a
+   real reflection of the reviewed book instead of the editor's unrelated demo
+   content. Structural conversion, not decoration: H2 sections become chapters
+   (matching BookEditorView's own convention that a chapter's H3s are sub-headings
+   inside its body, not separate chapters — see deriveSubheadings there), so this
+   still does the right thing if MOCK_PARAGRAPHS/sections ever grow beyond one. */
+function buildEditorSeedFromWizard(docTitle: string, template: Template) {
+  const chapterId = 'ch-1';
+  const bodyHtml = `<h3>My Story</h3>${MOCK_PARAGRAPHS.map((p) => `<p>${escapeHtml(p)}</p>`).join('')}`;
+
+  const pages = [
+    {
+      id: 'p-cover',
+      type: 'cover',
+      title: 'Cover',
+      coverElements: [
+        { id: 'bg', type: 'shape', shape: 'rectangle', x: 0, y: 0, w: 100, h: 100, color: flattenBg(template.bg) },
+        { id: 'title', type: 'text', role: 'title', x: 8, y: 34, w: 84, h: 32, fontFamily: "'Nunito Sans', sans-serif", fontSize: 40, fontWeight: 800, color: template.textColor, textAlign: 'center' },
+        { id: 'rule', type: 'shape', shape: 'rectangle', x: 35, y: 68, w: 30, h: 1.1, color: template.accentColor },
+        { id: 'auth', type: 'text', role: 'author', x: 10, y: 91, w: 80, h: 5, fontFamily: "'Nunito Sans', sans-serif", fontSize: 12, fontWeight: 700, color: template.textColor, textAlign: 'center' },
+      ],
+    },
+    { id: 'p-toc', type: 'toc', title: 'Table of Contents' },
+    {
+      id: chapterId, type: 'chapter', title: 'Introduction', layout: 'opener', overrides: {},
+      titleHtml: '<h2>Introduction</h2>',
+      initialHtml: bodyHtml,
+    },
+    { id: 'p-back', type: 'backmatter', title: 'About the Author' },
+  ];
+
+  return {
+    version: 1,
+    pages,
+    metadata: {
+      title: docTitle, subtitle: '', author: '', identifier: '', language: 'en',
+      publisher: '', description: '', subjects: '', seriesName: '', seriesPosition: '', readingDirection: 'ltr',
+    },
+    pageNumbers: { enabled: true, position: 'footer-center', style: 'numeric', startAt: 1, skipCoverAndBackMatter: true },
+    activeTheme: 'statement-lettering',
+    chapterContent: { [chapterId]: bodyHtml },
+    fieldContent: { 'p-cover::title': `<p>${escapeHtml(docTitle)}</p>` },
+    spellcheck: true,
+    savedAt: Date.now(),
+  };
+}
+
+function openInEditor(router: ReturnType<typeof useRouter>, docTitle: string, template: Template) {
+  try {
+    window.localStorage.setItem(BOOK_EDITOR_STORAGE_KEY, JSON.stringify(buildEditorSeedFromWizard(docTitle, template)));
+  } catch { /* storage unavailable/full — editor still opens, just with its own demo content */ }
+  router.push('/book/editor');
+}
 
 function WritingContentView({ onChooseFormat }: { onChooseFormat: () => void }) {
   return (
