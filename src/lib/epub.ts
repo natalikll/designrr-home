@@ -272,7 +272,8 @@ ul { list-style: disc; margin: 0 0 .9em; padding-left: 1.4em; }
 ol { list-style: decimal; margin: 0 0 .9em; padding-left: 1.4em; }
 li { margin-bottom: .25em; }
 li p { margin: 0; }
-a { color: ${theme.accentColor}; }
+a { color: #006EFE; text-decoration: underline; text-underline-offset: 2px; }
+a:visited { color: #7C3AED; }
 mark { background: #fdf08a; }
 hr { border: none; border-top: 1px solid #ccc; margin: 1.5em 0; }
 
@@ -407,6 +408,26 @@ ${styleRules}
 
 .book-checklist { list-style: none; padding-left: 0; }
 .book-checklist li { margin-bottom: .4em; }
+
+/* Footnotes. The marker carries epub:type="noteref" and each note
+   epub:type="footnote" (see lib/footnotes.ts), which is what makes Kindle and
+   Apple Books show a tappable popup instead of jumping to the foot of the
+   chapter. Readers that don't do popups fall back to this list, so it still has
+   to read as a proper notes section on its own. */
+/* Plain superscript numeral, no brackets and no underline — a typeset
+   footnote, not a web citation. Still a real link: the padding is there so
+   the tap target is bigger than the 6px glyph without changing how it looks. */
+.book-footnote-ref { font-size: .72em; vertical-align: super; line-height: 0; font-weight: 700; }
+.book-footnote-ref a { text-decoration: none; color: inherit; padding: 0 .25em; }
+.book-footnotes {
+  margin-top: 2em;
+  padding-top: 1em;
+  border-top: 1px solid #DFE3E9;
+  font-size: .85em;
+  color: #4A5568;
+}
+.book-footnotes li { margin-bottom: .4em; }
+.book-footnotes p { margin: 0; }
 .book-answer-line { border-bottom: 1px solid #E0E5EB; height: 1.4em; margin: 0 0 .9em; }
 
 .cover { text-align: center; margin: 0; padding: 0; }

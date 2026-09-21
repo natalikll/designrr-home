@@ -6,6 +6,7 @@ node_modules/
 .DS_Store
 .env*
 *.env.local
+!.env.local.example
 *.tsbuildinfo
 
 # Retired design variants — kept locally, not pushed to GitHub (only the active version ships)
@@ -37,3 +38,6 @@ skills-lock.json
 .agents/
 .impeccable/
 .claude/skills/
+
+# Throwaway repro scripts and screenshots from debugging sessions
+.tmp-*
