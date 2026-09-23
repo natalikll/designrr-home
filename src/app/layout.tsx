@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Nunito_Sans, Syne, Manrope, Newsreader, Fraunces, Source_Sans_3, Parisienne, Anton, Courier_Prime } from 'next/font/google';
+import { Nunito_Sans, Syne, Manrope, Newsreader, Fraunces, Source_Sans_3, Parisienne, Anton, Courier_Prime, EB_Garamond, Lora, Playfair_Display, Libre_Baskerville, Merriweather, Inter, Montserrat, Poppins, Bebas_Neue } from 'next/font/google';
 import './globals.css';
 
 const nunitoSans = Nunito_Sans({
@@ -64,6 +64,22 @@ const courierPrime = Courier_Prime({
   weight: ['400', '700'],
 });
 
+/* The book editor's font picker (FONT_OPTIONS) offers a real library, not the
+   four families the covers happened to ship with. Everything above this line is
+   loaded because some *other* part of the app hardcodes it (themes, text-style
+   presets); everything below exists purely so the picker has a serif/sans/display
+   range an author would expect from a book tool. Weights are kept narrow (400/700
+   where the face has both) — the picker exposes families, not weights. */
+const ebGaramond = EB_Garamond({ variable: '--font-eb-garamond', subsets: ['latin'], weight: ['400', '600'], style: ['normal', 'italic'] });
+const lora = Lora({ variable: '--font-lora', subsets: ['latin'], weight: ['400', '600'], style: ['normal', 'italic'] });
+const playfair = Playfair_Display({ variable: '--font-playfair-display', subsets: ['latin'], weight: ['400', '700'], style: ['normal', 'italic'] });
+const libreBaskerville = Libre_Baskerville({ variable: '--font-libre-baskerville', subsets: ['latin'], weight: ['400', '700'], style: ['normal', 'italic'] });
+const merriweather = Merriweather({ variable: '--font-merriweather', subsets: ['latin'], weight: ['400', '700'], style: ['normal', 'italic'] });
+const inter = Inter({ variable: '--font-inter', subsets: ['latin'], weight: ['400', '600', '700'] });
+const montserrat = Montserrat({ variable: '--font-montserrat', subsets: ['latin'], weight: ['400', '600', '700'] });
+const poppins = Poppins({ variable: '--font-poppins', subsets: ['latin'], weight: ['400', '600', '700'] });
+const bebasNeue = Bebas_Neue({ variable: '--font-bebas-neue', subsets: ['latin'], weight: '400' });
+
 export const metadata: Metadata = {
   title: 'Start creating your book',
   description: 'Create your book with AI — in your authentic voice.',
@@ -76,7 +92,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${nunitoSans.variable} ${syne.variable} ${manrope.variable} ${newsreader.variable} ${fraunces.variable} ${sourceSans3.variable} ${parisienne.variable} ${anton.variable} ${courierPrime.variable} antialiased`}>
+      <body className={`${nunitoSans.variable} ${syne.variable} ${manrope.variable} ${newsreader.variable} ${fraunces.variable} ${sourceSans3.variable} ${parisienne.variable} ${anton.variable} ${courierPrime.variable} ${ebGaramond.variable} ${lora.variable} ${playfair.variable} ${libreBaskerville.variable} ${merriweather.variable} ${inter.variable} ${montserrat.variable} ${poppins.variable} ${bebasNeue.variable} antialiased`}>
         {children}
       </body>
     </html>

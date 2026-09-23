@@ -11,6 +11,11 @@ interface TooltipProps {
   /** Wraps the label at this width instead of the default single-line bubble — for
    *  sentence-length explainers where nowrap would run off the edge of the screen. */
   maxWidth?: number;
+  /** Stretches the wrapper to the available width. The default `inline-flex`
+   *  shrink-wraps, so a `w-full` child resolves against the shrunken box and a
+   *  full-width button inside a tooltip comes out button-sized instead. Opt-in,
+   *  so every existing caller keeps the shrink-wrapped behaviour. */
+  fullWidth?: boolean;
 }
 
 const EDGE_MARGIN = 8;
@@ -28,7 +33,7 @@ type Placement = {
  * everything, with no visual sign anything was wrong until the text ran off the edge. Position
  * is computed from the trigger's actual measured rect in viewport (fixed) coordinates instead.
  */
-export function Tooltip({ label, children, position = 'top', maxWidth }: TooltipProps) {
+export function Tooltip({ label, children, position = 'top', maxWidth, fullWidth = false }: TooltipProps) {
   const [placement, setPlacement] = useState<Placement | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -111,7 +116,7 @@ export function Tooltip({ label, children, position = 'top', maxWidth }: Tooltip
   return (
     <div
       ref={wrapperRef}
-      className="relative inline-flex"
+      className={fullWidth ? 'relative flex w-full' : 'relative inline-flex'}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={() => setPlacement(null)}
     >

@@ -70,6 +70,11 @@ export interface EpubInput {
   includeTocPage?: boolean;
   theme?: EpubTheme;
   textStyles?: EpubTextStyle[];
+  /* 'spaced' is the web/blog paragraph — a blank line between paragraphs, no
+     indent. 'indented' is the printed-book one — first line indented, nothing
+     between. Set once for the whole book in Book settings; see PARAGRAPH_STYLES
+     in BookEditorView for why these are the only two. */
+  paragraphStyle?: 'spaced' | 'indented';
 }
 
 const XML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' };
@@ -243,7 +248,7 @@ function hasRemoteResources(html: string): boolean {
    point: what the author designed is what the reader gets. Sizes are in `em`
    rather than the editor's `px` because a reflowable book has to honour the
    reader's own type size — that is the one place this deliberately differs. */
-function buildStylesheet(theme: EpubTheme, textStyles: EpubTextStyle[]): string {
+function buildStylesheet(theme: EpubTheme, textStyles: EpubTextStyle[], paragraphStyle: 'spaced' | 'indented' = 'spaced'): string {
   const styleRules = textStyles.map((s) => `.book-textstyle--${s.id} {
   font-family: ${s.fontFamily};
   font-size: ${(s.fontSize / 15.5).toFixed(2)}em;
@@ -267,7 +272,17 @@ h1, h2, h3 { font-family: ${theme.headingFont}; color: ${theme.headingColor}; li
 h1 { font-size: 1.9em; margin: 1.2em 0 .6em; }
 h2 { font-size: 1.6em; margin: 1.4em 0 .6em; }
 h3 { font-size: 1.15em; margin: 1.2em 0 .4em; }
+${paragraphStyle === 'indented' ? `
+/* Printed-book paragraphs: the indent does the separating, so the space between
+   them goes. A first paragraph has nothing to be separated FROM, which is why
+   the one opening a chapter and the one after any heading stay flush — the rule
+   every print style guide states and every book follows. */
+p { margin: 0; text-indent: 1.5em; }
+h1 + p, h2 + p, h3 + p, h4 + p, hr + p { text-indent: 0; }
+li p, .book-callout p, td p, blockquote p { text-indent: 0; }
+` : `
 p { margin: 0 0 .9em; text-indent: 0; }
+`}
 ul { list-style: disc; margin: 0 0 .9em; padding-left: 1.4em; }
 ol { list-style: decimal; margin: 0 0 .9em; padding-left: 1.4em; }
 li { margin-bottom: .25em; }
@@ -277,10 +292,13 @@ a:visited { color: #7C3AED; }
 mark { background: #fdf08a; }
 hr { border: none; border-top: 1px solid #ccc; margin: 1.5em 0; }
 
+/* Indent and size down, no rule — see the blockquote note in BookEditorView's
+   injected styles for the sources. 2.5em sits inside Butterick's 2-5em range
+   for the web, which is the closest analogue to a reflowable reading system. */
 blockquote {
-  border-left: 3px solid ${theme.accentColor};
-  margin: 1.2em 0;
-  padding: .25em 0 .25em 1em;
+  margin: 1.2em 2.5em;
+  padding: 0;
+  font-size: .95em;
   font-style: italic;
   color: #52637A;
 }
@@ -288,10 +306,11 @@ blockquote {
    these carry the parts that survive reflow (emphasis, spacing, columns) and
    drop the parts that cannot (fixed heights). */
 .book-layout-opener > h2 { font-size: 2.2em; margin-top: 1.6em; }
+/* Matches the editor's own rule exactly (see BookEditorView's injected CSS) —
+   size, face, weight of the rule and nothing else. Neither side boxes it. */
 .book-layout-quote-pull blockquote {
   font-size: 1.35em;
   font-family: ${theme.headingFont};
-  border-left-width: 4px;
   font-style: normal;
 }
 .book-layout-two-column { column-count: 2; column-gap: 1.8em; }
@@ -314,13 +333,25 @@ blockquote {
 .book-img-wrap--right { float: right; max-width: 46%; margin: .25em 0 .7em 1.2em; }
 .book-img-wrap--full-bleed { display: block; width: 100%; margin: 1.3em 0; max-width: none; }
 
+/* Tint plus a left bar, no surround — see the callout note in BookEditorView's
+   injected styles. */
 .book-callout {
   background: #EAF2FF;
-  border: 1px solid #BFDBFE;
-  border-radius: 8px;
+  border: none;
+  border-left: 3px solid #2563EB;
+  border-radius: 0 6px 6px 0;
   padding: .3em 1.2em;
   margin: 1.2em 0;
 }
+/* Ids, not labels: the id "note" is the one the UI calls Info, and "neutral" is
+   the one it calls Note (see CALLOUT_TYPES for why). "note" is also the bare
+   .book-callout above, so callouts written before types existed
+   (data-callout="true", no type) keep the look they were authored with. The
+   green "tip" these replaced is normalised to "note" on parse, so no exported
+   book can still reference it. */
+.book-callout--note { background: #EAF2FF; border-left-color: #2563EB; }
+.book-callout--neutral { background: #F4F6F8; border-left-color: #7A8698; }
+.book-callout--warning { background: #FFF8EB; border-left-color: #B4770E; }
 .book-callout p:last-child { margin-bottom: 0; }
 
 table { border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: .92em; }
@@ -557,7 +588,7 @@ ${wantsTocPage ? '      <li><a epub:type="toc" href="contents.xhtml">Table of Co
 </body>
 </html>`);
 
-  files['OEBPS/styles.css'] = strToU8(buildStylesheet(theme, input.textStyles ?? []));
+  files['OEBPS/styles.css'] = strToU8(buildStylesheet(theme, input.textStyles ?? [], input.paragraphStyle));
   for (const image of images) files[`OEBPS/${image.path}`] = image.bytes;
 
   // Package document
