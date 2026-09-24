@@ -1266,7 +1266,6 @@ function buildEditorSeedFromWizard(docTitle: string, template: Template) {
     activeTheme: 'statement-lettering',
     chapterContent: { [chapterId]: bodyHtml },
     fieldContent: { 'p-cover::title': `<p>${escapeHtml(docTitle)}</p>` },
-    spellcheck: true,
     savedAt: Date.now(),
   };
 }

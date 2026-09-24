@@ -75,6 +75,16 @@ export interface EpubInput {
      between. Set once for the whole book in Book settings; see PARAGRAPH_STYLES
      in BookEditorView for why these are the only two. */
   paragraphStyle?: 'spaced' | 'indented';
+  /* First-line indent for 'indented', as a percentage of the text size. A
+     relative unit rather than a print one because EPUB reflows: the indent has
+     to stay proportional to whatever size the reading system renders the text
+     at. Ignored when paragraphStyle is 'spaced'. */
+  paragraphIndentPct?: number;
+  /* Gap between paragraphs, as a percentage of the text size. Applies to BOTH
+     styles: indent and space are independent axes here, so an indented book can
+     carry a gap as well (0 gives the classic printed-book setting of indent with
+     no space). */
+  paragraphSpacePct?: number;
 }
 
 const XML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' };
@@ -101,7 +111,41 @@ export function htmlToXhtml(html: string): string {
      <svg> without an explicit xmlns is a namespace error rather than a drawing.
      Every shape and QR block this editor inserts renders inline SVG. */
   out = out.replace(/<svg(?![^>]*\bxmlns=)/gi, '<svg xmlns="http://www.w3.org/2000/svg"');
+  /* SVG attribute names are camelCase, and XHTML is case-sensitive — but this
+     markup comes from the browser's own serializer (editor.getHTML()), which
+     lowercases every attribute name. In HTML that is harmless, because the HTML
+     parser carries an "SVG attribute adjustment" table that restores the casing
+     on the way back in. An XML parser has no such table: `viewbox` is simply an
+     unknown attribute, so it is dropped and the drawing loses its coordinate
+     system entirely — a shape renders at the wrong scale and an 84px QR box
+     paints a 33px symbol inside it, which will not scan.
+     This applies to every inline SVG the editor produces: shapes, QR codes,
+     charts and button icons. Only the attributes actually emitted are listed; a
+     blanket case-fix would rename legitimately-lowercase attributes. */
+  for (const attr of ['viewBox', 'preserveAspectRatio']) {
+    out = out.replace(new RegExp(`\\s${attr}=`, 'gi'), ` ${attr}=`);
+  }
   return out;
+}
+
+/* The editor's prose is set at a fixed 15.5px (.book-chapter-prose), but this
+   stylesheet gives the body `font-size: 100%` — the reader's own base size,
+   which they can and do change. A line height typed in pixels is therefore
+   pinned to a size that only existed in the editor: 26px looked right against
+   15.5px type and becomes a crush at 22px.
+   So px is honoured where it was typed and re-expressed on the way out. The
+   panel stores exactly what you wrote (a fixed canvas like the cover wants
+   precisely that), and the export converts it to the multiplier it represented,
+   which keeps the proportion on any device. Values already relative — unitless,
+   % or em — are left alone; they were never pinned.
+   Figma never had to solve this, because nothing it exports reflows. */
+const EDITOR_PROSE_FONT_PX = 15.5;
+export function relativiseLineHeight(html: string): string {
+  return html.replace(/line-height:\s*([\d.]+)px/gi, (whole: string, px: string) => {
+    const n = parseFloat(px);
+    if (!Number.isFinite(n) || n <= 0) return whole;
+    return `line-height:${Math.round((n / EDITOR_PROSE_FONT_PX) * 1000) / 1000}`;
+  });
 }
 
 /* Data-URI images have to become real files in the package: readers vary in their
@@ -132,12 +176,20 @@ function decodeDataUri(uri: string): { bytes: Uint8Array; mediaType: string } | 
    Fetching is async and packaging is not, so this runs as an explicit step before
    buildEpub rather than inside it. Anything that can't be fetched is reported
    rather than swallowed, so the Publish panel can say which images won't ship. */
-const SRC_PATTERN = /src="([^"]+)"/g;
+/* Images only, and specifically not every `src="…"` in the document. A bare
+   attribute match also caught `data-src` (the embed block records its own source
+   there) and `<audio src>`, so a book with a video or an audio clip reported the
+   YouTube page and the MP3 as images that had failed to fetch — two scary
+   unresolved entries in the Publish panel for two things that were never images
+   and are not supposed to be packaged. Audio is allowed to stay remote; the
+   poster beside it is the only thing here that needs pulling in. */
+const IMG_TAG = /<img\b[^>]*>/gi;
+const SRC_IN_TAG = /\ssrc="([^"]+)"/i;
 
 function collectSources(html: string | undefined, out: Set<string>) {
   if (!html) return;
-  for (const match of html.matchAll(SRC_PATTERN)) {
-    const src = match[1];
+  for (const tag of html.match(IMG_TAG) ?? []) {
+    const src = tag.match(SRC_IN_TAG)?.[1];
     if (src && !src.startsWith('data:')) out.add(src);
   }
 }
@@ -179,10 +231,10 @@ export async function inlineExternalImages(input: EpubInput): Promise<InlineResu
 
   const swap = (html: string | undefined): string | undefined => {
     if (!html) return html;
-    return html.replace(SRC_PATTERN, (whole, src: string) => {
+    return html.replace(IMG_TAG, (tag) => tag.replace(SRC_IN_TAG, (whole, src: string) => {
       const replacement = resolved.get(src);
-      return replacement ? `src="${replacement}"` : whole;
-    });
+      return replacement ? ` src="${replacement}"` : whole;
+    }));
   };
 
   return {
@@ -202,19 +254,41 @@ function extensionFor(mediaType: string): string {
   if (mediaType === 'image/gif') return 'gif';
   if (mediaType === 'image/svg+xml') return 'svg';
   if (mediaType === 'image/webp') return 'webp';
+  /* Uploaded audio and video. A reading system reads the manifest's media-type,
+     not the extension, but a wrong extension in the package is still the kind of
+     thing that trips retailer ingestion, so these are spelled out rather than
+     left to fall through to `.bin`. */
+  if (mediaType === 'audio/mpeg') return 'mp3';
+  if (mediaType === 'audio/mp4' || mediaType === 'audio/x-m4a') return 'm4a';
+  if (mediaType === 'audio/wav' || mediaType === 'audio/x-wav') return 'wav';
+  if (mediaType === 'audio/ogg') return 'ogg';
+  if (mediaType === 'video/mp4') return 'mp4';
+  if (mediaType === 'video/webm') return 'webm';
   return 'bin';
 }
 
-function extractImages(html: string, images: ExtractedImage[]): string {
-  return html.replace(/src="(data:[^"]+)"/g, (whole, uri: string) => {
+/* Images go to images/, audio and video to media/ — the same split the manifest
+   and any human opening the ZIP would expect, rather than a video sitting in a
+   folder called images. */
+function assetFolder(mediaType: string): string {
+  return mediaType.startsWith('image/') ? 'images' : 'media';
+}
+
+/* `src` and `poster` both, because an uploaded video carries its generated still
+   in a poster attribute — matching only src left that one as a multi-megabyte
+   base64 string inlined in the XHTML. Named `images` for history; it carries
+   every packaged asset now, audio and video included. */
+function extractImages(html: string, images: ExtractedImage[], attr: 'src' | 'poster' = 'src'): string {
+  const out = html.replace(new RegExp(`${attr}="(data:[^"]+)"`, 'g'), (whole, uri: string) => {
     const decoded = decodeDataUri(uri);
     if (!decoded) return whole;
     const existing = images.find((i) => i.bytes.length === decoded.bytes.length && i.mediaType === decoded.mediaType);
-    if (existing) return `src="${existing.path}"`;
-    const path = `images/img-${images.length + 1}.${extensionFor(decoded.mediaType)}`;
+    if (existing) return `${attr}="${existing.path}"`;
+    const path = `${assetFolder(decoded.mediaType)}/asset-${images.length + 1}.${extensionFor(decoded.mediaType)}`;
     images.push({ path, bytes: decoded.bytes, mediaType: decoded.mediaType });
-    return `src="${path}"`;
+    return `${attr}="${path}"`;
   });
+  return attr === 'src' ? extractImages(out, images, 'poster') : out;
 }
 
 /* Sub-headings were derived for display and then linked to nothing — no ids were
@@ -238,9 +312,18 @@ function addHeadingIds(html: string, chapterIndex: number): { html: string; subs
 }
 
 /* Remote media needs declaring in the manifest or EPUBCheck rejects the file.
-   The editor can insert a video iframe or an audio element pointing anywhere. */
+
+   Audio is the only thing that legitimately triggers this. EPUB permits exactly
+   four resource classes outside the container — audio, video, fonts and data
+   fetched by script — and the editor can point an <audio> element at any host.
+   This used to test for a remote <iframe> too, which was the tell that something
+   was wrong: a remote HTML page is not in that list, so no manifest declaration
+   could have made it valid. The property is a notification to the reading system
+   that a document needs network access, not a licence to reference a forbidden
+   resource type. Video now ships as a packaged poster plus a link instead (see
+   EmbedBlock in BookEditorView), so nothing emits an iframe at all. */
 function hasRemoteResources(html: string): boolean {
-  return /<iframe[^>]+src="https?:/i.test(html) || /<audio[^>]+src="https?:/i.test(html);
+  return /<audio[^>]+src="https?:/i.test(html) || /<video[^>]+src="https?:/i.test(html);
 }
 
 /* ── stylesheet ──────────────────────────────────────────────────────────────
@@ -248,7 +331,7 @@ function hasRemoteResources(html: string): boolean {
    point: what the author designed is what the reader gets. Sizes are in `em`
    rather than the editor's `px` because a reflowable book has to honour the
    reader's own type size — that is the one place this deliberately differs. */
-function buildStylesheet(theme: EpubTheme, textStyles: EpubTextStyle[], paragraphStyle: 'spaced' | 'indented' = 'spaced'): string {
+function buildStylesheet(theme: EpubTheme, textStyles: EpubTextStyle[], paragraphStyle: 'spaced' | 'indented' = 'spaced', paragraphIndentPct = 150, paragraphSpacePct = 90): string {
   const styleRules = textStyles.map((s) => `.book-textstyle--${s.id} {
   font-family: ${s.fontFamily};
   font-size: ${(s.fontSize / 15.5).toFixed(2)}em;
@@ -268,20 +351,32 @@ body {
   background: ${theme.bg};
 }
 
-h1, h2, h3 { font-family: ${theme.headingFont}; color: ${theme.headingColor}; line-height: 1.25; font-weight: 700; }
+h1, h2, h3, h4 { font-family: ${theme.headingFont}; color: ${theme.headingColor}; line-height: 1.25; font-weight: 700; }
 h1 { font-size: 1.9em; margin: 1.2em 0 .6em; }
 h2 { font-size: 1.6em; margin: 1.4em 0 .6em; }
-h3 { font-size: 1.15em; margin: 1.2em 0 .4em; }
+/* h3 and h4 are the only heading levels that appear INSIDE a chapter's prose —
+   h1 and h2 carry the cover and the chapter title, which the editor sets as its
+   own fields. They were 1.15em and (unstyled) 1em, a third of a pixel apart at
+   15.5px body, so a section heading and the subheading under it were told apart
+   by weight alone and a subheading read as body text in bold. Widened to a real
+   ramp: ~1.4 / ~1.15 / 1 gives each level a step you can see at a glance.
+   h4 also joins the family/colour rule above — left out, it fell back to the
+   reading system's own serif default and came out in a different typeface from
+   every other heading in the book. */
+h3 { font-size: 1.4em; margin: 1.3em 0 .45em; }
+h4 { font-size: 1.15em; margin: 1.2em 0 .4em; }
 ${paragraphStyle === 'indented' ? `
-/* Printed-book paragraphs: the indent does the separating, so the space between
-   them goes. A first paragraph has nothing to be separated FROM, which is why
+/* Indented paragraphs. The gap is whatever paragraphSpace says rather than a
+   forced zero — indent and space are independent settings in the editor, and
+   0 is what gives the classic printed-book look where the indent does all the
+   separating. A first paragraph has nothing to be separated FROM, which is why
    the one opening a chapter and the one after any heading stay flush — the rule
    every print style guide states and every book follows. */
-p { margin: 0; text-indent: 1.5em; }
+p { margin: 0 0 ${paragraphSpacePct / 100}em; text-indent: ${paragraphIndentPct / 100}em; }
 h1 + p, h2 + p, h3 + p, h4 + p, hr + p { text-indent: 0; }
 li p, .book-callout p, td p, blockquote p { text-indent: 0; }
 ` : `
-p { margin: 0 0 .9em; text-indent: 0; }
+p { margin: 0 0 ${paragraphSpacePct / 100}em; text-indent: 0; }
 `}
 ul { list-style: disc; margin: 0 0 .9em; padding-left: 1.4em; }
 ol { list-style: decimal; margin: 0 0 .9em; padding-left: 1.4em; }
@@ -361,9 +456,28 @@ th { background: #F7F8FA; font-weight: 700; color: ${theme.headingColor}; }
 .book-shape { display: inline-block; margin: .5em .8em .5em 0; }
 .book-shape svg { display: inline-block; }
 
-.book-embed { margin: 1.2em 0; background: #F0F2F5; }
-.book-embed--video iframe { width: 100%; min-height: 15em; display: block; border: 0; }
-.book-embed--audio { padding: .9em; }
+.book-embed { margin: 1.2em 0; }
+/* Video ships as a poster and a link, never a player. It isn't an EPUB core media
+   type, so no reading system is obliged to play it; an e-ink screen can't; and a
+   remote HTML page — a YouTube embed — is a resource class EPUB forbids outright,
+   which is what the iframe here used to be. Styled as a captioned figure so it
+   reads as deliberate rather than as something that failed to load.
+   Flow layout, not the editor's absolute overlay: positioning support varies
+   between reading systems, and a caption that fails to overlay should fall to a
+   line beneath the image rather than land somewhere arbitrary. */
+.book-embed--video { background: #F0F2F5; }
+.book-embed--video .book-embed-link { display: block; text-decoration: none; }
+.book-embed-poster { width: 100%; display: block; }
+/* An uploaded clip is a real player here too — a video file in the container is
+   a legal resource, unlike a remote page. The poster and caption sit inside the
+   element as fallback content, which only a reader that can't play video shows. */
+.book-embed-video { width: 100%; display: block; }
+/* Decoration that only reads over a still; the caption carries the affordance in
+   words, which is what a reader without CSS support gets either way. */
+.book-embed-badge { display: none; }
+.book-embed-caption { display: block; padding: .5em .6em .6em; font-size: .85em; text-decoration: underline; }
+.book-embed--noposter .book-embed-caption { padding: .9em .6em; }
+.book-embed--audio { padding: .9em; background: #F0F2F5; }
 .book-embed--audio audio { width: 100%; display: block; }
 
 .book-author-name { font-style: italic; letter-spacing: .02em; color: #6B7686; text-align: center; }
@@ -387,6 +501,23 @@ ${styleRules}
 .book-columns--3 { column-count: 3; }
 .book-columns--4 { column-count: 4; }
 
+/* Column layouts are tables structurally — one row, one cell per column, each
+   holding its own text — so they have to opt out of every bit of the table
+   styling above or a two-column spread exports as a ruled spreadsheet at 92%
+   type. The .book-columns rules above stay for books written before columns
+   became cells. */
+.book-split-columns { border: none; table-layout: fixed; font-size: 1em; margin: 1.2em 0; }
+.book-split-columns td { border: none; padding: 0 .5em; vertical-align: top; }
+.book-split-columns td:first-child { padding-left: 0; }
+.book-split-columns td:last-child { padding-right: 0; }
+.book-split-columns--1-3 td:first-child { width: 33.333%; }
+.book-split-columns--1-3 td:last-child { width: 66.667%; }
+.book-split-columns--3-1 td:first-child { width: 66.667%; }
+.book-split-columns--3-1 td:last-child { width: 33.333%; }
+/* Same as the editor: a photo in a split cell starts level with its text. */
+.book-split-columns td > .book-img-wrap:first-child { margin-top: 0; }
+.book-split-columns td > .book-img-wrap:last-child { margin-bottom: 0; }
+
 /* CSS grid is patchy across reading systems, so the grid degrades to a float
    row that every renderer understands. */
 .book-image-grid { margin: 1.3em 0; overflow: hidden; }
@@ -394,6 +525,11 @@ ${styleRules}
 .book-image-grid--2 .book-img-wrap { width: 49%; }
 .book-image-grid--3 .book-img-wrap { width: 32%; }
 .book-image-grid--4 .book-img-wrap { width: 24%; }
+/* The uneven pair carries --2 as well, so these override its 49/49 after it. */
+.book-image-grid--1-3 .book-img-wrap:first-child { width: 24%; }
+.book-image-grid--1-3 .book-img-wrap:last-child { width: 74%; }
+.book-image-grid--3-1 .book-img-wrap:first-child { width: 74%; }
+.book-image-grid--3-1 .book-img-wrap:last-child { width: 24%; }
 
 .book-qr {
   margin: 1em 0;
@@ -402,22 +538,15 @@ ${styleRules}
   border-radius: 8px;
   background: #fff;
 }
-.book-qr-url { font-size: .82em; color: #6B7686; word-break: break-all; }
-
-.book-textfield { margin: 1em 0; max-width: 24em; }
-.book-textfield-label {
-  display: block;
-  font-size: .8em;
-  font-weight: 600;
-  color: #6B7686;
-  margin-bottom: .35em;
-}
-.book-textfield-box {
-  height: 2.2em;
-  border: 1px solid #E0E5EB;
-  border-radius: 6px;
-  background: #F7F8FA;
-}
+/* The caption is the destination's host, as a link — see QrCodeBlock. It used to
+   be the whole URL, tracking parameters and all, on the same "show where it goes"
+   reasoning the button and video poster use. That reasoning does not transfer: a
+   QR on paper CAN be used, which is the entire point of printing one. What the
+   caption is actually for is the two things the symbol cannot do — be read by a
+   screen reader, and be followed in EPUB or the web version, where the reader is
+   holding the device that would have scanned it. A host does both, in one line. */
+.book-qr-url { display: block; margin-top: .5em; font-size: .82em; color: #6B7686; }
+.book-qr-url:link, .book-qr-url:visited { color: #6B7686; }
 
 .book-jumbotron { margin: 1.5em 0; padding: 2em; border-radius: 10px; text-align: center; }
 .book-jumbotron-heading {
@@ -436,9 +565,70 @@ ${styleRules}
   border-radius: 7px;
   padding: .65em 1.3em;
 }
+/* The button is an <a> now, so the reading system's own link colour would
+   override the white set above and paint the label in blue on a blue fill. */
+.book-jumbotron-button, .book-jumbotron-button:link, .book-jumbotron-button:visited {
+  color: #fff;
+  text-decoration: none;
+}
+/* Printed beneath the button for the same reason the QR code prints its address
+   and the video poster prints "Watch: …" — on paper the label alone tells the
+   reader an action exists and gives them no way to take it. */
+.book-jumbotron-url { display: block; margin-top: .7em; font-size: .78em; color: #6B7686; word-break: break-all; }
 
-.book-checklist { list-style: none; padding-left: 0; }
-.book-checklist li { margin-bottom: .4em; }
+/* ── button ──────────────────────────────────────────────────────────────────
+   Deliberately not display:flex — flexbox is unreliable across EPUB reading
+   systems and absent from Kindle's KF8 renderer, where the icon and the label
+   would stack. inline-block plus vertical-align is the alignment idiom every
+   renderer here understands.
+   The fill and text colour are written inline by the node (the author picks the
+   fill, and buttonInkFor derives the text from it), so they are deliberately
+   absent from this rule — only the shape and the metrics live here. */
+.book-button-wrap { margin: 1.3em 0; }
+.book-button {
+  display: inline-block;
+  font-size: .9em;
+  font-weight: 700;
+  border-radius: 7px;
+  padding: .65em 1.3em;
+  text-decoration: none;
+}
+/* A reading system's default link colouring is more specific than the element's
+   own inline style in some engines, which would repaint the label and leave it
+   unreadable on its fill. Kept to the class so ordinary prose links are
+   untouched. */
+.book-button:link, .book-button:visited { text-decoration: none; }
+.book-btn-icon { display: inline-block; vertical-align: -.15em; }
+.book-button-label + .book-btn-icon { margin-left: .5em; }
+.book-btn-icon + .book-button-label { margin-left: .5em; }
+.book-button-url { display: block; margin-top: .5em; font-size: .78em; color: #6B7686; word-break: break-all; }
+
+/* ── icons ───────────────────────────────────────────────────────────────────
+   Width and height are written inline by the node in px, because an icon is
+   sized against the text beside it, not against the reader's root font size. */
+.book-icon-wrap { margin: 1.1em 0; }
+.book-icon { display: inline-block; }
+
+/* ── social row ──────────────────────────────────────────────────────────────
+   inline-block items rather than flex, for the same reason the button avoids it:
+   flexbox is unreliable across EPUB reading systems and missing from Kindle's
+   KF8 renderer, where the row would collapse into a stack. Each item is allowed
+   to wrap to the next line on a narrow page, which a flex row would not do
+   without extra properties those same renderers ignore. */
+.book-social { margin: 1.2em 0; }
+.book-social-item {
+  display: inline-block;
+  margin: 0 1.2em .4em 0;
+  font-size: .88em;
+  text-decoration: none;
+}
+.book-social-item:link, .book-social-item:visited { text-decoration: none; }
+.book-social-icon { display: inline-block; vertical-align: -.18em; }
+.book-social-handle { margin-left: .4em; }
+/* The unconfigured state never reaches a reader — socialItems() emits no items
+   without handles, so the row renders empty — but the class is styled anyway for
+   the editor canvas, which does show the prompt. */
+.book-social-empty { font-size: .85em; color: #6B7686; }
 
 /* Footnotes. The marker carries epub:type="noteref" and each note
    epub:type="footnote" (see lib/footnotes.ts), which is what makes Kindle and
@@ -510,7 +700,7 @@ export function buildEpub(input: EpubInput): Uint8Array {
   const chapterFiles = chapters.map((chapter, i) => {
     const name = `chapter-${i + 1}.xhtml`;
     const withIds = addHeadingIds(chapter.html, i);
-    const body = extractImages(htmlToXhtml(withIds.html), images);
+    const body = extractImages(htmlToXhtml(relativiseLineHeight(withIds.html)), images);
     const layoutClass = chapter.layout ? ` book-layout-${chapter.layout}` : '';
     files[`OEBPS/${name}`] = strToU8(xhtmlDoc(
       chapter.title,
@@ -555,7 +745,7 @@ export function buildEpub(input: EpubInput): Uint8Array {
   }
 
   if (input.backMatterHtml) {
-    const body = extractImages(htmlToXhtml(input.backMatterHtml), images);
+    const body = extractImages(htmlToXhtml(relativiseLineHeight(input.backMatterHtml)), images);
     files['OEBPS/backmatter.xhtml'] = strToU8(xhtmlDoc('About the Author', lang, `<section epub:type="afterword">\n${body}\n</section>`, dir));
   }
 
@@ -588,7 +778,7 @@ ${wantsTocPage ? '      <li><a epub:type="toc" href="contents.xhtml">Table of Co
 </body>
 </html>`);
 
-  files['OEBPS/styles.css'] = strToU8(buildStylesheet(theme, input.textStyles ?? [], input.paragraphStyle));
+  files['OEBPS/styles.css'] = strToU8(buildStylesheet(theme, input.textStyles ?? [], input.paragraphStyle, input.paragraphIndentPct, input.paragraphSpacePct));
   for (const image of images) files[`OEBPS/${image.path}`] = image.bytes;
 
   // Package document
@@ -600,7 +790,10 @@ ${wantsTocPage ? '      <li><a epub:type="toc" href="contents.xhtml">Table of Co
     ...(wantsTocPage ? ['    <item id="contents" href="contents.xhtml" media-type="application/xhtml+xml" />'] : []),
     ...chapterFiles.map((c) => `    <item id="${c.id}" href="${c.name}" media-type="application/xhtml+xml"${c.remote ? ' properties="remote-resources"' : ''} />`),
     ...(input.backMatterHtml ? ['    <item id="backmatter" href="backmatter.xhtml" media-type="application/xhtml+xml" />'] : []),
-    ...images.map((img, i) => `    <item id="img-${i + 1}" href="${img.path}" media-type="${img.mediaType}"${img.path === coverImagePath ? ' properties="cover-image"' : ''} />`),
+    /* Ids name what the item is. They're opaque to a reading system, but a
+       manifest calling an MP4 "img-2" is the sort of thing that makes a packaging
+       bug hard to see when someone opens the ZIP to work out what went wrong. */
+    ...images.map((img, i) => `    <item id="${img.mediaType.split('/')[0]}-${i + 1}" href="${img.path}" media-type="${img.mediaType}"${img.path === coverImagePath ? ' properties="cover-image"' : ''} />`),
   ].join('\n');
 
   const spine = [
