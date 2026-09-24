@@ -613,6 +613,15 @@ export function ProjectsView() {
   const filtered = PROJECTS.filter(p => p.type === activeTab && (!search || p.title.toLowerCase().includes(search.toLowerCase())));
 
   const handleOpenProject = (project: Project) => {
+    // Unlike presentation/video, BookEditorView has no per-project storage yet
+    // (a single localStorage slot, not one keyed by id — see STORAGE_KEY in
+    // BookEditorView.tsx) — every ebook card opens that same slot for now,
+    // matching the rest of this prototype's single-book depth rather than
+    // inventing multi-book persistence no other part of the flow has either.
+    if (project.type === 'ebook') {
+      router.push('/book/editor');
+      return;
+    }
     if (project.type === 'presentation') {
       const saved = SAVED_PRESENTATIONS[project.id];
       if (!saved) return;
