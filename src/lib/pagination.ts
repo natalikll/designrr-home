@@ -25,10 +25,14 @@
    A paragraph that straddles a boundary is split at a line, the way a book
    does it: the spacer goes inside the paragraph and the text carries on at the
    top of the next page, with Word's two-line orphan and widow minimums. Only a
-   plain paragraph splits. A figure, table, heading or blockquote moves down
+   plain paragraph splits that way; a data table fragments at its row
+   boundaries instead. A figure, heading, blockquote or layout table moves down
    whole — their boxes paint a border, rule or background that would draw
    straight through the page gap, and a heading cut off from its own first line
-   is what keep-with-next exists to prevent. */
+   is what keep-with-next exists to prevent.
+
+   The contract this engine holds to — its invariants, its known limits and
+   the fixture cases that check them — is written down in pagination.md. */
 
 /* ── page geometry ────────────────────────────────────────────────────────────
    Trim size and margins are a book SETTING, so everything below takes the page
@@ -150,12 +154,20 @@ export interface Measured {
     before dispatching, because a reflow that changes nothing must not loop. */
 export function sameBreaks(a: PageBreak[], b: PageBreak[]): boolean {
   if (a.length !== b.length) return false;
-  return a.every((x, i) => x.pos === b[i].pos && Math.abs(x.height - b[i].height) < 1);
+  return a.every((x, i) => x.pos === b[i].pos
+    && x.lineIndex === b[i].lineIndex
+    && x.rowIndex === b[i].rowIndex
+    && Math.abs(x.height - b[i].height) < 1);
 }
 
 /** One top-level block as it is RENDERED right now: pixels from the top of the
     first block, with whatever spacers already exist included. */
 export interface FlowBlock {
+  /** Opens a page whatever the flow would otherwise do — a chapter title with
+      its "start on a new page" property on. Nothing else in this file forces a
+      break; every other entry here describes what a block IS, and this is the
+      one thing the author says about it directly. */
+  forced?: boolean;
   /** null when the element's document position wouldn't resolve. Such a block
       still occupies space, so it counts toward the page, but a break can't be
       anchored to it. */
@@ -165,12 +177,26 @@ export interface FlowBlock {
   /** Height of the spacer immediately before this block, 0 if there is none. */
   spacerBefore: number;
   /** Set only for blocks that may be split mid-way — a plain paragraph. A
-      figure, table, heading or blockquote must move whole: their boxes paint a
+      figure, heading or blockquote must move whole: their boxes paint a
       border, rule or background that would draw straight through the page gap,
       and a heading cut off from its own first line is what keep-with-next
       exists to prevent. */
   lineHeight?: number;
   lineCount?: number;
+  /** Set only on a DATA table, which fragments at row boundaries instead of at
+      lines. Offsets from the block's top to each row's top, plus a final entry
+      for the last row's bottom, so row `i` occupies [rows[i], rows[i + 1]).
+      Unpaginated: the caller subtracts the spacer and repeated-header rows it
+      has already inserted, exactly as it does for paragraph spacers.
+
+      A layout table — `book-split-columns`, a stack — must NOT set this. Its
+      one row is a set of side-by-side columns, so breaking it at a row
+      boundary either does nothing or cuts the columns off mid-flow. */
+  rows?: number[];
+  /** Height of the header row, or 0/absent when the table has no header.
+      It is NOT repeated on continuations — only used to keep a header from
+      being stranded at the foot of a page with no body row under it. */
+  headerH?: number;
 }
 
 /** What a break does: move the whole block down, or split it at a line. */
@@ -180,6 +206,9 @@ export interface PageBreak {
   /** Which line of the block the break falls before. Absent for a whole-block
       break. */
   lineIndex?: number;
+  /** Which row of the block the break falls before, for a table. Absent for a
+      whole-block break or a line split. */
+  rowIndex?: number;
 }
 
 /** Where page `i`'s content band starts and ends, in the same rendered
@@ -224,6 +253,50 @@ function splitLines(b: FlowBlock, top: number, page: number, g: PageGeometry, re
   return out.length ? { breaks: out, endPage: p } : null;
 }
 
+/** One table's fragmentation, at row boundaries, laid out from `top` with its
+    first row on page `page`. Returns null when it can't be fragmented
+    politely, which is the caller's signal to move it whole instead.
+
+    Two things make this different from splitLines. A row is not a uniform
+    pitch, so the offsets come in measured rather than derived from a line
+    height — but they are still UNPAGINATED offsets, and the displacement this
+    call is itself deciding on is added back the same way, for the same reason:
+    correcting from where a row currently sits double-counts the spacer that
+    put it there.
+
+    A continuation does NOT repeat the header row, so a break costs its spacer
+    and nothing else. The header's height still matters for where the first
+    break may fall — see `first` below. */
+function splitRows(b: FlowBlock, top: number, page: number, g: PageGeometry, reserve: PageReserve): { breaks: PageBreak[]; endPage: number } | null {
+  const rows = b.rows;
+  // rows holds one entry per row plus a closing bottom, so 3 entries is the
+  // smallest table with anything to break BETWEEN.
+  if (b.pos == null || !rows || rows.length < 3) return null;
+  const headerH = b.headerH ?? 0;
+  /* Never strand a header row at the foot of a page with nothing under it:
+     with a header, the earliest legal break leaves it at least one body row
+     for company. This is the table's orphan rule. */
+  const first = headerH > 0 ? 2 : 1;
+  const out: PageBreak[] = [];
+  let added = 0;
+  let p = page;
+  for (let j = first; j < rows.length - 1; j++) {
+    // Where this row's BOTTOM lands once the breaks decided so far are applied.
+    if (top + rows[j + 1] + added <= bandEnd(p, g, reserve)) continue;
+    /* What stays behind has to fit. This only ever fails on the first break —
+       any later row is reached by the `continue` above, which already proved
+       its predecessor fitted — and it means the table starts too far down the
+       page to leave anything legal behind, so the caller moves it whole. */
+    if (top + rows[j] + added > bandEnd(p, g, reserve)) return null;
+    p++;
+    const height = Math.round(bandTop(p, g) - (top + rows[j] + added));
+    if (height <= 0) return null;
+    out.push({ pos: b.pos, rowIndex: j, height });
+    added += height;
+  }
+  return out.length ? { breaks: out, endPage: p } : null;
+}
+
 /** Decides where pages end, working directly in rendered coordinates.
 
     Two earlier attempts failed and both failure modes are worth keeping:
@@ -249,6 +322,28 @@ export function measureBreaks(blocks: FlowBlock[], g: PageGeometry, reserve: Pag
   let page = 0;
 
   for (const b of blocks) {
+    /* An authored break, taken before any measurement: this block opens a page
+       because the author said so, not because the one above it ran out of room.
+
+       The guard is what makes it idempotent. Once the break has been applied,
+       the spacer has pushed `b.top` down to the new band's top, so on the next
+       pass `b.top > bandTop(page)` is still true (the loop's `page` has not
+       advanced past the sheet above yet) and the same break is re-emitted with
+       the same height — `bandTop(page) - b.top` collapses to 0 and only
+       `spacerBefore` remains. A block already at the top of its band, including
+       the first block of a chapter, has nothing to be pushed past and is left
+       alone.
+
+       `continue` rather than falling through to the overflow tests: those were
+       computed against the band this block just left. A chapter title is one or
+       two lines and cannot overrun the page it was just given; anything that
+       somehow did would be caught on the next measurement pass. */
+    if (b.forced && b.pos != null && b.top > bandTop(page, g)) {
+      page++;
+      breaks.push({ pos: b.pos, height: Math.round(b.spacerBefore + (bandTop(page, g) - b.top)) });
+      continue;
+    }
+
     const end = bandEnd(page, g, reserve);
     const tall = b.bottom - b.top > end - bandTop(page, g);
     if (b.bottom <= end && !(tall && b.top > bandTop(page, g))) continue;
@@ -265,8 +360,10 @@ export function measureBreaks(blocks: FlowBlock[], g: PageGeometry, reserve: Pag
        paragraph fell through to a whole-block move it then overran.
 
        So: try to split where the block currently sits; failing that, move it
-       and try again from the top of its new page. */
-    const s = splitLines(b, b.top, page, g, reserve);
+       and try again from the top of its new page. A block carries line
+       geometry or row geometry, never both, so the two attempts are exclusive
+       and the order between them doesn't matter. */
+    const s = splitLines(b, b.top, page, g, reserve) ?? splitRows(b, b.top, page, g, reserve);
     if (s) { breaks.push(...s.breaks); page = s.endPage; continue; }
 
     /* Already at or above this page's top — a previous pass put it here, or it
@@ -280,7 +377,8 @@ export function measureBreaks(blocks: FlowBlock[], g: PageGeometry, reserve: Pag
     breaks.push({ pos: b.pos, height: Math.round(b.spacerBefore + (bandTop(page, g) - b.top)) });
     // A paragraph longer than a page still overruns after the move, so split
     // its tail from the top of the page it just landed on.
-    const after = splitLines(b, bandTop(page, g), page, g, reserve);
+    const after = splitLines(b, bandTop(page, g), page, g, reserve)
+      ?? splitRows(b, bandTop(page, g), page, g, reserve);
     if (after) { breaks.push(...after.breaks); page = after.endPage; continue; }
     // Unsplittable and still too tall for where it landed — measured against
     // the NEW page's band, whose footnote reserve is its own.
