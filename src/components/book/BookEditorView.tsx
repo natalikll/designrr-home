@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, createContext, useContext } from 'react';
+import { useState, useRef, useReducer, useCallback, useEffect, useLayoutEffect, useMemo, createContext, useContext } from 'react';
 import { createPortal } from 'react-dom';
 import { useEditor, EditorContent, type Editor } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
-import { NodeSelection, TextSelection, Plugin, PluginKey, type EditorState } from '@tiptap/pm/state';
+import { NodeSelection, TextSelection, Selection as PMSelection, Plugin, PluginKey, type EditorState } from '@tiptap/pm/state';
 import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
+import { CellSelection } from '@tiptap/pm/tables';
 import type { Node as PMNode, DOMOutputSpec } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
@@ -14,7 +15,7 @@ import Color from '@tiptap/extension-color';
 import Highlight from '@tiptap/extension-highlight';
 import Placeholder from '@tiptap/extension-placeholder';
 import TiptapImage from '@tiptap/extension-image';
-import { Table } from '@tiptap/extension-table';
+import { Table, TableView } from '@tiptap/extension-table';
 import { HorizontalRule } from '@tiptap/extension-horizontal-rule';
 import TableRow from '@tiptap/extension-table-row';
 import TableCell from '@tiptap/extension-table-cell';
@@ -25,13 +26,15 @@ import { useFlowStore, ownsPlan } from '@/stores/flowStore';
 import { buildEpub, downloadEpub, inlineExternalImages } from '@/lib/epub';
 import { runChecks, summarise, type CheckResult, type CheckStatus } from '@/lib/bookChecks';
 import { parseVideoUrl, fetchVideoMeta, videoLinkLabel, withProtocol, videoLinkProblem, type VideoMeta } from '@/lib/videoEmbed';
+import { editsFor } from '@/lib/textTransforms';
 import { BOOK_ICONS, BUTTON_ICONS, SOCIAL_ICONS, BOOK_ICONS_BY_NAME, bookIconSpec, bookIconHtml, socialUrl, cleanHandle } from '@/lib/bookIcons';
+import type { BookIconStyle } from '@/lib/bookIcons';
 import { newQrCode, saveQrLink, resolveQrLink, shortLinkFor, destinationHost } from '@/lib/qrLinks';
 import { isMediaRef, mediaUrl, putMedia, loadAllMedia, inlineUploadedMedia, stripSessionUrls } from '@/lib/mediaStore';
 import { FOOTNOTE_LIST_CLASS, applyFootnoteNumbering } from '@/lib/footnotes';
 import {
   PAGE_W as DEFAULT_PAGE_W, PAGE_H as DEFAULT_PAGE_H,
-  measureBreaks, sameBreaks, pageTop, stackHeight, bandTop, contentH, pageOfTop,
+  measureBreaks, sameBreaks, pageTop, stackHeight, bandTop, contentH, pageOfTop, PAGE_GAP,
   FOOTNOTE_GAP, footnoteReserveMax,
   PAGE_SIZES, pageGeometry, DEFAULT_GEOMETRY,
   DEFAULT_PAGE_SIZE, DEFAULT_MARGIN_X, DEFAULT_MARGIN_Y, PX_PER_IN,
@@ -42,6 +45,7 @@ import { UpgradePlanModal } from '../account/MyAccountView';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { AISparkleIcon, DuplicateIcon, TrashIcon } from '../presentation/presentationIcons';
 import { Tooltip } from '../ui/Tooltip';
+import { MenuTick, MENU_TICK_PATH } from '@/components/ui/MenuTick';
 
 /* ── shared tokens, matching the rest of the app ─────────────────────────────── */
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
@@ -68,6 +72,14 @@ const MENU_SHADOW = '0px 8px 24px rgba(15,23,51,0.12)';
 // than imported — everything else that crosses between these two editors is a
 // small, genuinely generic icon; this one's tied to this file's own AIButton).
 const AI_GRADIENT = 'linear-gradient(244.79deg, #006EFE 2.17%, #5326BD 103.16%)';
+/* The same gradient turned 180° — the design system's AI button flips its
+   direction on hover rather than lightening, so the fill moves without the
+   colour changing to something that isn't in the palette. */
+const AI_GRADIENT_HOVER = 'linear-gradient(64.79deg, #006EFE 2.17%, #5326BD 103.16%)';
+/* Disabled keeps the gradient and washes it out. Dropping to grey would say
+   "this is a dead control"; the control is fine, it just has nothing to act on
+   yet, and it is still the AI one. */
+const AI_GRADIENT_MUTED = 'linear-gradient(244.79deg, #9FC0FF 2.17%, #BBA9E9 103.16%)';
 const CARD_SHADOW = '0px 2px 6px rgba(15,23,51,0.08)';
 // The dataviz skill's validated categorical palette (light-mode steps only — book
 // pages are a print-like light surface via theme.bg, no dark-mode chart surface
@@ -122,6 +134,20 @@ const PANEL_W = 264;
    bar opens them. Narrow on purpose: it's reference, not a work surface, so it gives
    its width back to the canvas. Page thumbnails scale off this (see thumbW). */
 const INSPECTOR_W = 240;
+/* The navigator is two panels behind two tabs, and they want different widths.
+   Chapters is a text list whose row is a title plus a drag handle and a row
+   menu, so it wants room to read; Pages is a strip of portrait thumbnails that
+   wants room for exactly one thumbnail, and every extra pixel of width becomes
+   1.29 pixels of height on a US Letter sheet — which is why the wider the panel
+   got, the fewer pages fit on screen (240px showed 2, 150px showed 4).
+   Sizing the panel to the thumbnail is also what every portrait-page navigator
+   surveyed does — PandaDoc, Dropbox's PDF editor, Zillow's document viewer,
+   Evernote, QuickBooks' report builder are all narrow — rather than centring a
+   small thumbnail in a wide panel with white down both sides.
+   Safe to vary per tab because nothing else reads this: pagination is driven by
+   the page size in inches (see pageGeometry), not by how much room is left
+   over, so the canvas doesn't reflow when the panel changes width. */
+const PAGES_PANEL_W = 180;
 /* The DEFAULT page box. Trim size and margins are a book setting now (Book
    settings → Page), so anything drawing this book's own pages takes the live
    geometry as a prop; these two are for the surfaces that show a DESIGN rather
@@ -195,8 +221,26 @@ interface UnsplashResult {
   thumbUrl: string;
   fullUrl: string;
   alt: string;
+  // The photo's own proportions, carried through from the API so a tile can
+  // hold its exact height before the image decodes.
+  width: number;
+  height: number;
   downloadLocation: string;
   credit: { name: string; profileUrl: string };
+}
+
+/* Why a search came back empty-handed, because the two cases need different
+   words: a spent quota tells you to come back, anything else tells you the
+   search itself is off. */
+type UnsplashFailure = 'rate_limited' | 'unavailable';
+
+interface UnsplashAnswer {
+  status: 'error' | 'ok';
+  results: UnsplashResult[];
+  /* Everything the query matched, not the twenty on this page — the difference
+     between "your wording is too narrow" and "the search is broken". */
+  total: number;
+  reason?: UnsplashFailure;
 }
 
 /* Answers already in hand, keyed by query — module-level, because the panel that
@@ -205,62 +249,114 @@ interface UnsplashResult {
    successes are kept: a failed request is usually the Unsplash key or the
    network, and caching that would make one bad moment permanent for the session.
    Errors fall through to the curated STOCK_IMAGES grid instead. */
-const unsplashCache = new Map<string, { status: 'error' | 'ok'; results: UnsplashResult[] }>();
+const unsplashCache = new Map<string, UnsplashAnswer>();
 /* Requests already out. Two panels mounting on the same seed (the Photos tab and
    a Replace-image overlay) share one request, and — the reason this exists — a
    panel opening while the prefetch below is still in flight joins it rather than
    starting a second one 400ms later. */
-const unsplashInFlight = new Map<string, Promise<{ status: 'error' | 'ok'; results: UnsplashResult[] }>>();
+const unsplashInFlight = new Map<string, Promise<UnsplashAnswer>>();
 
 /* Behind the app's first API route (`/api/unsplash/search`) so the access key
    stays server-side. Deliberately not abortable: the one caller that cancels is a
    panel being unmounted, and throwing away a response that's already paid for is
    how the next mount ends up waiting for it all over again. */
-function fetchUnsplash(q: string): Promise<{ status: 'error' | 'ok'; results: UnsplashResult[] }> {
-  const cached = unsplashCache.get(q);
+/* Two searches for the same word in different shapes are two different answers,
+   so they can't share a cache slot. No orientation keeps the bare query as the
+   key, which is what lets the prefetch below and an unfiltered panel meet on the
+   same entry instead of requesting it twice. */
+function unsplashKey(q: string, orientation: string) {
+  return orientation ? `${orientation}:${q}` : q;
+}
+
+function fetchUnsplash(q: string, orientation = ''): Promise<UnsplashAnswer> {
+  const key = unsplashKey(q, orientation);
+  const cached = unsplashCache.get(key);
   if (cached) return Promise.resolve(cached);
-  const pending = unsplashInFlight.get(q);
+  const pending = unsplashInFlight.get(key);
   if (pending) return pending;
-  const request = fetch(`/api/unsplash/search?q=${encodeURIComponent(q)}`)
-    .then((res) => (res.ok ? res.json() : Promise.reject(new Error('unsplash_unavailable'))))
-    .then((data) => {
-      const value = { status: 'ok' as const, results: (data.results ?? []) as UnsplashResult[] };
-      unsplashCache.set(q, value);
+  const request: Promise<UnsplashAnswer> = fetch(`/api/unsplash/search?q=${encodeURIComponent(q)}${orientation ? `&orientation=${orientation}` : ''}`)
+    .then(async (res) => {
+      // 429 is the route's own signal for a spent Unsplash quota; everything
+      // else that isn't a 2xx is the generic failure.
+      if (!res.ok) {
+        return { status: 'error' as const, results: [], total: 0, reason: (res.status === 429 ? 'rate_limited' : 'unavailable') as UnsplashFailure };
+      }
+      const data = await res.json();
+      const value: UnsplashAnswer = { status: 'ok', results: (data.results ?? []) as UnsplashResult[], total: (data.total ?? 0) as number };
+      unsplashCache.set(key, value);
       return value;
     })
-    .catch(() => ({ status: 'error' as const, results: [] as UnsplashResult[] }))
-    .finally(() => { unsplashInFlight.delete(q); });
-  unsplashInFlight.set(q, request);
+    .catch(() => ({ status: 'error' as const, results: [], total: 0, reason: 'unavailable' as UnsplashFailure }))
+    .finally(() => { unsplashInFlight.delete(key); });
+  unsplashInFlight.set(key, request);
   return request;
 }
 
 /* Real Unsplash search. No key configured (or the request fails) -> 'error', and
    PhotoSourcePanel falls back to the curated STOCK_IMAGES grid rather than
    showing a dead end. */
-function useUnsplashSearch(query: string) {
-  // Keyed by the query it answers, so render time (not the effect body) can
-  // tell "idle" (no query) apart from "loading" (query changed, fetch not
+function useUnsplashSearch(query: string, attempt = 0, orientation = '') {
+  // Keyed by the request it answers, so render time (not the effect body) can
+  // tell "idle" (no query) apart from "loading" (request changed, fetch not
   // back yet) without ever calling setState synchronously inside the effect.
-  const [resolved, setResolved] = useState<{ query: string; status: 'error' | 'ok'; results: UnsplashResult[] } | null>(null);
+  const [resolved, setResolved] = useState<(UnsplashAnswer & { key: string; attempt: number }) | null>(null);
   const q = query.trim();
-  const cached = q ? unsplashCache.get(q) : undefined;
+  const key = unsplashKey(q, orientation);
+  const cached = q ? unsplashCache.get(key) : undefined;
 
   useEffect(() => {
-    if (!q || unsplashCache.has(q)) return;
+    if (!q || unsplashCache.has(key)) return;
     let cancelled = false;
-    /* The 400ms is there for typing — one request per pause, not per keystroke.
-       A request that's already out needs none of that, which is what makes the
-       prefetched seed land instantly instead of a beat after the tab opens. */
-    const timer = setTimeout(() => {
-      fetchUnsplash(q).then((value) => { if (!cancelled) setResolved({ query: q, ...value }); });
-    }, unsplashInFlight.has(q) ? 0 : 400);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [q]);
+    /* No debounce. Nothing types into this hook any more — the search box submits
+       a finished query and the suggestion seed arrives whole — so a delay here
+       would only be latency between clicking Search and seeing it happen.
+       Coalescing two panels onto one request is fetchUnsplash's job regardless,
+       via unsplashInFlight. */
+    fetchUnsplash(q, orientation).then((value) => { if (!cancelled) setResolved({ key, attempt, ...value }); });
+    return () => { cancelled = true; };
+    /* `attempt` is Retry's whole mechanism. Failures are deliberately not cached,
+       so asking again is enough to make a real request — but the query string
+       hasn't changed, so without something else in the deps this effect would
+       never run a second time. */
+  }, [q, key, orientation, attempt]);
 
-  if (!q) return { status: 'idle' as const, results: [] as UnsplashResult[] };
-  if (cached) return { status: cached.status, results: cached.results };
-  if (!resolved || resolved.query !== q) return { status: 'loading' as const, results: [] as UnsplashResult[] };
-  return { status: resolved.status, results: resolved.results };
+  const none: UnsplashResult[] = [];
+  if (!q) return { status: 'idle' as const, results: none, total: 0, reason: undefined, stale: none };
+  if (cached) return { status: cached.status, results: cached.results, total: cached.total, reason: cached.reason, stale: none };
+  if (!resolved || resolved.key !== key || resolved.attempt !== attempt) {
+    /* The answer this one is replacing, handed out for as long as it takes to
+       replace it. The panel shows it dimmed rather than emptying the grid, and
+       sourcing it here means nothing downstream has to keep its own copy of the
+       last render — which is a ref read during render, the one thing this hook
+       was shaped to avoid in the first place. */
+    return { status: 'loading' as const, results: none, total: 0, reason: undefined, stale: resolved?.results ?? none };
+  }
+  return { status: resolved.status, results: resolved.results, total: resolved.total, reason: resolved.reason, stale: none };
+}
+
+/* A boolean that refuses to flicker. `on` has to hold for `delay` before this
+   turns true, and once true it stays for at least `hold`.
+   Both halves earn their place on this panel. A warm Unsplash search answers
+   inside the band Nielsen calls "no feedback needed" (under a second), so a
+   loading state that appears instantly is a flash of grey that makes a fast
+   search feel worse than a silent one; the delay swallows it. And a skeleton
+   that does appear, then vanishes two frames later, reads as a glitch rather
+   than as progress — hence the floor. */
+function useSettledFlag(on: boolean, delay = 200, hold = 300) {
+  const [shown, setShown] = useState(false);
+  const shownAt = useRef(0);
+  useEffect(() => {
+    if (on) {
+      if (shown) return;
+      const t = setTimeout(() => { shownAt.current = Date.now(); setShown(true); }, delay);
+      return () => clearTimeout(t);
+    }
+    if (!shown) return;
+    const remaining = hold - (Date.now() - shownAt.current);
+    const t = setTimeout(() => setShown(false), Math.max(0, remaining));
+    return () => clearTimeout(t);
+  }, [on, shown, delay, hold]);
+  return shown;
 }
 
 /* Warms Suggested as soon as the editor knows what the book is about, rather than
@@ -486,7 +582,17 @@ async function readMediaFile(file: File, kind: 'video' | 'audio'): Promise<ReadM
    A plain <img> would need x/y coordinates to place near text; this node instead
    carries a `wrap` attribute that resolves to a CSS float, so an image is a
    participant in the document flow, not an object floating over it. */
-type WrapValue = 'inline' | 'left' | 'right' | 'full-bleed';
+type WrapValue = 'inline' | 'left' | 'right';
+
+/* 'full-bleed' was a fourth wrap option that rendered identically to inline:
+   both resolved to a full-column-width block, differing only by 4px of vertical
+   margin, and neither reached the page's own edge. It's gone rather than left
+   as a choice that does nothing. Books saved while it existed still carry
+   data-wrap="full-bleed", so parsing goes through here — without it they'd keep
+   a class no stylesheet matches and lose their margins entirely. */
+function parseWrap(raw: string | null): WrapValue {
+  return raw === 'left' || raw === 'right' ? raw : 'inline';
+}
 
 /* -- hand-resize, for photos and photo grids ---------------------------------
    Same idea as the cover's ResizeHandles + beginResize (four corner dots, the
@@ -597,10 +703,24 @@ type ImageNodeAttrs = {
   src: string; alt: string; wrap: WrapValue; caption: string; decorative: boolean; locked: boolean;
   radius: string; borderWidth: number; borderColor: string; shadow: string; originalSrc: string; crop: string; opacity: number;
   fit: string; boxW: number; boxH: number; borderPos: string; borderSides: string; borderStyle: string; lockAspect: boolean; sizeMode: string;
+  /* How the caption under the photo is set. Unset means the stylesheet's own
+     caption treatment (body face, 13px, centred, #6B7686) — so an untouched
+     figure serializes exactly the markup it did before these existed, and a
+     theme change still moves every caption nobody has overridden. */
+  capFont: string; capSize: number; capAlign: string; capColor: string; capBold: boolean; capItalic: boolean;
 };
 
-function imageFigureParts(attrs: ImageNodeAttrs): { figAttrs: Record<string, string>; imgAttrs: Record<string, string> } {
-  const { src, alt, wrap, decorative, locked, radius, borderWidth, borderColor, shadow, originalSrc, crop, opacity, fit, boxW, boxH, borderPos, borderSides, borderStyle, lockAspect, sizeMode } = attrs;
+const CAPTION_DEFAULT_SIZE = 13;
+const CAPTION_DEFAULT_COLOR = '#6B7686';
+/* Fired on the figcaption, bubbling to the chapter's own container, when the
+   author puts the caret in a caption or types in one — the one thing a node
+   view can do that React above it will hear. See the listener in ChapterEditor
+   and CaptionInspector. */
+const CAPTION_FOCUS_EVENT = 'book:caption-edit';
+
+function imageFigureParts(attrs: ImageNodeAttrs): { figAttrs: Record<string, string>; imgAttrs: Record<string, string>; capAttrs: Record<string, string> } {
+  const { src, alt, wrap, decorative, locked, radius, borderWidth, borderColor, shadow, originalSrc, crop, opacity, fit, boxW, boxH, borderPos, borderSides, borderStyle, lockAspect, sizeMode,
+    capFont, capSize, capAlign, capColor, capBold, capItalic } = attrs;
   const imgAttrs: Record<string, string> = decorative ? { src, alt: '', role: 'presentation' } : { src, alt };
   const sizing: string[] = [];
   // 'column' needs nothing — .book-img-wrap img is already width:100%.
@@ -639,9 +759,28 @@ function imageFigureParts(attrs: ImageNodeAttrs): { figAttrs: Record<string, str
     ...(shadow && shadow !== 'none' ? { 'data-shadow': shadow } : {}),
     ...(originalSrc ? { 'data-original-src': originalSrc } : {}),
     ...(crop ? { 'data-crop': crop } : {}),
+    ...(capFont ? { 'data-cap-font': capFont } : {}),
+    ...(capSize ? { 'data-cap-size': String(capSize) } : {}),
+    ...(capAlign ? { 'data-cap-align': capAlign } : {}),
+    ...(capColor ? { 'data-cap-color': capColor } : {}),
+    ...(capBold ? { 'data-cap-bold': 'true' } : {}),
+    ...(capItalic ? { 'data-cap-italic': 'true' } : {}),
     class: `book-img-wrap book-img-wrap--${wrap}`,
   };
-  return { figAttrs, imgAttrs };
+  /* Inline on the <figcaption> for the same reason the <img>'s own presentation
+     is inline: the export path ships this HTML without the editor's stylesheet,
+     so a class would style the caption on the canvas and nowhere else. Only the
+     properties actually set are emitted, so the rest keep falling through to
+     whatever the PDF/EPUB stylesheet says a caption looks like. */
+  const capStyle = [
+    capFont ? `font-family:${capFont}` : '',
+    capSize ? `font-size:${capSize}px` : '',
+    capAlign ? `text-align:${capAlign}` : '',
+    capColor ? `color:${capColor}` : '',
+    capBold ? 'font-weight:700' : '',
+    capItalic ? 'font-style:italic' : '',
+  ].filter(Boolean).join(';');
+  return { figAttrs, imgAttrs, capAttrs: capStyle ? { style: capStyle } : {} };
 }
 
 const WrappableImage = TiptapImage.extend({
@@ -650,7 +789,7 @@ const WrappableImage = TiptapImage.extend({
       ...this.parent?.(),
       wrap: {
         default: 'inline' as WrapValue,
-        parseHTML: (el: HTMLElement) => (el.getAttribute('data-wrap') as WrapValue) || 'inline',
+        parseHTML: (el: HTMLElement) => parseWrap(el.getAttribute('data-wrap')),
         renderHTML: (attrs: Record<string, unknown>) => ({
           'data-wrap': attrs.wrap,
           class: `book-img-wrap book-img-wrap--${attrs.wrap}`,
@@ -711,6 +850,17 @@ const WrappableImage = TiptapImage.extend({
       borderSides: { default: 'all', parseHTML: (el: HTMLElement) => el.getAttribute('data-border-sides') ?? 'all', renderHTML: () => ({}) },
       borderStyle: { default: 'solid', parseHTML: (el: HTMLElement) => el.getAttribute('data-border-style') ?? 'solid', renderHTML: () => ({}) },
       fit: { default: 'cover', parseHTML: (el: HTMLElement) => el.getAttribute('data-fit') ?? 'cover', renderHTML: () => ({}) },
+      /* Caption typography. Six attributes rather than one packed string like
+         `crop` or `shadow`: these are read and written one at a time by one
+         control each, and there is nothing to parse back out of a `13,,center`
+         that a named attribute doesn't say better. Every default is empty/0,
+         meaning "whatever a caption looks like here" — see CAPTION_DEFAULT_*. */
+      capFont: { default: '', parseHTML: (el: HTMLElement) => el.getAttribute('data-cap-font') ?? '', renderHTML: () => ({}) },
+      capSize: { default: 0, parseHTML: (el: HTMLElement) => Number(el.getAttribute('data-cap-size') ?? 0), renderHTML: () => ({}) },
+      capAlign: { default: '', parseHTML: (el: HTMLElement) => el.getAttribute('data-cap-align') ?? '', renderHTML: () => ({}) },
+      capColor: { default: '', parseHTML: (el: HTMLElement) => el.getAttribute('data-cap-color') ?? '', renderHTML: () => ({}) },
+      capBold: { default: false, parseHTML: (el: HTMLElement) => el.getAttribute('data-cap-bold') === 'true', renderHTML: () => ({}) },
+      capItalic: { default: false, parseHTML: (el: HTMLElement) => el.getAttribute('data-cap-italic') === 'true', renderHTML: () => ({}) },
       boxW: { default: 0, parseHTML: (el: HTMLElement) => Number(el.getAttribute('data-w') ?? 0), renderHTML: () => ({}) },
       boxH: { default: 0, parseHTML: (el: HTMLElement) => Number(el.getAttribute('data-h') ?? 0), renderHTML: () => ({}) },
       opacity: { default: 1, parseHTML: (el: HTMLElement) => Number(el.getAttribute('data-opacity') ?? 1), renderHTML: () => ({}) },
@@ -730,7 +880,7 @@ const WrappableImage = TiptapImage.extend({
           return {
             src: img?.getAttribute('src') || '',
             alt: img?.getAttribute('alt') || '',
-            wrap: (figure.getAttribute('data-wrap') as WrapValue) || 'inline',
+            wrap: parseWrap(figure.getAttribute('data-wrap')),
             caption: figure.querySelector('figcaption')?.textContent ?? '',
             decorative: img?.getAttribute('role') === 'presentation',
             locked: figure.getAttribute('data-locked') === 'true',
@@ -749,6 +899,12 @@ const WrappableImage = TiptapImage.extend({
             borderWidth: Number(figure.getAttribute('data-border-w') ?? 0),
             borderColor: figure.getAttribute('data-border-c') ?? '#0F1733',
             shadow: figure.getAttribute('data-shadow') ?? 'none',
+            capFont: figure.getAttribute('data-cap-font') ?? '',
+            capSize: Number(figure.getAttribute('data-cap-size') ?? 0),
+            capAlign: figure.getAttribute('data-cap-align') ?? '',
+            capColor: figure.getAttribute('data-cap-color') ?? '',
+            capBold: figure.getAttribute('data-cap-bold') === 'true',
+            capItalic: figure.getAttribute('data-cap-italic') === 'true',
           };
         },
       },
@@ -757,7 +913,7 @@ const WrappableImage = TiptapImage.extend({
   },
   renderHTML({ node }) {
     const attrs = node.attrs as ImageNodeAttrs;
-    const { figAttrs, imgAttrs } = imageFigureParts(attrs);
+    const { figAttrs, imgAttrs, capAttrs } = imageFigureParts(attrs);
     return [
       'figure',
       figAttrs,
@@ -766,7 +922,7 @@ const WrappableImage = TiptapImage.extend({
          permanently present figcaption so there is always something to click,
          but an empty one in the saved HTML would round-trip into every export
          and print as a blank line under every uncaptioned image. */
-      ...(attrs.caption ? [['figcaption', {}, attrs.caption] as const] : []),
+      ...(attrs.caption ? [['figcaption', capAttrs, attrs.caption] as const] : []),
     ];
   },
 
@@ -793,7 +949,7 @@ const WrappableImage = TiptapImage.extend({
 
       const paint = (n: PMNode) => {
         const attrs = n.attrs as ImageNodeAttrs;
-        const { figAttrs, imgAttrs } = imageFigureParts(attrs);
+        const { figAttrs, imgAttrs, capAttrs } = imageFigureParts(attrs);
         // Only data-* is ours to clear; contenteditable and draggable belong to
         // ProseMirror, and the selected class is tracked below.
         for (const a of Array.from(dom.attributes)) {
@@ -808,6 +964,11 @@ const WrappableImage = TiptapImage.extend({
            very keystroke just dispatched, and rewriting textContent would drop
            the caret back to the start of the caption on each character. */
         if (!composing && cap.textContent !== attrs.caption) cap.textContent = attrs.caption;
+        /* Set wholesale rather than property by property: capAttrs is the whole
+           of what this view puts in the caption's style attribute, so clearing a
+           property in the panel has to be able to empty it again. */
+        if (capAttrs.style) cap.setAttribute('style', capAttrs.style);
+        else cap.removeAttribute('style');
         cap.contentEditable = editor.isEditable ? 'true' : 'false';
       };
 
@@ -826,6 +987,31 @@ const WrappableImage = TiptapImage.extend({
         editor.view.dispatch(editor.state.tr.setNodeMarkup(pos, undefined, { ...current.attrs, caption: text }));
       };
 
+      /* Working in the caption moves no ProseMirror selection — stopEvent keeps
+         every event in here — so without this nothing outside the node view
+         would know the author had stopped editing a photo and started editing
+         text. The panel needs exactly that distinction, and an event is the way
+         out of a node view: there is no React above it to call. The pos rides
+         along because the panel addresses the caption by position (a caption can
+         be clicked straight into, with the photo never selected), and getPos is
+         the only thing that knows it.
+
+         Pointer-down and input, NOT focus. Selecting the photo already leaves
+         the browser's focus in this figcaption — a contenteditable island inside
+         a contenteditable-false figure is where the DOM selection lands when
+         ProseMirror draws a NodeSelection around it — so a focus listener
+         reported "the author is editing the caption" for every click on the
+         picture, and the photo's own properties became unreachable. These two
+         are the gestures that are unambiguously about the words: putting the
+         caret in them, or typing. */
+      const announceCaption = () => {
+        if (typeof getPos !== 'function') return;
+        const pos = getPos();
+        if (pos == null) return;
+        cap.dispatchEvent(new CustomEvent(CAPTION_FOCUS_EVENT, { bubbles: true, detail: { pos } }));
+      };
+      cap.addEventListener('pointerdown', announceCaption);
+      cap.addEventListener('input', announceCaption);
       cap.addEventListener('input', commit);
       cap.addEventListener('compositionstart', () => { composing = true; });
       cap.addEventListener('compositionend', () => { composing = false; commit(); });
@@ -1245,7 +1431,8 @@ function renderCrop(srcUrl: string, c: CropSpec): Promise<string> {
    perturbed the seed that chose WHICH bundled photo came back, so picking
    Portrait and picking Square produced two differently-shaped stock photos and
    neither matched the label. These are the real ratios behind those labels. */
-const ASPECT_RATIOS: Record<'square' | 'landscape' | 'portrait', number> = {
+type Aspect = 'square' | 'landscape' | 'portrait';
+const ASPECT_RATIOS: Record<Aspect, number> = {
   square: 1,
   landscape: 16 / 9,
   portrait: 9 / 16,
@@ -1523,6 +1710,55 @@ const CALLOUT_TYPES = [
   { id: 'warning', label: 'Warning', tint: '#FFF8EB', accent: '#B4770E' },
 ] as const;
 type CalloutType = typeof CALLOUT_TYPES[number]['id'];
+
+/* ── chapter title ───────────────────────────────────────────────────────────
+   The chapter's name, living in the text rather than in a field beside it.
+
+   That is the whole point: a title that is part of the flow can sit anywhere in
+   the flow, which is what lets a chapter begin halfway down a page. The old
+   separate field could only ever be at the top of its own page, because it was
+   attached to the page rather than to the words.
+
+   It serializes as a plain <h2>, which is what the exported file has always
+   contained — the exporter used to reassemble one from the field on the way out.
+   So this node makes the editor agree with the file instead of translating
+   between them, and an <h2> in any book saved before this parses straight into
+   one.
+
+   `breakBefore` defaults to true, because a chapter opening a page is the
+   convention every trade book and Amazon's own Kindle Create follow. Turning it
+   off is the new capability, not the new default. */
+const ChapterTitleBlock = Node.create({
+  name: 'chapterTitle',
+  group: 'block',
+  content: 'inline*',
+  defining: true,
+  addAttributes() {
+    return {
+      breakBefore: {
+        default: true,
+        // Absent means true: an <h2> from an older book, or one pasted in from
+        // Word, is a chapter that starts a page — the behaviour it already had.
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-break-before') !== 'false',
+        renderHTML: (attrs: Record<string, unknown>) => (
+          attrs.breakBefore === false ? { 'data-break-before': 'false' } : {}
+        ),
+      },
+    };
+  },
+  /* Deliberately NOT a bare `h2` yet. The body editor allows heading levels 3
+     and 4 only, so an <h2> sitting in saved content today parses as a paragraph;
+     claiming the bare tag here would silently turn it into a page-breaking
+     chapter title in books that never asked for one. This widens to `h2` in the
+     same step that migrates the existing title fields into the flow, where the
+     change is intended and can be tested against real books. */
+  parseHTML() {
+    return [{ tag: 'h2[data-chapter-title]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['h2', mergeAttributes(HTMLAttributes, { 'data-chapter-title': 'true', class: 'book-chapter-title-block' }), 0];
+  },
+});
 
 const Callout = Node.create({
   name: 'callout',
@@ -2615,6 +2851,24 @@ function sameNotes(a: NotePlacement[], b: NotePlacement[]): boolean {
   return a.every((x, i) => x.fid === b[i].fid && x.first === b[i].first && Math.abs(x.top - b[i].top) < 1);
 }
 
+/* The table node a row-break widget sits inside, and its first row.
+
+   Read from the DOCUMENT, not from the DOM. The obvious version of this asked
+   view.nodeDOM for the table element — but a widget's toDOM runs while the view
+   is mid-update, so nodeDOM could hand back null, and then the spacer fell back
+   to colspan 1 (the table's own column rules drew straight through the gap) and
+   the repeated header rendered as an empty row. The document is authoritative
+   and always available. */
+function rowBreakContext(doc: PMNode, pos: number): { cols: number } | null {
+  const $p = doc.resolve(pos);
+  const table = $p.node($p.depth);
+  if (table.type.name !== 'table' || table.childCount === 0) return null;
+  const first = table.child(0);
+  let cols = 0;
+  first.forEach((cell) => { cols += Number(cell.attrs.colspan) || 1; });
+  return { cols: Math.max(1, cols) };
+}
+
 /* `geometry` is a getter, not a value: trim size and margins are a setting the
    reader can change at any time, and a TipTap extension is configured once when
    its editor is created. Reading it per measure keeps every chapter on the
@@ -2671,7 +2925,39 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                 }));
               }
             }
-            return DecorationSet.create(state.doc, placed.concat(breaks.map((b) => Decoration.widget(b.pos, () => {
+            return DecorationSet.create(state.doc, placed.concat(breaks.flatMap((b) => {
+              /* A row break lands inside a <tbody>, where a <div> is not valid
+                 markup: the browser hoists it out of the table and the page
+                 silently overflows. So the spacer has to BE a row, and the
+                 continuation's repeated header is a second one. Both are
+                 widgets rather than real nodes — the document stays unchanged,
+                 which is the whole reason breaks are decorations — and both sit
+                 in the same <table> as the rows they separate, so they inherit
+                 its column widths for nothing. */
+              if (b.rowIndex != null) {
+                const ctx = rowBreakContext(state.doc, b.pos);
+                const spacer = Decoration.widget(b.pos, () => {
+                  const tr = document.createElement('tr');
+                  tr.dataset.pageBreak = 'true';
+                  tr.className = 'book-tr-spacer';
+                  tr.contentEditable = 'false';
+                  const td = document.createElement('td');
+                  td.colSpan = ctx?.cols ?? 1;
+                  /* Styled inline rather than from the sheet: this row exists to
+                     occupy the page gap and must paint nothing at all, and a
+                     missed selector here draws a cell border across the gap —
+                     the exact artefact that makes other boxes monolithic. */
+                  td.style.cssText = `height:${b.height}px;padding:0;border:none;background:transparent;line-height:0;font-size:0`;
+                  tr.appendChild(td);
+                  return tr;
+                }, { side: -3, ignoreSelection: true, key: `pbr-${b.pos}-${Math.round(b.height)}` });
+                /* The header is NOT repeated on a continuation. Word and Google
+                   Docs both treat that as a per-table opt-in rather than
+                   something an editor does on its own, and a row the author
+                   never wrote appearing on page two is a surprise. */
+                return [spacer];
+              }
+              return [Decoration.widget(b.pos, () => {
               const el = document.createElement('div');
               el.dataset.pageBreak = 'true';
               el.className = 'book-page-break';
@@ -2684,7 +2970,8 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
               // gap instead of landing inside it.
               el.contentEditable = 'false';
               return el;
-            }, { side: -1, ignoreSelection: true, key: `pb-${b.pos}-${b.lineIndex ?? 'b'}-${Math.round(b.height)}` }))));
+              }, { side: -1, ignoreSelection: true, key: `pb-${b.pos}-${b.lineIndex ?? 'b'}-${Math.round(b.height)}` })];
+            })));
           },
         },
         view(view) {
@@ -2746,7 +3033,17 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                 let pos: number | null = null;
                 try {
                   const raw = view.posAtDOM(el, 0);
-                  pos = raw >= 0 ? view.state.doc.resolve(raw).before(1) : null;
+                  if (raw >= 0) {
+                    const $raw = view.state.doc.resolve(raw);
+                    /* A paragraph's own DOM resolves to a position INSIDE it, so
+                       before(1) is the block. A node view — every table has one,
+                       since they aren't resizable — resolves to a position at
+                       doc level instead, where before(1) throws and the block
+                       silently lost its position: no position, no break, and
+                       the table overran the sheet whatever the measurement
+                       said. At depth 0 the position already IS the block's. */
+                    pos = $raw.depth > 0 ? $raw.before(1) : raw;
+                  }
                 } catch { pos = null; }
                 const r = el.getBoundingClientRect();
                 /* Only a plain paragraph is split across a page. A figure, a
@@ -2804,13 +3101,61 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                   }
                   screenLines.set(pos, Array.from(byTop.entries()).sort((a, x) => a[0] - x[0]).map(([, q]) => q));
                 }
+                /* A DATA table fragments at its row boundaries. A layout
+                   table — book-split-columns, a stack — must not: its single
+                   row is a set of side-by-side columns, so a row break either
+                   does nothing or cuts every column off mid-flow.
+
+                   Offsets are UNPAGINATED, the same contract the line path
+                   works to: the spacer rows and repeated headers a previous
+                   pass inserted are subtracted rather than measured around, so
+                   this pass reads the table as if it had never been broken and
+                   re-emits the same breaks. */
+                let rows: number[] | undefined;
+                let headerH: number | undefined;
+                let rowDrop = 0;
+                /* NOT `el` itself: TipTap gives every table a node view whenever
+                   it isn't resizable, and that view wraps it in
+                   <div class="tableWrapper">. So the top-level block here is
+                   the wrapper, and the table is its child. Offsets stay
+                   relative to the BLOCK's top, which is what measureBreaks
+                   works in. */
+                const tableEl = el.tagName === 'TABLE' ? el : el.querySelector<HTMLElement>(':scope > table');
+                if (tableEl && !tableEl.classList.contains(STACK_CLASS)) {
+                  const trs = Array.from(tableEl.querySelectorAll<HTMLElement>(':scope > tbody > tr'));
+                  const offs: number[] = [];
+                  let lastBottom = 0;
+                  let head: HTMLElement | null = null;
+                  for (const tr of trs) {
+                    const tb = tr.getBoundingClientRect();
+                    if (tr.dataset.pageBreak === 'true') { rowDrop += tb.height; continue; }
+                    if (!head) head = tr;
+                    offs.push(Math.round(tb.top - r.top - rowDrop));
+                    lastBottom = Math.round(tb.bottom - r.top - rowDrop);
+                  }
+                  if (offs.length > 1) {
+                    offs.push(lastBottom);
+                    rows = offs;
+                    // A header row is one that holds <th>. The worksheet markup
+                    // puts it in <tbody> like every other row, so the tag is
+                    // the only thing that identifies it.
+                    headerH = head?.querySelector('th') ? Math.round(head.getBoundingClientRect().height) : 0;
+                  }
+                }
+                /* The one measurement that isn't a measurement: the author said
+                   this block opens a page. Read off the same attribute the node
+                   serializes, so the rendered DOM stays the single source. */
+                const forced = el.dataset.chapterTitle === 'true' && el.dataset.breakBefore !== 'false';
                 blocks.push({
+                  forced,
                   pos,
                   top: r.top - originTop,
-                  bottom: r.bottom - originTop,
+                  bottom: r.bottom - originTop - rowDrop,
                   spacerBefore: pendingSpacer,
                   lineHeight,
                   lineCount,
+                  rows,
+                  headerH,
                 });
                 pendingSpacer = 0;
               }
@@ -2849,6 +3194,17 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
 
               const measured = measureBreaks(blocks, geo, reserve);
               const pageCount = measured.pageCount;
+              /* Temporary: `window.__pagedebug = true` in the console, then type
+                 in the chapter, to see what the engine actually measured. */
+              if ((window as unknown as { __pagedebug?: boolean }).__pagedebug) {
+                console.log('[pag] geo', { h: geo.h, padY: geo.padY, contentH: contentH(geo), band1: bandTop(1, geo) });
+                console.log('[pag] blocks', blocks.map((x) => ({
+                  pos: x.pos, top: Math.round(x.top), bottom: Math.round(x.bottom),
+                  lines: x.lineCount, rows: x.rows?.length, headerH: x.headerH,
+                  rowOffsets: x.rows,
+                })));
+                console.log('[pag] breaks', measured.breaks, 'pageCount', pageCount);
+              }
               /* CSS `top` is relative to the positioned wrapper the prose sits
                  in, which starts below the chapter eyebrow and title; the
                  measurements above are relative to the page stack's content
@@ -2876,6 +3232,16 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                  the line's own left/top lands inside the first glyph rather
                  than on the boundary between two lines. */
               const breaks = measured.breaks.flatMap((b) => {
+                /* A row break is anchored between two tableRow nodes, which is
+                   an exact walk rather than a hit test: the rows measured above
+                   are the table node's children, in the same order. */
+                if (b.rowIndex != null) {
+                  const tbl = view.state.doc.nodeAt(b.pos);
+                  if (!tbl || b.rowIndex >= tbl.childCount) return [];
+                  let at = b.pos + 1;
+                  for (let i = 0; i < b.rowIndex; i++) at += tbl.child(i).nodeSize;
+                  return [{ ...b, pos: at }];
+                }
                 if (b.lineIndex == null) return [b];
                 const rects = screenLines.get(b.pos);
                 const rect = rects?.[b.lineIndex];
@@ -3101,13 +3467,21 @@ const ButtonBlock = Node.create({
    matches that. */
 const ICON_DEFAULT_SIZE = 40;
 
-interface IconAttrs { name: string; color: string; size: number; align: 'left' | 'center' | 'right'; locked: boolean }
+/* `style` is the solid/outline cut, not a CSS style. It rides on the node
+   rather than being baked into `name` so that switching an already-placed icon
+   between the two is an attribute change on the mark you selected, the same way
+   colour and size are — and so a book saved before the library had two cuts
+   still opens, on the solid one it was drawn with. */
+interface IconAttrs { name: string; style: BookIconStyle; color: string; size: number; align: 'left' | 'center' | 'right'; locked: boolean }
 
 function iconAttrsOf(el: HTMLElement): IconAttrs {
   const align = el.getAttribute('data-align');
   const size = Number(el.getAttribute('data-size'));
   return {
     name: el.getAttribute('data-name') || 'star',
+    // Anything but the one word means solid, which is what every icon placed
+    // before this attribute existed carries: no data-style at all.
+    style: el.getAttribute('data-style') === 'outline' ? 'outline' : 'solid',
     color: el.getAttribute('data-color') || INK,
     size: Number.isFinite(size) && size > 0 ? size : ICON_DEFAULT_SIZE,
     align: align === 'center' || align === 'right' ? align : 'left',
@@ -3119,13 +3493,16 @@ function iconDataAttrs(a: IconAttrs): Record<string, string> {
   return {
     'data-icon-block': 'true', 'data-name': a.name, 'data-color': a.color,
     'data-size': String(a.size), 'data-align': a.align,
+    // Written only when it isn't the default, so solid icons serialize exactly
+    // as they did before the cut existed.
+    ...(a.style === 'outline' ? { 'data-style': 'outline' } : {}),
     ...(a.locked ? { 'data-locked': 'true' } : {}),
   };
 }
 
 function iconWrapHtml(a: IconAttrs): string {
   const attrs = Object.entries(iconDataAttrs(a)).map(([k, v]) => `${k}="${escapeHtml(v)}"`).join(' ');
-  return `<div ${attrs} class="book-icon-wrap" style="text-align:${a.align}">${bookIconHtml(a.name, a.color, a.size, 'book-icon')}</div>`;
+  return `<div ${attrs} class="book-icon-wrap" style="text-align:${a.align}">${bookIconHtml(a.name, a.color, a.size, 'book-icon', a.style)}</div>`;
 }
 
 const IconBlock = Node.create({
@@ -3135,6 +3512,7 @@ const IconBlock = Node.create({
   addAttributes() {
     return {
       name: { default: 'star' },
+      style: { default: 'solid' },
       color: { default: INK },
       size: { default: ICON_DEFAULT_SIZE },
       align: { default: 'left' },
@@ -3150,7 +3528,7 @@ const IconBlock = Node.create({
   },
   renderHTML({ node }) {
     const a = node.attrs as unknown as IconAttrs;
-    const spec = bookIconSpec(a.name, a.color, a.size, 'book-icon');
+    const spec = bookIconSpec(a.name, a.color, a.size, 'book-icon', a.style);
     return ['div', {
       ...iconDataAttrs(a), class: 'book-icon-wrap', style: `text-align:${a.align}`,
     }, ...(spec ? [spec] : [])] as unknown as DOMOutputSpec;
@@ -3585,9 +3963,127 @@ const ImageGridBlock = Node.create({
   },
 });
 
+/* TipTap's own TableView copies a table's rendered attributes onto the <table>
+   element in its CONSTRUCTOR and never again — its update() re-measures the
+   colgroup and nothing else. So banding or cell padding changed on a table
+   already on the page updated the document and changed nothing on screen: the
+   transaction landed, the attribute was in the doc, and the DOM still had
+   whatever the node view built the first time. This re-applies them on every
+   update, which is the only reason the Table extension takes a `View` option.
+
+   setProperty rather than the constructor's cssText assignment: by update time
+   updateColumns has written a min-width onto the same element, and replacing
+   the whole declaration would drop it. */
+function syncTableDom(table: HTMLTableElement, node: PMNode) {
+  /* TableView builds its own <table> and copies nothing off the node, so the
+     class never reached the DOM while editing — a `book-split-columns` stack
+     rendered as a plain data table, complete with the borders and cell rules a
+     layout is defined by NOT having. It came out right on export, where
+     renderHTML runs instead of the node view, which is why only the canvas
+     showed it. Reconciled through a token list rather than assigned, because
+     ProseMirror puts its own classes on this element too (selectednode among
+     them) and className = would drop them; data-book-cls remembers what we put
+     there so the next sync can take exactly that back off. */
+  const cls = String(node.attrs.class || '').trim();
+  const prev = table.dataset.bookCls || '';
+  if (prev !== cls) {
+    prev.split(/\s+/).forEach((c) => c && table.classList.remove(c));
+    cls.split(/\s+/).forEach((c) => c && table.classList.add(c));
+    if (cls) table.dataset.bookCls = cls;
+    else delete table.dataset.bookCls;
+  }
+  const bw = Number(node.attrs.bw) || 0;
+  if (bw) table.style.setProperty('--book-tbl-bw', `${bw}px`);
+  else table.style.removeProperty('--book-tbl-bw');
+  const bc = String(node.attrs.bc || '');
+  if (bc) table.style.setProperty('--book-tbl-bc', bc);
+  else table.style.removeProperty('--book-tbl-bc');
+  /* Used as chosen. The control offers the highlight palette, whose colours are
+     already safe behind body text, so weakening them here would only make the
+     stripe fainter than the swatch that promised it. */
+  const tint = String(node.attrs.tint || '');
+  if (tint) {
+    table.style.setProperty('--book-tbl-tint', tint);
+  } else {
+    table.style.removeProperty('--book-tbl-tint');
+  }
+  const tstyle = String(node.attrs.tstyle || 'plain');
+  if (tstyle !== 'plain') table.setAttribute('data-table-style', tstyle);
+  else table.removeAttribute('data-table-style');
+  if (node.attrs.locked) table.setAttribute('data-locked', 'true');
+  else table.removeAttribute('data-locked');
+  const pad = Number(node.attrs.pad) || 0;
+  if (pad) table.style.setProperty('--book-cell-pad', `${pad}px`);
+  else table.style.removeProperty('--book-cell-pad');
+}
+
+class BookTableView extends TableView {
+  /* Also on construction, not only on update: a stack inserted and never
+     touched again never gets an update() call, so the class has to land the
+     moment the view is built or the block stays bordered until you edit it. */
+  constructor(...args: ConstructorParameters<typeof TableView>) {
+    super(...args);
+    syncTableDom(this.table, args[0]);
+  }
+  update(node: PMNode) {
+    const ok = super.update(node);
+    if (ok) syncTableDom(this.table, node);
+    return ok;
+  }
+}
+
 /* Table, extended with the same `locked` attribute every other movable block
    gets — its own parseHTML/renderHTML already round-trip via HTMLAttributes,
    so declaring the attribute is the entire change needed. */
+/* prosemirror-tables resizes COLUMNS and has no notion of row height, so this
+   adds one: a plain pixel height on the <tr>, which a table treats as a minimum
+   rather than a cap — a row never clips the text inside it, it only grows. The
+   pagination measures rendered rows, so a resized row repaginates by itself. */
+const SizedTableRow = TableRow.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      height: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const h = parseInt(el.style.height || '', 10);
+          return Number.isFinite(h) ? h : null;
+        },
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.height ? { style: `height:${attrs.height}px` } : {}),
+      },
+    };
+  },
+});
+
+/* Per-CELL properties, on both cell types so a header can be filled too.
+   TipTap merges `style` across attributes by parsing its entries, so the two
+   below compose instead of overwriting each other.
+
+   A fill lives on the cell rather than in the sheet because it is a deliberate
+   accent on one cell — a totals row, a "don't do this" column — which is
+   exactly what a table-wide style cannot express. Being inline it also wins
+   over the striped style's own tint, which is the right precedence: a colour
+   someone chose beats one a style supplied. */
+const CELL_STYLE_ATTRS = {
+  bg: {
+    default: null as string | null,
+    parseHTML: (el: HTMLElement) => el.style.backgroundColor || null,
+    renderHTML: (attrs: Record<string, unknown>) => (attrs.bg ? { style: `background-color: ${String(attrs.bg)}` } : {}),
+  },
+  valign: {
+    default: null as string | null,
+    parseHTML: (el: HTMLElement) => el.style.verticalAlign || null,
+    renderHTML: (attrs: Record<string, unknown>) => (attrs.valign ? { style: `vertical-align: ${String(attrs.valign)}` } : {}),
+  },
+};
+
+const StyledTableCell = TableCell.extend({
+  addAttributes() { return { ...this.parent?.(), ...CELL_STYLE_ATTRS }; },
+});
+const StyledTableHeader = TableHeader.extend({
+  addAttributes() { return { ...this.parent?.(), ...CELL_STYLE_ATTRS }; },
+});
+
 const LockableTable = Table.extend({
   addAttributes() {
     return {
@@ -3596,6 +4092,58 @@ const LockableTable = Table.extend({
         default: false,
         parseHTML: (el: HTMLElement) => el.getAttribute('data-locked') === 'true',
         renderHTML: (attrs: Record<string, unknown>) => (attrs.locked ? { 'data-locked': 'true' } : {}),
+      },
+      /* The colour the style is drawn in — the stripe's tint and the bold
+         header's fill are the same hue at two strengths. Stored as a plain hex
+         and weakened in syncTableDom rather than offered as a fill the author
+         sets directly: a stripe at full strength competes with the text, which
+         is the failure mode a free colour picker on a table always finds. */
+      tint: {
+        default: '',
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-tint') || '',
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.tint ? { 'data-tint': String(attrs.tint) } : {}),
+      },
+      /* The rules themselves, published as custom properties the cell rule
+         reads — one pair for the whole table. Per-EDGE borders are what Docs
+         and Word paint onto a cell selection; this is the part of it a book
+         table actually needs, and it composes with the style gallery rather
+         than fighting it. */
+      bw: {
+        default: 0,
+        parseHTML: (el: HTMLElement) => Number(el.getAttribute('data-bw')) || 0,
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.bw ? { 'data-bw': String(attrs.bw) } : {}),
+      },
+      bc: {
+        default: '',
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-bc') || '',
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.bc ? { 'data-bc': String(attrs.bc) } : {}),
+      },
+      /* The table's look, as ONE named style rather than a pile of independent
+         switches. It is a property of the table and not a colour painted onto
+         rows: the rows a stripe tints have to change when a row is inserted,
+         and a fill stored per row would leave the stripe order wrong the moment
+         one is. The sheet does the counting — see the [data-table-style] rules.
+
+         `data-banded` is the old boolean this replaced, read here so a table
+         saved with striping keeps it. */
+      tstyle: {
+        default: 'plain',
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-table-style')
+          || (el.getAttribute('data-banded') === 'true' ? 'striped' : 'plain'),
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.tstyle && attrs.tstyle !== 'plain' ? { 'data-table-style': String(attrs.tstyle) } : {}),
+      },
+      /* One number for all four sides, published as a custom property the cell
+         rule reads. 0 means "unset", so a table made before this attribute
+         existed keeps the sheet's own 8/12 rather than collapsing to no padding.
+         The horizontal pad stays 1.5x the vertical because that ratio is what a
+         table cell has always looked like here. */
+      pad: {
+        default: 0,
+        parseHTML: (el: HTMLElement) => Number(el.getAttribute('data-pad')) || 0,
+        renderHTML: (attrs: Record<string, unknown>) => {
+          const n = Number(attrs.pad) || 0;
+          return n ? { 'data-pad': String(n), style: `--book-cell-pad:${n}px` } : {};
+        },
       },
     };
   },
@@ -3766,6 +4314,39 @@ function isLayoutContainer(node: PMNode | null | undefined): boolean {
   return !!node && (isStackNode(node) || node.type.name === 'columnsBlock');
 }
 
+/* The CELL a document position sits in, or -1. A stack's cells are layout
+   columns and drill in as a container instead — see isLayoutContainer. */
+function cellPosAt(doc: PMNode, pos: number): number {
+  if (pos < 0 || pos > doc.content.size) return -1;
+  const $at = doc.resolve(pos);
+  for (let d = $at.depth; d > 0; d -= 1) {
+    const name = $at.node(d).type.name;
+    if (name === 'tableCell' || name === 'tableHeader') {
+      // A stack's own cells are columns, not table cells.
+      for (let u = d - 1; u > 0; u -= 1) {
+        if ($at.node(u).type.name === 'table') return isStackNode($at.node(u)) ? -1 : $at.before(d);
+      }
+      return $at.before(d);
+    }
+  }
+  return -1;
+}
+
+/* One click selects the CELL, a second puts the caret in it — the two-stage
+   step every design tool uses, and what Canva does with a table specifically.
+   `cellBefore` is the cell the selection was in when the mouse went down: the
+   browser has already moved the caret by the time this runs, so the previous
+   cell has to be captured on mousedown exactly as the container drill-in does.
+   Clicking a cell you were already in falls through, which is what makes the
+   second click start editing. */
+function selectCellAt(view: EditorView, pos: number, cellBefore: number): boolean {
+  const target = cellPosAt(view.state.doc, pos);
+  if (target < 0 || target === cellBefore) return false;
+  view.focus();
+  view.dispatch(view.state.tr.setSelection(CellSelection.create(view.state.doc, target)));
+  return true;
+}
+
 /* The layout container a document position sits inside, or -1. Innermost first,
    so a stack nested in a columns block selects as the stack. */
 function layoutContainerPosAt(doc: PMNode, pos: number): number {
@@ -3843,6 +4424,37 @@ const ActiveBlockRing = Extension.create({
             ]);
           },
         },
+        /* Same defect the page-break rule above answers, from the other
+           direction: a paragraph flowing beside a floated photo is still one
+           full-column block box, so its ring runs behind the photo and claims
+           territory the text never occupies. Whether a float intrudes is a
+           layout fact, not a document one, so it can't be decided in
+           `decorations` — this measures after each DOM update and lets the CSS
+           drop the ring.
+
+           The test is the float's own geometry, not the line boxes': a centred
+           or right-aligned paragraph also has lines inset from its block box,
+           and comparing those would suppress the ring on every one of them. A
+           float that overlaps this paragraph's vertical span is the only thing
+           that eats into its width. */
+        view: (editorView) => {
+          const sync = () => {
+            const el = editorView.dom.querySelector('.book-text-active');
+            if (!el) return;
+            const floats = editorView.dom.querySelectorAll('.book-img-wrap--left, .book-img-wrap--right');
+            const box = el.getBoundingClientRect();
+            let beside = false;
+            for (const f of Array.from(floats)) {
+              const fr = f.getBoundingClientRect();
+              // 1px of slack so a float that merely abuts the paragraph -- ends
+              // exactly where it starts -- doesn't count as intruding.
+              if (fr.bottom > box.top + 1 && fr.top < box.bottom - 1) { beside = true; break; }
+            }
+            el.classList.toggle('book-text-beside-float', beside);
+          };
+          sync();
+          return { update: sync };
+        },
       }),
     ];
   },
@@ -3899,7 +4511,6 @@ interface ChapterPage {
      canvas — this is the one knob it exposes on top of that: a front-matter or
      backmatter-ish chapter (an Acknowledgements page, say) can opt out without being
      deleted or hidden. Defaults to included. */
-  excludeFromToc?: boolean;
   /* Only meaningful when layout === 'opener' — a photo that bleeds across the top of
      the page with the eyebrow/numeral/title overlaid on it, instead of the plain
      eyebrow-bar-above-title treatment. Optional: unset chapters render exactly as
@@ -4102,6 +4713,51 @@ interface SimplePage {
 }
 type PageMeta = ChapterPage | SimplePage;
 
+/* ── Chapter start vs continuation ───────────────────────────────────────────
+   A `type: 'chapter'` entry is a CONTAINER, not necessarily a chapter. It earns
+   chapter-hood by having a heading, exactly the way Pandoc, Leanpub and every
+   HTML→EPUB pipeline derive structure from headings rather than from files.
+
+   An untitled container is a continuation page: body text that belongs to the
+   chapter above it. It takes no table-of-contents entry, no chapter number and
+   no opener chrome, and on export it folds back into that chapter's own file so
+   the reader never sees a phantom break in the navigation. Typing a heading
+   promotes it; clearing the heading demotes it again. That reversibility is the
+   whole point — "add a page" and "start a chapter" stop being two decisions the
+   user has to get right up front.
+
+   The live title is the field, not `titleHtml`: the field is what the user is
+   editing, and `titleHtml` is only its seed. Reading the seed alone would leave
+   a page the user just emptied still counting as a chapter until reload. */
+function chapterTitleText(p: PageMeta, fieldContent: Record<string, string>): string {
+  if (p.type !== 'chapter') return '';
+  return stripTags(fieldContent[`${p.id}::title`] ?? p.titleHtml).trim();
+}
+function isChapterStart(p: PageMeta, fieldContent: Record<string, string>): boolean {
+  return chapterTitleText(p, fieldContent) !== '';
+}
+/** Chapters in reading order — continuation pages excluded. */
+function chapterStarts(pages: PageMeta[], fieldContent: Record<string, string>): ChapterPage[] {
+  return pages.filter((p): p is ChapterPage => isChapterStart(p, fieldContent));
+}
+/** 1-based number as printed on the opener. 0 for a continuation page. */
+function chapterNumberOf(pages: PageMeta[], fieldContent: Record<string, string>, id: string): number {
+  return chapterStarts(pages, fieldContent).findIndex((c) => c.id === id) + 1;
+}
+/* What a continuation page's boundary becomes once the book is a file. The
+   canvas shows it as a new sheet, so the export says so too — inline rather
+   than via a stylesheet class, because this has to survive whatever the
+   packager does with CSS. Reflowable readers in scroll mode ignore it; that is
+   the correct outcome, since there are no pages there to break. */
+const CONTINUATION_BREAK_HTML = '<div style="break-before:page;page-break-before:always"></div>';
+
+/** The chapter a page belongs to: itself if titled, else the nearest titled one above. */
+function owningChapterId(pages: PageMeta[], fieldContent: Record<string, string>, id: string): string | null {
+  const idx = pages.findIndex((p) => p.id === id);
+  for (let i = idx; i >= 0; i--) if (isChapterStart(pages[i], fieldContent)) return pages[i].id;
+  return null;
+}
+
 let coverElId = 0;
 const nextCoverElId = () => `cel-${++coverElId}`;
 
@@ -4162,6 +4818,14 @@ type ThemeId = 'statement-lettering' | 'academic-clean' | 'vintage-literary' | '
 interface ThemeDef {
   id: ThemeId;
   name: string;
+  /* Which layout a NEW chapter opens with. The template has always decided what
+     a chapter looks like — it just had no way to say so, so every chapter the
+     user added came out 'standard' while the seeded ones carried real designs.
+     Vellum's Styles answer exactly this question, and answer it once for the
+     whole book rather than per chapter. Optional: unset means 'opener', the
+     designed treatment, so a theme only speaks up when it wants something else.
+     The per-chapter Layout control still overrides this for a single chapter. */
+  chapterLayout?: LayoutId;
   headingFont: string;
   bodyFont: string;
   headingColor: string;
@@ -4199,6 +4863,9 @@ interface ThemeDef {
    text again. Each uses a photo as one CONTAINED element (a top band, a corner card,
    a collage fragment) sized well under 100% of the cover, so the white ground still
    reads as dominant and the photo never needs a dark tint to keep text legible. */
+/** The layout a new chapter takes from the active theme. */
+function chapterLayoutOf(theme: ThemeDef): LayoutId { return theme.chapterLayout ?? 'opener'; }
+
 const CHART_COVER_IMAGE = STOCK_IMAGES.find((s) => s.label === 'Data chart')?.src ?? STOCK_IMAGES[0].src;
 const DESK_COVER_IMAGE = STOCK_IMAGES.find((s) => s.label === 'Desk workspace')?.src ?? STOCK_IMAGES[0].src;
 const SKYLINE_COVER_IMAGE = STOCK_IMAGES.find((s) => s.label === 'City skyline')?.src ?? STOCK_IMAGES[0].src;
@@ -4476,6 +5143,12 @@ type Selection =
      every single load. */
   | { kind: 'page'; pageId: string; viaCanvas?: boolean }
   | { kind: 'image'; chapterId: string; editor: Editor }
+  /* The caption under a photo, which is a different subject from the photo —
+     text properties, not picture properties. It carries a pos rather than
+     relying on the editor's selection because ProseMirror's selection never
+     enters the caption's contenteditable (see the image node view's stopEvent),
+     so there would otherwise be nothing to resolve it against. */
+  | { kind: 'caption'; chapterId: string; editor: Editor; pos: number }
   | { kind: 'shape'; chapterId: string; editor: Editor }
   | { kind: 'embed'; chapterId: string; editor: Editor }
   | { kind: 'qr'; chapterId: string; editor: Editor }
@@ -4522,6 +5195,62 @@ function SelectChevron() {
     </svg>
   );
 }
+/* A real <select>, styled: the relative wrapper, appearance:none, the chevron
+   drawn over it, and the options.
+   Distinct from SelectField further down, which is a custom button-and-popup
+   list in the Figma idiom. That one is for inspector controls sitting among
+   other custom chrome; this one is for form and panel controls, where the
+   native element's own keyboard and mobile behaviour is worth keeping.
+   This existed five times over as five hand-rolled copies, which is how they
+   drifted — same control at 13px in the metadata panel and 12.5px in Find &
+   Replace, with three separately-declared style objects saying nearly the same
+   thing. The sizes are now the two the editor actually uses, not five.
+
+   `sm` is the compact filter chip that sits under a field it qualifies; `md` is
+   a form control that owns its row. */
+function NativeSelect({ value, onChange, options, ariaLabel, size = 'md', invalid = false, style }: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string; disabled?: boolean }[];
+  ariaLabel?: string;
+  size?: 'sm' | 'md';
+  // The one state a select here can be in beyond its value — a required field
+  // left empty. Kept as a flag rather than a border override at the call site,
+  // because a shorthand `border` fighting this one's is exactly what React warns
+  // about on rerender.
+  invalid?: boolean;
+  style?: React.CSSProperties;
+}) {
+  const sm = size === 'sm';
+  return (
+    <div style={{ position: 'relative', display: sm ? 'inline-block' : 'block', ...style }}>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={ariaLabel}
+        className="cursor-pointer"
+        style={{
+          ...ns, appearance: 'none', outline: 'none', cursor: 'pointer', background: '#fff',
+          borderRadius: sm ? RADIUS_SM : RADIUS_MD,
+          border: `1px solid ${invalid ? '#F0B4AC' : BORDER}`,
+          width: sm ? undefined : '100%',
+          height: sm ? 26 : undefined,
+          fontSize: sm ? 11.5 : 13,
+          fontWeight: sm ? 600 : 400,
+          color: sm ? SLATE : INK,
+          // Right padding clears the chevron; SelectChevron sits at right: 11.
+          padding: sm ? '0 24px 0 9px' : '8px 28px 8px 10px',
+        }}
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>
+        ))}
+      </select>
+      <SelectChevron />
+    </div>
+  );
+}
+
 /* Link colours are deliberately not theme-driven — see the .book-chapter-prose
    a rule. Blue is the app's own accent rather than the browser's #0000EE, and
    the purple is the one dropped from the text swatch row. */
@@ -4529,19 +5258,47 @@ const LINK_COLOR = '#006EFE';
 const LINK_VISITED_COLOR = '#7C3AED';
 
 const ICONS = {
+  /* Table row/column inserts. A bar for the row or column you're on, and an
+     arrow into the space the new one will occupy — drawn per direction rather
+     than one glyph rotated in CSS, so each reads right-way-up at 15px. */
+  insertLeft: 'M15 4v16M11 12H4M7 9l-3 3 3 3',
+  insertRight: 'M9 4v16M13 12h7M17 9l3 3-3 3',
+  insertAbove: 'M4 15h16M12 11V4M9 7l3-3 3 3',
+  insertBelow: 'M4 9h16M12 13v7M9 17l3 3 3-3',
   design: 'M12 2a5 5 0 0 0-5 5c0 2 1 3 1 5a4 4 0 0 0 4 4h.5a1.5 1.5 0 0 0 1.06-2.56A1 1 0 0 1 14 12h2a5 5 0 0 0 5-5c0-3-4-5-9-5z',
-  // Triangle overlapping a circle — matches old Designrr's "Artwork & shapes"
-  // rail icon (a two-tone triangle-over-circle glyph), redrawn as a single
-  // outline to match this app's own icon rendering (Icon() always strokes one
-  // currentColor path — see the comment above that component).
-  shapesTab: 'M8 3a5 5 0 1 0 0 10 5 5 0 1 0 0-10zM13 12h8v8h-8z',
-  // Rail-only "Text" glyph — a literal A, matching old Designrr's rail (a
-  // rounded "A" badge). Distinct from `heading` below, which stays the
-  // H2/H3-style bar icon used by the Subheading insert tile — that's a
-  // different, more specific meaning and shouldn't change just because the
-  // rail tab icon does.
-  textTab: 'M6 20L12 4L18 20M8.3 14h7.4',
-  settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.35a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.65 15a1.7 1.7 0 0 0-1.56-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.65 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.65a1.7 1.7 0 0 0 1-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.35 9c.68.26 1.56.9 1.56 1.56',
+  /* A circle overlapping a rounded square — two shapes that actually touch,
+     which is what makes the pair read as "shapes" rather than as two unrelated
+     marks. The version this replaces had them meeting at a single corner point
+     and sat half a unit above centre, and its comment claimed a triangle over a
+     circle that the path never drew. The live editor calls this tab Artworks and
+     uses a star, but our Elements panel carries shapes, icons and charts too —
+     a star would name one of its four groups. */
+  shapesTab: 'M8.5 3a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zM13.7 12h5.6a1.7 1.7 0 0 1 1.7 1.7v5.6a1.7 1.7 0 0 1-1.7 1.7h-5.6a1.7 1.7 0 0 1-1.7-1.7v-5.6a1.7 1.7 0 0 1 1.7-1.7z',
+  /* Rail-only "Text" glyph — a slab-serif T, which is what the shipping
+     editor draws for its Text styles tab. It replaces a literal A taken from
+     the OLD editor's rail: at 20px an A is two thin diagonals around a lot of
+     trapped white, and it was the faintest mark in a rail of solid pictograms.
+     The serifs are load-bearing — a bare T reads as a lowercase t at this size.
+
+     The one glyph in the rail that does NOT fill the 18-unit live area: 15.5,
+     an optical correction rather than an inconsistency. Flat strokes parked on
+     the exact top and bottom edges read taller than curves and corners that
+     recede, so a T measuring the same 18 as its neighbours looks bigger than
+     them. The shipping editor corrects the same way — its T renders 32px where
+     its gear renders 38 — and 0.84 of our gear's 18.2 is where this landed.
+
+     Distinct from `heading` below, which stays the H2/H3-style bar icon used by
+     the Subheading insert tile — that's a different, more specific meaning and
+     shouldn't change just because the rail tab icon does. */
+  textTab: 'M5.5 4.25h12.9M5.5 4.25v2.2M18.5 4.25v2.2M12 4.25v15.5M8.9 19.75h6.2',
+  /* Eight square teeth on a 6.9-radius valley arc, hub at r3.1, the whole gear
+     inside the 18-unit live area the rest of this set uses. The previous path
+     was a hand-tweaked Feather gear that had gone wrong twice over: every knob
+     used a large-arc flag (`a2 2 0 1 1`) where Feather splits the turn into two
+     0-flag arcs, so each tooth drew a full loop, and the path stopped mid-curve
+     before closing — the last tooth trailed off into the hub. It rendered as a
+     lumpy rosette with a tail, not a gear. */
+  settings: 'M10.2 5.3L10.6 2.9L13.4 2.9L13.8 5.3A6.9 6.9 0 0 1 15.5 6L17.4 4.6L19.4 6.6L18 8.6A6.9 6.9 0 0 1 18.7 10.2L21.1 10.6L21.1 13.4L18.7 13.8A6.9 6.9 0 0 1 18 15.4L19.4 17.4L17.4 19.4L15.5 18A6.9 6.9 0 0 1 13.8 18.7L13.4 21.1L10.6 21.1L10.2 18.7A6.9 6.9 0 0 1 8.6 18L6.6 19.4L4.6 17.4L6 15.4A6.9 6.9 0 0 1 5.3 13.8L2.9 13.4L2.9 10.6L5.3 10.2A6.9 6.9 0 0 1 6 8.5L4.6 6.6L6.6 4.6L8.5 6A6.9 6.9 0 0 1 10.2 5.3ZM12 8.9a3.1 3.1 0 1 0 0 6.2a3.1 3.1 0 1 0 0-6.2z',
   heading: 'M6 4v16M18 4v16M6 12h12',
   // Same trap as divider/shapeLine: two tiles, one glyph. A smaller H, sitting
   // lower in the box, is the level difference drawn rather than asserted.
@@ -4597,6 +5354,30 @@ const ICONS = {
   chartPie: 'M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17 M12 12V3.5 M12 12l7.36 4.25',
   video: 'M4 5h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM22 8l-4 3 4 3V8z',
   audio: 'M9 18V5l12-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z',
+  /* Two rails with round knobs. The funnel this replaces was the more literal
+     drawing of "narrow a set", but it lost the argument at the only size that
+     counts: a funnel's bowl tapers to a neck, so at 16px most of its 18 units
+     are empty and the shape reads as a small weak V next to a 34px button's
+     worth of space. The rails fill the box.
+     Not the decreasing-bars filter glyph, which is the commonest one of all and
+     unusable here — this is a text editor, and `alignCenter` above is already
+     three centered lines of decreasing width. The knobs are what keep this from
+     colliding the same way with `alignJustify`.
+     Two rails, not three: a third adds nothing to the reading and closes the
+     gaps that make the knobs legible. 18-unit live area in a 24 box, per the
+     icon system. The knobs are arc pairs rather than <circle>s because Icon
+     renders a single path. */
+  filter: 'M3 8.5h4.2M10.9 8.5H21M3 15.5h9.2M15.9 15.5H21M9 6.75a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 1 0 0-3.5M14 13.75a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 1 0 0-3.5',
+  /* The mark a menu row wears when it's the chosen one. It used to be the text
+     character U+2713, which Nunito Sans doesn't ship — so every menu in the
+     editor was falling back to a system font and drawing a swashed, tapering,
+     asymmetric tick in the middle of a UI whose every other glyph is an even
+     1.7-weight stroke with round caps.
+     This exact path, not a near-miss: it's the check the whole app already draws
+     — StyledDropdown below, the narration studio's script-mode menu, the
+     presentation editor — so a second tick shape invented here would trade one
+     inconsistency for another. */
+  tick: MENU_TICK_PATH,
   arrow: 'M5 12h14M13 6l6 6-6 6',
   star: 'M12 2.5l3.09 6.26L22 9.77l-5 4.87L18.18 21.5 12 18.27 5.82 21.5 7 14.64l-5-4.87 6.91-1.01L12 2.5z',
   check: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8 12l3 3 5-6',
@@ -4604,17 +5385,31 @@ const ICONS = {
   shapeEllipse: 'M4 12a8 8 0 1 0 16 0 8 8 0 1 0-16 0z',
   shapeTriangle: 'M12 4L20 19H4z',
   shapeLine: 'M5 19L19 5',
-  // Sun + mountains, no frame — matches old Designrr's "Images" rail icon
-  // (a landscape glyph, not a picture-frame-with-mountain like this used to
-  // be). Shared with the Image insert tile, which means the same thing.
-  image: 'M7 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM2 20l6-8 4 4 5-7 5 11z',
-  cta: 'M2 5h13a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM4.5 8.5h8M14 14l8 3-3.3 1.2L17.5 21.5z',
+  /* Framed sun-and-mountains. The frameless version this replaces was drawn
+     against the OLD editor's "Images" rail icon; the shipping editor
+     (app.designrr.io/dashboard/cover-editor) draws Media as a rounded frame
+     with the landscape inside it, so the frame is the product match, not a
+     departure from it. It also fixes the rail's widest glyph: frameless, this
+     was the only 20-unit icon in a rail of 18s. Shared with the Image insert
+     tile, which means the same thing. */
+  image: 'M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3v-12a3 3 0 0 1 3 -3zM8.7 9.4a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8zM5 18.2l4.3-4.9 2.6 2.9 2.7-3.2 4.4 5.2',
+  /* The button's left edge used to start at x=0, which put half the stroke
+     outside the viewBox — the rounded corner came out shaved flat. Redrawn
+     inside the same 3–21 live area the rest of the set uses. */
+  cta: 'M5 4.6h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2zM7 8.1h8M13.5 13.2l7 2.6-2.9 1.05L16.6 20.1z',
   chapterBreak: 'M4 4h16v16H4zM4 12h16',
-  bookTab: 'M2 4a1 1 0 0 1 1-1h6a4 4 0 0 1 4 4 4 4 0 0 1 4-4h6a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-6a4 4 0 0 0-4 3 4 4 0 0 0-4-3H3a1 1 0 0 1-1-1z',
+  /* Same clipping problem as `cta`, mirrored: the right page ran to x=24, so
+     the outer edge was shaved and the whole book sat one unit right of centre. */
+  bookTab: 'M3 4.5a1 1 0 0 1 1-1h5a3 3 0 0 1 3 3 3 3 0 0 1 3-3h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-5a3 3 0 0 0-3 2.5 3 3 0 0 0-3-2.5H4a1 1 0 0 1-1-1z',
   interactiveTab: 'M5 3l14 6-6 2-2 6z',
-  // A page with text lines — matches old Designrr's "Templates" rail icon (a
-  // document/card glyph), not a 4-quadrant dashboard grid.
-  templatesTab: 'M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM8 10h8M8 14h5',
+  /* An open book, which is what the shipping editor draws for its own
+     Templates tab. It used to be a card with text lines, drawn against the OLD
+     editor's rail — that held up only while Photos was frameless. Framing the
+     photo (see `image`) left the rail opening with two rounded squares in a
+     row, and a silhouette is the first thing you read at 20px. Nothing else
+     shows an open book: `bookTab` is only the fallback glyph on a Settings row
+     that CategoryMark always draws an illustration for instead. */
+  templatesTab: 'M3 4.5a1.5 1.5 0 0 1 1.5-1.5H9a3 3 0 0 1 3 3 3 3 0 0 1 3-3h4.5A1.5 1.5 0 0 1 21 4.5v13a1.5 1.5 0 0 1-1.5 1.5H15a3 3 0 0 0-3 2 3 3 0 0 0-3-2H4.5A1.5 1.5 0 0 1 3 17.5zM12 6v13',
   // Right-rail pair. An info-circle for Properties — reads as "about the selected
   // thing" without borrowing the gear (Book settings), sliders (looks like a
   // generic filter/equalizer), or the single-sheet glyph Templates already owns.
@@ -4629,7 +5424,6 @@ const ICONS = {
   wrapInline: 'M4 6h16M4 12h16M4 18h16',
   wrapLeft: 'M4 4h8v8H4zM14 6h6M14 10h6M4 16h16M4 20h10',
   wrapRight: 'M12 4h8v8h-8zM4 6h6M4 10h6M4 16h16M4 20h10',
-  wrapFull: 'M3 5h18v6H3zM3 15h18M3 19h12',
   back: 'M19 12H5M12 5l-7 7 7 7',
   chevronLeft: 'M15 18l-6-6 6-6',
   chevronRight: 'M9 18l6-6-6-6',
@@ -4638,9 +5432,11 @@ const ICONS = {
   mobile: 'M8 2h8a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zM11 19h2',
   qrcode: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h-3zM20 14v3h-3M14 20h3M20 20v-3',
   jumbotron: 'M3 5h18v14H3zM7 9h6M7 13h10',
-  // Two free-floating bars read as a pause button on the rail. Framed, it reads
-  // as a page split into columns — which is what the Layouts tab is.
-  columns: 'M3 4h18v16H3zM12 4v16',
+  /* Four unequal blocks, which is the glyph the shipping editor uses for its
+     own Layout tab. The framed two-column box this replaces was a third framed
+     rectangle in a set that already had `table` and `jumbotron`, and it drew
+     one of the eight layouts in the panel rather than the idea of layout. */
+  columns: 'M4.7 3h4.2a1.7 1.7 0 0 1 1.7 1.7v6a1.7 1.7 0 0 1 -1.7 1.7h-4.2a1.7 1.7 0 0 1 -1.7 -1.7v-6a1.7 1.7 0 0 1 1.7 -1.7zM15.1 3h4.2a1.7 1.7 0 0 1 1.7 1.7v2.8a1.7 1.7 0 0 1 -1.7 1.7h-4.2a1.7 1.7 0 0 1 -1.7 -1.7v-2.8a1.7 1.7 0 0 1 1.7 -1.7zM4.7 14.6h4.2a1.7 1.7 0 0 1 1.7 1.7v3a1.7 1.7 0 0 1 -1.7 1.7h-4.2a1.7 1.7 0 0 1 -1.7 -1.7v-3a1.7 1.7 0 0 1 1.7 -1.7zM15.1 11.8h4.2a1.7 1.7 0 0 1 1.7 1.7v5.8a1.7 1.7 0 0 1 -1.7 1.7h-4.2a1.7 1.7 0 0 1 -1.7 -1.7v-5.8a1.7 1.7 0 0 1 1.7 -1.7z',
   imageGrid: 'M3 3h8v8H3zM13 3h8v8h-8zM3 13h8v8H3zM13 13h8v8h-8z',
   checklist: 'M4 6h.01M4 12h.01M4 18h.01M9 6h11M9 12h11M9 18h11M3.5 6l1 1 1.5-2M3.5 12l1 1 1.5-2M3.5 18l1 1 1.5-2',
   signature: 'M4 15c1 0 2-1 3-4s1-5 0-5-2 3-1 7 2 4 4 4 3-2 5-2 2 1 3 1M4 19h16',
@@ -5009,8 +5805,12 @@ const GROUP_HEADINGS: Partial<Record<InsertTile['group'], string>> = {
      two unrelated things called templates — one nested two levels inside the
      other — is the heavier action lending its name to the lighter one. Canva
      ("Pre-designed") and Visme ("Design Blocks") both avoid the word for exactly
-     this; Flipsnack ships the collision. */
-  TextTemplates: 'Ready-made',
+     this; Flipsnack ships the collision.
+     "Blocks" and not just "Ready-made", which was an adjective with nothing to
+     agree with — ready-made what? Not "Text blocks" either: the unlabelled
+     gallery at the top of this tab is the plain text blocks, so that name would
+     describe both sections and distinguish neither. */
+  TextTemplates: 'Ready-made blocks',
 };
 
 function groupGate(group: InsertTile['group']): GateTier | null {
@@ -5031,7 +5831,17 @@ function splitColumnsHtml(n: number): string {
 }
 
 const INSERT_TILES: InsertTile[] = [
-  { id: 'heading', label: 'Heading', icon: ICONS.heading, group: 'Text', html: '<h3>New heading</h3>', specimen: '<h3>Section heading</h3>' },
+  /* The level above Section heading, and the only block that starts a chapter.
+     It leads the Text group because that is the order the document is built in
+     — chapter, then sections inside it — and because the list should read as a
+     hierarchy rather than as an alphabet. */
+  { id: 'chapterTitle', label: 'Chapter title', icon: ICONS.heading, group: 'Text', html: '<h2 data-chapter-title="true">New chapter</h2>', specimen: '<h2 data-chapter-title="true">Chapter title</h2>' },
+  /* "Section heading", not "Heading": the chapter title is the level above this
+     one, so calling this the heading overstates it — and the tile already
+     previewed the words "Section heading" while the Style list called the same
+     block "Heading". One block, one name. Atticus and Vellum both keep the
+     chapter's name and the headings inside it strictly separate. */
+  { id: 'heading', label: 'Section heading', icon: ICONS.heading, group: 'Text', html: '<h3>New section heading</h3>', specimen: '<h3>Section heading</h3>' },
   { id: 'subheading', label: 'Subheading', icon: ICONS.subheading, group: 'Text', html: '<h4>New subheading</h4>', specimen: '<h4>Subheading</h4>' },
   { id: 'paragraph', label: 'Paragraph', icon: ICONS.paragraph, group: 'Text', html: '<p>New paragraph text.</p>', specimen: '<p>Paragraph of body text.</p>' },
   { id: 'quote', label: 'Quote', icon: ICONS.quote, group: 'Text', html: '<blockquote>A pulled quote.</blockquote>', specimen: '<blockquote>A quote, set apart.</blockquote>' },
@@ -5110,15 +5920,26 @@ const INSERT_TILES: InsertTile[] = [
      and the inserted mark cannot disagree — `sub` is the icon's own category, and
      InsertPanel takes runs of equal `sub` in array order, which BOOK_ICONS is
      already grouped by. */
-  ...BOOK_ICONS.map((ic): InsertTile => ({
-    id: `icon-${ic.name}`,
-    label: ic.label,
+  /* Twice, like every shape: the solid cut and the hollow one. The Icons grid
+     carries the same Solid/Outline control the Shapes grid does (see
+     `variantOf`), so the pair is never both on screen — but they are two real
+     tiles underneath, which is what lets a drag resolve to exactly the markup
+     its tile previewed.
+     Unlike Shapes, this is not a deduplication: an outline icon is a separately
+     DRAWN mark from FontAwesome's regular cut, not the solid one with its fill
+     taken off, so neither tile could be derived from the other at insert time. */
+  ...BOOK_ICONS.flatMap((ic): InsertTile[] => ([
+    { style: 'solid' as BookIconStyle, suffix: '', labelSuffix: '' },
+    { style: 'outline' as BookIconStyle, suffix: '-outline', labelSuffix: ' outline' },
+  ].map(({ style, suffix, labelSuffix }) => ({
+    id: `icon-${ic.name}${suffix}`,
+    label: `${ic.label}${labelSuffix}`,
     icon: ICONS.star,
     group: 'Icons',
     sub: ic.category,
-    svg: bookIconHtml(ic.name, INK, 26, 'book-tile-icon'),
-    html: iconWrapHtml({ name: ic.name, color: INK, size: ICON_DEFAULT_SIZE, align: 'left', locked: false }),
-  })),
+    svg: bookIconHtml(ic.name, INK, 26, 'book-tile-icon', style),
+    html: iconWrapHtml({ name: ic.name, style, color: INK, size: ICON_DEFAULT_SIZE, align: 'left', locked: false }),
+  })))),
   ...SHAPE_LIBRARY.flatMap((sh): InsertTile[] => {
     const g = shapeDefGeom(sh);
     const attrs = `data-kind="${sh.kind}" data-d="${sh.d ?? ''}" data-sides="${g.sides}" data-points="${g.points}" data-ratio="${g.starRatio}" data-radius="${g.cornerRadius}" data-w="${SHAPE_DEFAULT_PX}" data-h="${SHAPE_DEFAULT_PX}"`;
@@ -5293,6 +6114,12 @@ const INSERT_TILES: InsertTile[] = [
      Each cell carries its name in bold with the writing space under it, which is
      the layout every SWOT sheet in print uses. */
   { id: 'swot', label: 'SWOT', icon: ICONS.table, group: 'Worksheets', sub: 'Ready-made templates', html: quadrantHtml([['Strengths', 'Weaknesses'], ['Opportunities', 'Threats']]) },
+  /* Filed with the sheets, not with the text blocks: it renders as a bordered
+     grid with a header row, and that is what a reader sees regardless of the
+     document model. It also ships BLANK below the labels, which is this group's
+     grammar — the two option columns are the reader's to fill, the same way
+     Goal setting's answer column is. */
+  { id: 'comparison', label: 'Comparison', icon: ICONS.table, group: 'Worksheets', sub: 'Ready-made templates', html: sheetHtml(['', 'Option A', 'Option B'], ['Cost', 'Time', 'Effort', 'Best for']) },
   /* The header earns its row here: without it the right-hand column is five
      blank boxes next to five words, and nothing says the boxes are yours. */
   { id: 'goal-setting', label: 'Goal setting', icon: ICONS.table, group: 'Worksheets', sub: 'Ready-made templates', html: sheetHtml(['SMART goal', 'Your answer'], ['Specific', 'Measurable', 'Achievable', 'Relevant', 'Time-bound']) },
@@ -5366,16 +6193,13 @@ const INSERT_TILES: InsertTile[] = [
      avoid. Two callouts inside one split row — several minutes of table
      wrangling by hand, and the arrangement nobody builds twice. */
   { id: 'template-do-dont', label: 'Do & don\'t', icon: ICONS.callout, group: 'TextTemplates', html: '<table class="book-split-columns"><tbody><tr><td><div data-callout="true" data-callout-type="note" class="book-callout book-callout--note"><p><strong>Do this</strong></p><p>The approach that works, in a line.</p></div></td><td><div data-callout="true" data-callout-type="warning" class="book-callout book-callout--warning"><p><strong>Not this</strong></p><p>The mistake to avoid, in a line.</p></div></td></tr></tbody></table>' },
-  /* The eyebrow takes an inline text-align, because .book-textstyle--* hardcodes
-     centred — right over a centred chapter title, wrong over the flush-left
-     heading it labels here. TextAlign is configured for paragraphs, so the
-     inline value parses into a real attribute rather than being stripped. */
-  { id: 'template-case-study', label: 'Case study', icon: ICONS.quote, group: 'TextTemplates', html: '<div data-callout="true" data-callout-type="neutral" class="book-callout book-callout--neutral"><p class="book-textstyle--whisper" style="text-align: left">Case study</p><h4>Who this happened to</h4><p>What they tried, and what got in the way.</p><p><strong>Result:</strong> what changed, in numbers where you have them.</p></div>' },
-  /* [Author name] rather than literal text: resolveFieldTokens fills it at
-     export and in Preview, so a bio block stays right when the book's author
-     changes — the same argument that removed the old literal "By Author Name"
-     tile further up. */
-  { id: 'template-author-bio', label: 'About the author', icon: ICONS.paragraph, group: 'TextTemplates', html: '<hr><h4>About the author</h4><p><em>[Author name] writes about the things in this book. A sentence or two of biography goes here.</em></p>' },
+  /* Headings and paragraphs, deliberately not an <ol>: a numbered list is one
+     click on the toolbar, and shipping a card for it would be the same mistake
+     as a card that just names a block you already have. Real headings instead,
+     so each step takes its place in the book's heading scale the way the rest
+     of the document's structure does, and the step/body pair stays consistent
+     across all three — which is exactly what drifts when they're typed. */
+  { id: 'template-steps', label: 'Step by step', icon: ICONS.listNumbered, group: 'TextTemplates', html: '<h4>Step 1 &mdash; name the step</h4><p>What to do first, in a line or two.</p><h4>Step 2 &mdash; name the step</h4><p>The next thing, in the same shape.</p><h4>Step 3 &mdash; name the step</h4><p>The last one, and what you end up with.</p>' },
 ];
 
 /* Extra search terms per tile, for the words people actually type that aren't in
@@ -5509,7 +6333,23 @@ function activeObjectKind(editor: Editor): 'image' | 'imageGrid' | 'shape' | 'em
      table branch: a NodeSelection's range covers the block's content, so a table
      inside the columns would otherwise claim the selection. */
   if (sel instanceof NodeSelection && sel.node.type.name === 'columnsBlock') return 'columns';
-  if (editor.isActive('table')) return innermostTableIsStack(editor.state) ? null : 'table';
+  /* A caret typing in a cell is TEXT. It used to report as 'table', so the
+     panel offered rows, columns and line thickness while you were writing a
+     sentence — and font, size, colour and alignment were unreachable for as
+     long as the caret stayed inside the table.
+
+     Table properties belong to a table SELECTION: a CellSelection (drag across
+     cells) or a NodeSelection on the table itself. That's Google Docs' model —
+     click in a cell and you get text controls; select cells and you get the
+     table's. Returns rather than falling through either way, because every
+     more specific object inside a cell was already matched above. */
+  if (editor.isActive('table')) {
+    if (innermostTableIsStack(editor.state)) return null;
+    const sel = editor.state.selection;
+    if (sel instanceof CellSelection) return 'table';
+    if (sel instanceof NodeSelection && sel.node.type.name === 'table') return 'table';
+    return null;
+  }
   if (editor.isActive('orderedList', { class: 'book-footnotes' })) return 'footnotesSection';
   return null;
 }
@@ -5621,12 +6461,53 @@ type ElementsCategory = 'Shapes' | 'Icons' | 'Charts' | 'Worksheets' | 'Interact
    needed fetching would come out empty exactly when it had to be right. */
 interface PickedMedia { src: string; label: string; poster?: string; title?: string }
 
+/* The node types that have an inspector of their own (the ones activeObjectKind
+   names). Text blocks are deliberately absent: what you want after dropping a
+   heading in is a caret inside it, which is also exactly the selection the Text
+   inspector reads. */
+const INSPECTABLE_NODE_TYPES = new Set([
+  'image', 'imageGridBlock', 'shapeBlock', 'embedBlock', 'qrCodeBlock', 'chartBlock',
+  'horizontalRule', 'jumbotronBlock', 'buttonBlock', 'iconBlock', 'socialRowBlock',
+  'columnsBlock', 'table',
+]);
+
+/* Puts the selection on what an insert just placed. insertContentAt leaves the
+   caret *after* the new content — for an object that reads as a plain 'chapter'
+   selection (so Properties opened on Text, or not at all, and the thing you just
+   added had to be clicked before its own controls appeared); for a text block it
+   lands at the start of whatever the insert split off, one block PAST the new
+   heading or quote.
+
+   The inserted blocks are the top-level nodes between where the content went in
+   and the start of the block the caret ended up in — `from - 1` as the lower
+   bound because an insert at the very start of a paragraph goes in ahead of it
+   rather than splitting it. The last of them wins: an object gets selected
+   outright, anything else takes a caret at its end. */
+function selectInsertedObject(editor: Editor, from: number) {
+  const { doc, selection } = editor.state;
+  const caretBlockStart = selection.$to.depth > 0 ? selection.$to.before(1) : selection.to;
+  let object = -1;
+  let block = -1;
+  doc.forEach((node, offset) => {
+    if (offset < from - 1 || offset + node.nodeSize > caretBlockStart) return;
+    if (INSPECTABLE_NODE_TYPES.has(node.type.name)) object = offset;
+    else block = offset + node.nodeSize;
+  });
+  if (object >= 0) { editor.chain().setNodeSelection(object).run(); return; }
+  if (block < 0) return;
+  // PMSelection.near rather than setTextSelection: the end of a list or a quote
+  // is not itself a text position, and TextSelection.create throws on those.
+  const { view } = editor;
+  view.dispatch(view.state.tr.setSelection(PMSelection.near(view.state.doc.resolve(block - 1), -1)));
+}
+
 /* Image/video/audio used to insert a gray placeholder (or prompt() for a URL)
    straight from the grid — now those three route through the media picker instead
    (choose a source on the left first, see MediaPickerPanel below), so nothing
    reaches this function without a real src already. */
 function insertTileContent(editor: Editor, pos: number, html: string) {
   editor.chain().focus().insertContentAt(pos, html).scrollIntoView().run();
+  selectInsertedObject(editor, pos);
 }
 
 /* What the media picker's "ready to place" card turns into once it's actually
@@ -5636,16 +6517,17 @@ function insertTileContent(editor: Editor, pos: number, html: string) {
 function insertMediaAt(editor: Editor, pos: number, kind: MediaPickerKind, src: string, meta?: { poster?: string; title?: string }) {
   if (kind === 'image') {
     editor.chain().focus().insertContentAt(pos, { type: 'image', attrs: { src, alt: '', wrap: 'inline' } }).scrollIntoView().run();
-    return;
+  } else {
+    editor.chain().focus().insertContentAt(pos, {
+      type: 'embedBlock',
+      attrs: { kind, src, poster: meta?.poster ?? '', title: meta?.title ?? '' },
+    }).scrollIntoView().run();
   }
-  editor.chain().focus().insertContentAt(pos, {
-    type: 'embedBlock',
-    attrs: { kind, src, poster: meta?.poster ?? '', title: meta?.title ?? '' },
-  }).scrollIntoView().run();
+  selectInsertedObject(editor, pos);
 }
 
 function ChapterEditor({
-  page, theme, isSelected, currentSelection, isDragActive, onSelection, onAddChapterAfter, onSplitChapter, onBeginChapterEdit, onWordCountChange, onPageCountChange, onAltStatusChange, onEditorFocus, onContentChange, titleHtml, onTitleChange, eyebrowHtml, onFieldChange, moveDragRef, onMoveDragActiveChange, zoom, pageNumbers, pageNumberIndex, chapterNumber, onMediaDropped, onSetOpenerImage, getFieldEditor,
+  page, theme, isSelected, currentSelection, onSelection, onAddChapterAfter, onSplitChapter, onBeginChapterEdit, onWordCountChange, onPageCountChange, onAltStatusChange, onEditorFocus, onContentChange, titleHtml, onTitleChange, eyebrowHtml, onFieldChange, moveDragRef, onMoveDragActiveChange, zoom, pageNumbers, pageNumberIndex, chapterNumber, onMediaDropped, onSetOpenerImage, getFieldEditor,
 }: {
   page: ChapterPage;
   theme: ThemeDef;
@@ -5663,7 +6545,6 @@ function ChapterEditor({
      back out is what keeps them pinned to their block at any zoom. */
   zoom: number;
   currentSelection: Selection;
-  isDragActive: boolean;
   onSelection: (sel: Selection) => void;
   onAddChapterAfter: (afterId: string) => void;
   // Split lives at document scope (touches setPages/setChapterContent), so it's
@@ -5716,11 +6597,46 @@ function ChapterEditor({
   useEffect(() => { geometryRef.current = geometry; }, [geometry]);
   const readGeometry = useCallback(() => geometryRef.current, []);
   const scale = zoom / 100;
+  /* The stripe on a banded table's alternate rows. Derived from whatever the
+     page is actually painted, so it works on a white sheet, a tinted one and a
+     dark theme alike — a translucent ink tint darkens a light page, a
+     translucent white lifts a dark one. relativeLuminance is the same helper the
+     charts use to pick a label colour against their own bars. */
+  const bandBase = page.bg ?? theme.bg;
+  /* relativeLuminance slices #RRGGBB and hands back NaN for anything else, and
+     NaN > 0.5 is false — which would put the dark-page tint on a white sheet.
+     Anything unparseable is treated as light paper, which is what it nearly
+     always is. */
+  const lightPage = !/^#[0-9a-f]{6}$/i.test(bandBase) || relativeLuminance(bandBase) > 0.5;
+  const bandTint = lightPage ? 'rgba(15,25,40,0.04)' : 'rgba(255,255,255,0.07)';
   const [dragOver, setDragOver] = useState(false);
   // The opener-photo placeholder's own drop target — separate from `dragOver`
   // above (the whole page accepting an Insert-panel tile), since this one only
   // ever accepts an image and lives in a much smaller region.
   const [openerDragOver, setOpenerDragOver] = useState(false);
+  /* Whether the pointer is anywhere on this stack. Only the untitled-page
+     "Add chapter title" ghost reads it, and it has to be a page-wide hover:
+     an affordance you can only see once you are already on top of it cannot
+     be found. Set from enter/leave rather than the existing mousemove handler
+     — one state write per page entered, not one per pixel. */
+  const [pageHover, setPageHover] = useState(false);
+
+  /* This page is a chapter only if it carries a heading — see isChapterStart.
+     Read from the `titleHtml` prop rather than page.titleHtml because the prop
+     is the live field value, so clearing the title demotes the page on the
+     keystroke rather than on the next reload. */
+  const hasTitle = stripTags(titleHtml).trim() !== '';
+  /* Demoting a page by deleting its heading must not unmount the field doing the
+     deleting: onUpdate fires inside ProseMirror's own dispatch, so tearing the
+     editor down from that same React update destroys it mid-transaction and the
+     next plugin to run reads `extensions` off null. The field therefore outlives
+     the title — it stays mounted, now empty, until the caret leaves the page,
+     which is also the moment it stops being useful. Everything else about the
+     demotion (contents, numbering, opener chrome) happens immediately. */
+  const [keepTitleMounted, setKeepTitleMounted] = useState(false);
+  useEffect(() => { if (hasTitle) setKeepTitleMounted(true); }, [hasTitle]);
+  useEffect(() => { if (!hasTitle && !isSelected) setKeepTitleMounted(false); }, [hasTitle, isSelected]);
+  const showTitleField = hasTitle || keepTitleMounted;
   const handleOpenerDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setOpenerDragOver(false);
@@ -5747,7 +6663,7 @@ function ChapterEditor({
      It used to carry a `movable` flag as well, to keep the bar and the drag
      handle from overlapping while both lived in the left gutter — the bar
      doesn't sit there any more, so the gutter is the handle's alone. */
-  const [blockMenuAt, setBlockMenuAt] = useState<{ pos: number; top: number; left: number; clearTop: number } | null>(null);
+  const [blockMenuAt, setBlockMenuAt] = useState<{ pos: number; top: number; left: number; width: number; clearTop: number } | null>(null);
   const [wordgenieToast, setWordgenieToast] = useState(false);
   /* How many fixed-height pages this chapter currently occupies. Owned here
      rather than derived in render because only the pagination plugin knows —
@@ -5761,7 +6677,13 @@ function ChapterEditor({
   /* The table under the pointer, if any — drives the + adders on its right and
      bottom edges. Measured like every other overlay here: resolve the element,
      take its rect, divide by zoom. */
-  const [hoverTable, setHoverTable] = useState<{ pos: number; left: number; boxTop: number; width: number; boxHeight: number } | null>(null);
+  const [hoverTable, setHoverTable] = useState<{
+    pos: number; left: number; boxTop: number; width: number; boxHeight: number;
+    /* The cell the pointer is actually over, which is what the row and column
+       menus act on. Null between cells — on a border, or over the spacer row a
+       page break puts in — and the menus simply don't draw. */
+    cell: { row: number; col: number; left: number; top: number; width: number; height: number } | null;
+  } | null>(null);
   // Whether a move-drag currently in progress started from THIS chapter's own
   // handle — state, not a ref read during render, so the handle can stay
   // mounted through its own drag (see the render condition below) without
@@ -5793,6 +6715,7 @@ function ChapterEditor({
      caret into whatever was clicked — which, inside a stack, would read as
      "already drilled in", and the first click would never select the stack. */
   const containerBeforeClick = useRef(-1);
+  const cellBeforeClick = useRef(-1);
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -5819,6 +6742,7 @@ function ChapterEditor({
       Highlight.configure({ multicolor: true }),
       Placeholder.configure({ placeholder: 'Write, or drag a block in from the rail on the left…' }),
       WrappableImage.configure({ inline: false, allowBase64: true }),
+      ChapterTitleBlock,
       Callout,
       /* allowTableNodeSelection, because a stack is selected as a whole node by
          its first click (see selectContainerAt). prosemirror-tables otherwise
@@ -5826,10 +6750,14 @@ function ChapterEditor({
          every cell — which looks like a selection but isn't one this editor can
          read, so the stack silently fell straight through to Text properties.
          It fixes the drag handle's own setNodeSelection on a table too. */
-      LockableTable.configure({ resizable: false, allowTableNodeSelection: true }),
-      TableRow,
-      TableHeader,
-      TableCell,
+      /* resizable turns on prosemirror-tables' column resizing. It is safe here
+         only because TipTap hands the plugin our own `View`: without that it
+         would install the stock TableView and the table would lose
+         syncTableDom, taking the style, lock and padding attributes with it. */
+      LockableTable.configure({ resizable: true, allowTableNodeSelection: true, View: BookTableView }),
+      SizedTableRow,
+      StyledTableHeader,
+      StyledTableCell,
       ShapeBlock,
       EmbedBlock,
       QrCodeBlock,
@@ -5969,9 +6897,14 @@ function ChapterEditor({
       },
       /* The text half of the drill-in. handleClickOn only ever sees atoms, so a
          click landing in a column's prose arrives here instead. */
-      handleClick: (view, pos) => selectContainerAt(view, pos, containerBeforeClick.current),
+      handleClick: (view, pos) => selectContainerAt(view, pos, containerBeforeClick.current)
+        || selectCellAt(view, pos, cellBeforeClick.current),
       handleDOMEvents: {
-        mousedown: (view) => { containerBeforeClick.current = enteredContainerPos(view.state); return false; },
+        mousedown: (view) => {
+          containerBeforeClick.current = enteredContainerPos(view.state);
+          cellBeforeClick.current = cellPosAt(view.state.doc, view.state.selection.from);
+          return false;
+        },
       },
       // Locking (see the Lock feature) hides the floating bar's Delete button,
       // but that alone doesn't stop ProseMirror's own base keymap, which binds
@@ -6011,6 +6944,30 @@ function ChapterEditor({
     const pos = resolveDropPosition(editor, clientX, clientY) ?? editor.state.selection.from;
     insertTileContent(editor, pos, html);
   }, [editor]);
+
+  /* The caret landing in a photo's caption is a selection change that
+     ProseMirror never sees — the node view swallows its own events — so the
+     image node view announces it and this turns it into the one kind of
+     selection the panel understands. The panel then shows the caption's
+     typography instead of the photo's properties.
+
+     Nothing here clears it. Blur is the wrong signal: the first thing an author
+     does after clicking into a caption is click a control in the panel, which
+     blurs the caption and would tear the panel down mid-interaction. What ends
+     a caption selection is the next real one — a click anywhere on the canvas
+     fires onFocus/onSelectionUpdate above and replaces it, and Enter/Escape in
+     the caption hands the selection back to the photo by hand. */
+  useEffect(() => {
+    const host = pageRef.current;
+    if (!host || !editor) return;
+    const onCaptionFocus = (e: Event) => {
+      const pos = (e as CustomEvent<{ pos: number }>).detail?.pos;
+      if (typeof pos !== 'number') return;
+      onSelection({ kind: 'caption', chapterId: page.id, editor, pos });
+    };
+    host.addEventListener(CAPTION_FOCUS_EVENT, onCaptionFocus);
+    return () => host.removeEventListener(CAPTION_FOCUS_EVENT, onCaptionFocus);
+  }, [editor, page.id, onSelection]);
 
   // Shared by the hover mousemove below and by the handle's own dragend: what's
   // actually under the cursor right now, not an assumption about what a drag
@@ -6066,14 +7023,42 @@ function ChapterEditor({
     const rect = tableDom.getBoundingClientRect();
     hoverTableRectRef.current = rect;
     const hostRect = pageRef.current.getBoundingClientRect();
+    /* Which cell, so the row and column menus know what they'd act on. Indices
+       are counted over the REAL rows only: a page break puts its spacer and its
+       repeated header in the same <tbody>, and counting those would offset every
+       row index below the first break. */
+    const cellDom = target?.closest('td,th') as HTMLElement | null;
+    let cell: { row: number; col: number; left: number; top: number; width: number; height: number } | null = null;
+    if (cellDom && cellDom.closest('table') === tableDom && cellDom.parentElement) {
+      const realRows = Array.from(tableDom.querySelectorAll<HTMLElement>(':scope > tbody > tr'))
+        .filter((tr) => tr.dataset.pageBreak !== 'true');
+      const row = realRows.indexOf(cellDom.parentElement);
+      const col = Array.prototype.indexOf.call(cellDom.parentElement.children, cellDom);
+      if (row >= 0 && col >= 0) {
+        const cr = cellDom.getBoundingClientRect();
+        cell = {
+          row, col,
+          left: (cr.left - hostRect.left) / scale,
+          top: (cr.top - hostRect.top) / scale,
+          width: cr.width / scale,
+          height: cr.height / scale,
+        };
+      }
+    }
     const next = {
       pos: tablePos,
       left: (rect.left - hostRect.left) / scale,
       boxTop: (rect.top - hostRect.top) / scale,
       width: rect.width / scale,
       boxHeight: rect.height / scale,
+      cell,
     };
-    setHoverTable((prev) => (prev && prev.pos === next.pos && Math.abs(prev.boxHeight - next.boxHeight) < 0.5 ? prev : next));
+    /* The cell is part of the identity now: without it, moving between cells of
+       the same table kept handing back the previous state and the menus stayed
+       pinned to whichever cell was entered first. */
+    setHoverTable((prev) => (prev && prev.pos === next.pos
+      && Math.abs(prev.boxHeight - next.boxHeight) < 0.5
+      && prev.cell?.row === cell?.row && prev.cell?.col === cell?.col ? prev : next));
   }, [editor, scale]);
 
   const updateHoverHandle = useCallback((clientX: number, clientY: number) => {
@@ -6277,7 +7262,10 @@ function ChapterEditor({
     const locked = !!ed.getAttributes(nodeTypeName).locked;
     const onToggleLock = () => ed.commands.updateAttributes(nodeTypeName, { locked: !locked });
     if (selKind === 'columns') return { onDelete: () => ed.chain().focus().deleteNode('columnsBlock').run(), locked, onToggleLock };
-    if (selKind === 'table') return { onDelete: () => ed.chain().focus().deleteTable().run(), locked, onToggleLock };
+    // Duplicate was missing here alone, so a table was the one block whose bar
+    // couldn't copy it. It isn't an atom, but its NodeSelection serializes the
+    // same way, which is all duplicateAtomNode needs.
+    if (selKind === 'table') return { onDelete: () => ed.chain().focus().deleteTable().run(), onDuplicate: () => duplicateAtomNode(ed), locked, onToggleLock };
     if (selKind === 'imageGrid') return { onDelete: () => ed.chain().focus().deleteNode('imageGridBlock').run(), locked, onToggleLock };
     return { onDelete: () => deleteAtomNode(ed), onDuplicate: () => duplicateAtomNode(ed), locked, onToggleLock };
   })() : null;
@@ -6389,7 +7377,8 @@ function ChapterEditor({
         updateBlockMenuHover(e.clientX, e.clientY);
         updateHoverTable(e.clientX, e.clientY);
       }}
-      onMouseLeave={() => { setHoverHandle(null); setHoverTable(null); syncBlockMenuToCaret(); }}
+      onMouseEnter={() => setPageHover(true)}
+      onMouseLeave={() => { setHoverHandle(null); setHoverTable(null); setPageHover(false); syncBlockMenuToCaret(); }}
       /* The pagination plugin measures against this element's content box, not
          against its own editor: the chapter eyebrow, title and photo button all
          sit above the prose inside the same stack, so page 1 has less room than
@@ -6427,7 +7416,15 @@ function ChapterEditor({
           style={{
             position: 'absolute', left: 0, top: pageTop(i, geometry), width: '100%', height: geometry.h,
             background: dragOver ? '#F3F8FF' : (page.bg ?? theme.bg),
-            border: dragOver ? `2px dashed ${BLUE}` : isSelected ? `2px solid ${BLUE}` : isDragActive ? `2px dashed ${BLUE}` : `1px solid ${BORDER}`,
+            /* No dashed drop-target outline, in either form: not on the page
+               under the pointer, and not on every page at once while a drag is
+               live. The precise drop indicator below — the blue rule and dot at
+               the exact insert position — already says where the block lands,
+               which is the thing worth knowing; outlining whole sheets only said
+               "a drag is happening", which you can see. It also meant a drag that
+               never reported finishing left every page in the book outlined until
+               a reload. */
+            border: isSelected ? `2px solid ${BLUE}` : `1px solid ${BORDER}`,
             borderRadius: 3,
             boxShadow: PAGE_SHADOW,
             zIndex: 0,
@@ -6436,6 +7433,28 @@ function ChapterEditor({
           <PageNumberChip settings={pageNumbers} index={pageNumberIndex + i} edge="header" selected={currentSelection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
           <PageNumberChip settings={pageNumbers} index={pageNumberIndex + i} edge="footer" selected={currentSelection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
         </div>
+      ))}
+      {/* One gutter per boundary INSIDE this chapter. `breaks[i]` is the break
+          that ends sheet i, and its `pos` is the block that opens sheet i+1 —
+          the same position the block menu's own "Start a new page here" would
+          use, hence the same +1 (splitChapter counts blocks strictly before
+          `pos`). Read off the plugin at click time rather than plumbed through
+          state: the breaks are already authoritative there, and a second copy
+          would only be a second thing to keep in sync.
+
+          A break that falls mid-paragraph moves that whole paragraph down —
+          a chapter cannot start mid-sentence — so the new page begins slightly
+          earlier than the gutter you clicked. */}
+      {editor && Array.from({ length: Math.max(0, pageCount - 1) }, (_, i) => (
+        <PageGapInsert
+          key={`gap-${i}`}
+          top={pageTop(i, geometry) + geometry.h}
+          height={PAGE_GAP}
+          onAdd={() => {
+            const brk = paginationKey.getState(editor.state)?.breaks[i];
+            if (brk) onSplitChapter(page.id, editor, brk.pos + 1);
+          }}
+        />
       ))}
       {measure && <MeasureOverlay {...measure} />}
       {blockBar && blockBarPos && (
@@ -6542,24 +7561,38 @@ function ChapterEditor({
         <div data-table-adders>
           <TableEdgeAdders
             box={hoverTable}
+            cell={hoverTable.cell}
+            scale={scale}
             editor={editor}
             tablePos={hoverTable.pos}
             onDone={() => setHoverTable(null)}
           />
         </div>
       )}
-      {editor && blockMenuAt && (
+      {/* Never alongside the object bar. The selection path above already drops
+          this bar when the caret lands on an object, but a bar that was already
+          showing for a NEIGHBOURING block survived — so selecting a table drew
+          its own trash/lock bar above and left the paragraph's duplicate/trash
+          bar below, two identical bars a few pixels apart with nothing saying
+          which one acted on what. The rule this bar's own comment claims, held
+          where the bars are actually drawn. */}
+      {editor && blockMenuAt && !(blockBar && blockBarPos) && (
         <BlockActionBar
           editor={editor}
           chapterId={page.id}
           pos={blockMenuAt.pos}
-          // Above the block and flush with its left edge — the same anchor
-          // blockBarPos computes for a selected image, so a paragraph's bar and
+          // Above the block and CENTRED on it — the same anchor and the same
+          // centring blockBarPos gives a selected image, so a paragraph's bar and
           // a photo's bar land in the same place relative to what they act on.
-          // barTop keeps it out of whatever is above (see blockAnchor): a first
-          // paragraph's bar used to land in the middle of the chapter title.
+          // (They didn't: this one was pinned to the block's left edge while the
+          // image bar centred, which put it over the first few words of the
+          // paragraph it acts on — close enough to the text to be clicked by
+          // accident.) barTop keeps it clear of whatever is above (see
+          // blockAnchor): a first paragraph's bar used to land in the middle of
+          // the chapter title.
           top={barTop(blockMenuAt)}
           left={blockMenuAt.left}
+          width={blockMenuAt.width}
           blockTop={blockMenuAt.top}
           /* A movable block draws its drag handle in the same gutter slot, so
              the "···" steps aside for it rather than stacking on top. */
@@ -6622,6 +7655,14 @@ function ChapterEditor({
            separated by weight alone and the longer paragraph line actually read
            as the larger of the two. The ramp is now ~1.4 / ~1.15 / 1 — one that
            survives being glanced at. */
+        /* A chapter title in the flow. Sized above h3 for the same reason it
+           sits above it in the Style list — it opens a chapter, h3 opens a
+           section inside one. The top margin collapses to nothing on a title
+           that starts its own page, where the page's own top margin is already
+           doing that job and a second one would push the chapter down the
+           sheet. */
+        .book-chapter-prose h2[data-chapter-title] { font-family: ${theme.headingFont}; color: ${headingColor}; font-size: 1.85em; font-weight: 700; line-height: 1.2; margin: 1.6em 0 .6em; }
+        .book-chapter-prose h2[data-chapter-title]:not([data-break-before="false"]) { margin-top: 0; }
         .book-chapter-prose h3 { font-family: ${theme.headingFont}; color: ${headingColor}; font-size: 1.4em; font-weight: 700; line-height: 1.25; margin: 1.3em 0 .45em; }
         /* Smaller than h3 and not a ToC entry (deriveSubheadings reads h3 only) —
            two ToC levels is what an ebook wants; a third turns the contents page
@@ -6735,7 +7776,12 @@ function ChapterEditor({
         .book-chapter-prose.is-two-col { column-count: 2; column-gap: 28px; }
         .book-img-wrap { margin: 0; border-radius: 8px; }
         .book-img-wrap img { display: block; width: 100%; border-radius: 8px; }
-        .book-img-wrap figcaption { font-family: ${bodyFont}; font-size: 12.5px; color: #6B7686; text-align: center; line-height: 1.4; margin-top: 6px; outline: none; }
+        /* 13px, not 12.5 — the Caption panel reports the unset size as a whole
+           number, and a field that says 13 over text set at 12.5 makes the
+           first nudge look like it did nothing. 13px is also what the EPUB
+           stylesheet's .82em already comes out at against a 16px base, so the
+           two renderings agree. */
+        .book-img-wrap figcaption { font-family: ${bodyFont}; font-size: ${CAPTION_DEFAULT_SIZE}px; color: ${CAPTION_DEFAULT_COLOR}; text-align: center; line-height: 1.4; margin-top: 6px; outline: none; }
         /* The canvas keeps a figcaption on every image so there is always
            somewhere to click, but an uncaptioned image must not reserve a blank
            line for it. It collapses unless the image is selected or the caption
@@ -6748,7 +7794,6 @@ function ChapterEditor({
         .book-img-wrap--inline { display: block; max-width: 100%; margin: 16px auto; }
         .book-img-wrap--left { float: left; max-width: 46%; margin: 4px 18px 10px 0; }
         .book-img-wrap--right { float: right; max-width: 46%; margin: 4px 0 10px 18px; }
-        .book-img-wrap--full-bleed { display: block; width: 100%; margin: 20px 0; max-width: none; }
         /* image-led: the first image in the chapter body bleeds to the page's own
            edge (canceling the 55px/63px page padding) regardless of which wrap
            style the user picked, instead of a full-bleed variant being something
@@ -6775,7 +7820,53 @@ function ChapterEditor({
         .book-chapter-prose .book-callout--${c.id} { background: ${c.tint}; border-left-color: ${c.accent}; }`).join('')}
         .book-chapter-prose .book-callout p:last-child { margin-bottom: 0; }
         .book-chapter-prose table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 14px; }
-        .book-chapter-prose th, .book-chapter-prose td { border: 1px solid ${BORDER}; padding: 8px 12px; text-align: left; }
+        /* Column resizing. The handle is absolutely positioned inside a cell,
+           so the cells have to be a positioning context — without this it
+           anchors to the page and lands somewhere else entirely. */
+        .book-chapter-prose th, .book-chapter-prose td { position: relative; }
+        .book-chapter-prose .column-resize-handle { position: absolute; right: -1px; top: 0; bottom: 0; width: 2px; background: ${BLUE}; pointer-events: none; z-index: 5; }
+        /* prosemirror-tables puts this class on the editor while the pointer is
+           over a column edge, which is the only hint that the edge is grabbable. */
+        .ProseMirror.book-chapter-prose.resize-cursor { cursor: col-resize; }
+        .book-chapter-prose th, .book-chapter-prose td { border: var(--book-tbl-bw, 1px) solid var(--book-tbl-bc, ${BORDER}); padding: var(--book-cell-pad, 8px) calc(var(--book-cell-pad, 8px) * 1.5); text-align: left; }
+        /* Cell selection. prosemirror-tables has always put this class on the
+           cells you drag across — there was simply no rule for it, so selecting
+           a range did nothing visible and every control that could act on one
+           looked broken. An ::after overlay rather than a background, so a cell
+           carrying its own fill still shows it underneath. */
+        .book-chapter-prose .selectedCell { position: relative; }
+        .book-chapter-prose .selectedCell::after {
+          content: ''; position: absolute; inset: 0; pointer-events: none;
+          background: ${hexToRgba(BLUE, 0.13)};
+        }
+        .book-chapter-prose th { background: #F4F6F9; font-weight: 600; }
+        /* The 'of :not([data-page-break])' is load-bearing, not a flourish: a table
+           that splits across pages has two extra <tr>s decorated into it at the
+           break (the spacer and the repeated header, below), and a plain
+           nth-child would count those and put every stripe after the break on
+           the wrong row. Odd rather than even so a header row — always row 1,
+           and made of th, which this rule doesn't touch — leaves the first body
+           row untinted; a table with no header tints its rows from the first,
+           the way a spreadsheet's alternating colours do. */
+        /* Derived from the page it sits on, not a fixed grey. #F7F9FB was a
+           cool light tint hardcoded against white paper: on a dark or warm
+           theme it read as a bright band across the table rather than a quiet
+           stripe. A translucent ink tint darkens a light page and a translucent
+           white lifts a dark one, so one rule covers every theme — and it
+           follows a page background the author sets later, which a fixed hex
+           could never do. */
+        .book-chapter-prose table[data-table-style="striped"] tr:nth-child(odd of :not([data-page-break])) > td { background: var(--book-tbl-tint, ${bandTint}); }
+        /* Minimal: horizontal rules only. The convention every book and journal
+           typesets tables with — verticals are the thing that makes a table
+           look like a spreadsheet dropped into a page. */
+        .book-chapter-prose table[data-table-style="minimal"] th,
+        .book-chapter-prose table[data-table-style="minimal"] td { border-left: none; border-right: none; }
+        .book-chapter-prose table[data-table-style="minimal"] th { border-bottom-width: 2px; }
+        /* A page break inside a table is a row rather than a div — a div in a
+           <tbody> gets hoisted out of the table by the parser. It has to paint
+           nothing at all: a border here would draw straight across the page
+           gap, which is the very thing that keeps other boxes monolithic. */
+        .book-chapter-prose tr.book-tr-spacer td { border: none; padding: 0; background: transparent; }
         /* A bare superscript numeral — no brackets. That's the book
            convention (Chicago, Word, Vellum, Atticus all produce it); square
            brackets are a Wikipedia/IEEE citation idiom and read as a reference
@@ -7031,6 +8122,11 @@ function ChapterEditor({
            either; the caret is the affordance, and here the block menu and the
            handle in the margin still track it. */
         .book-chapter-prose.ProseMirror-focused .book-text-active:has(> [data-page-break]) { outline: none; }
+        /* Set by the plugin's view() when a floated photo overlaps this
+           paragraph -- see the note there. Same answer as the page-break case:
+           no box, because any box would be the wrong one, and the caret plus
+           the margin handle still say where you are. */
+        .book-chapter-prose.ProseMirror-focused .book-text-active.book-text-beside-float { outline: none; }
         /* A stack selected whole by the first click. Tables are the one block
            here that gets node-selected without an atom's node view to toggle a
            class of its own, so this rule is the only thing marking it. */
@@ -7068,17 +8164,28 @@ function ChapterEditor({
            the card's own padding is the only space around a specimen, and the
            blockquote's 34px page indents pulled in — a 236px card can't spare
            68px of them.
-           Last in the sheet on purpose. \`.book-specimen > :last-child\` and
-           \`.book-chapter-prose .book-callout\` carry identical specificity, so
-           source order is the only tiebreak: declared earlier, the callout kept
-           its 18px margins and its card stood 94px tall next to everyone
-           else's 62. */
-        .book-specimen > :first-child { margin-top: 0; }
-        .book-specimen > :last-child { margin-bottom: 0; }
+           Both classes in the selector, and last in the sheet. The page rules
+           these override are \`.book-chapter-prose\` plus an element or another
+           class, so a lone \`.book-specimen\` either ties or loses: the callout
+           kept its 18px margins and stood its card 94px tall, and the chapter
+           title kept its .6em bottom margin, which left it sitting 12px below
+           the card's top edge and 29px above the bottom in a card that centres
+           what's in it. Doubling the class outranks the page rules outright. */
+        .book-chapter-prose.book-specimen > :first-child { margin-top: 0; }
+        .book-chapter-prose.book-specimen > :last-child { margin-bottom: 0; }
+        /* The divider's own rule is !important — it pads the hr out into a
+           clickable hit target on the page — so the margin reset above can't
+           touch it, and About the author (which opens on a rule) sat 9px low in
+           its card. Only ever the first one: a rule BETWEEN two blocks still
+           wants its space. */
+        .book-specimen > hr:first-child { margin-top: 0 !important; padding-top: 0 !important; }
         .book-specimen blockquote { margin-left: 12px; margin-right: 0; }
       `}</style>
 
-      {page.layout === 'opener' && (
+      {/* Opener chrome — the rule, the label and the big numeral — is chapter
+          furniture. A continuation page has no number and opens no chapter, so
+          it gets none of it and starts at the top margin like any other sheet. */}
+      {page.layout === 'opener' && hasTitle && (
         page.openerImage ? (
           <div
             onClick={() => onSelection({ kind: 'openerImage', chapterId: page.id })}
@@ -7169,6 +8276,7 @@ function ChapterEditor({
           </div>
         )
       )}
+      {showTitleField ? (
       <div className="relative group">
         <SimpleFieldEditor
           fieldKey={`${page.id}::title`}
@@ -7193,6 +8301,36 @@ function ChapterEditor({
           }}
         />
       </div>
+      ) : (
+        /* The promote affordance for a continuation page. Absolutely placed in
+           the page's own top margin, so it costs the flow no height: a
+           continuation has to start exactly where any other sheet's text starts,
+           and a zero-height-but-present field is not a thing ProseMirror can be
+           talked into. Seeding a real heading (rather than focusing an empty
+           field) is what actually promotes the page — an empty title is by
+           definition still a continuation, so focusing nothing would leave the
+           user typing into a field that had already vanished underneath them. */
+        <button
+          onClick={() => {
+            const titleKey = `${page.id}::title`;
+            onTitleChange(titleKey, '<p>New chapter</p>');
+            // The field does not exist until the promotion has rendered.
+            requestAnimationFrame(() => getFieldEditor(titleKey)?.commands.focus('all'));
+          }}
+          className="cursor-pointer"
+          title="Give this page a heading and it becomes a new chapter"
+          style={{
+            ...ns, position: 'absolute', top: geometry.padY - 26, left: geometry.padX,
+            display: 'flex', alignItems: 'center', gap: 5, padding: '2px 6px', marginLeft: -6,
+            border: 'none', background: 'none', borderRadius: RADIUS_SM,
+            fontSize: 11.5, fontWeight: 600, color: SLATE, whiteSpace: 'nowrap',
+            opacity: pageHover ? 1 : 0, transition: 'opacity .1s ease', pointerEvents: pageHover ? 'auto' : 'none',
+          }}
+        >
+          <PlusIcon />
+          Chapter title
+        </button>
+      )}
       {/* Above the page sheets drawn behind it — they're absolutely positioned,
           so the flow needs its own stacking context to stay on top. */}
       <div style={{ position: 'relative', zIndex: 1 }}>
@@ -7221,26 +8359,39 @@ function SparkleMark() {
    inside a given paragraph (not a persistent per-block handle), opening a flyout of
    Rewrite / Adjust tone / Fix spelling & grammar / Reduce / Expand — scoped to that
    whole block, not a text selection. This replaced an earlier selection-anchored
-   floating bar; the block-menu is what the real product actually does. Everything
-   here is mocked like every other AI affordance in this prototype: a realistic
-   delay and a canned result, no network call. */
+   floating bar; the block-menu is what the real product actually does.
+   Fix spelling & grammar, Reduce and the five tones do real work now, locally
+   and synchronously (src/lib/textTransforms.ts) — no network, no key, no delay.
+   Rewrite and Expand both mean generating language that isn't in the paragraph,
+   which rules can't do, so they report an explicit unavailable state instead of
+   the success-that-changed-nothing they used to report. */
 const TONE_OPTIONS = ['Neutral', 'Friendly', 'Excited', 'Persuasive', 'Intellectual'] as const;
 
-// Matches the real product's measured draft-enhance failure rate (~25% average
-// across a 3-month baseline, spiking to ~39% some weeks) — Mixpanel data showed
-// these failures are silently absorbed today (no retry event, no help-click or
-// deletion spike on the worst weeks), so this prototype gives the failure a
-// visible, actionable state instead of the real product's apparent silent one.
-const WORDGENIE_FAILURE_RATE = 0.25;
+/* Stands in for a leaf node (footnote marker, inline image) in the plain-text
+   view of a block, so those keep their width in the offset map and no text edit
+   can be computed across one. U+FFFC is the Unicode object-replacement
+   character, which is exactly what it's for. */
+const OBJECT_SENTINEL = '\uFFFC';
+
+/* There used to be a `WORDGENIE_FAILURE_RATE = 0.25` here, injecting a failure
+   on one run in four to match the live product's measured draft-enhance failure
+   rate. It existed so the error state below had something to trigger it, back
+   when every action was a canned no-op that could never fail on its own.
+   It's gone: this editor is meant to FIX the old one, so shipping its 20-40%
+   failure rate into the replacement had it backwards. The error UI stays —
+   real failures still need somewhere to land — it just isn't fed manufactured
+   ones any more. */
 
 function BlockActionBar({
-  editor, chapterId, pos, top, left, blockTop, movable, onRunStart, onRunEnd, onSplit, onBeginEdit,
+  editor, chapterId, pos, top, left, width, blockTop, movable, onRunStart, onRunEnd, onSplit, onBeginEdit,
 }: {
   editor: Editor;
   chapterId: string;
   pos: number;
   top: number;
   left: number;
+  /* The block's width — the floating bar centres across it. */
+  width: number;
   /* The block's OWN top, not the bar's — the gutter trigger sits beside the
      block, while `top` has already been lifted clear above it. */
   blockTop: number;
@@ -7253,11 +8404,13 @@ function BlockActionBar({
 }) {
   const [open, setOpen] = useState(false);
   const [toneOpen, setToneOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
+  /* Two outcomes that aren't failures and aren't silent successes: the action
+     ran and found nothing to change, or the action can't run locally at all. */
+  const [notice, setNotice] = useState<{ kind: 'nochange' | 'unavailable'; label: string } | null>(null);
   const [error, setError] = useState<{ label: string; retry: () => void } | null>(null);
   const ref = useRef<HTMLDivElement | null>(null);
 
-  const closeMenu = () => { setOpen(false); setToneOpen(false); setError(null); };
+  const closeMenu = () => { setOpen(false); setToneOpen(false); setError(null); setNotice(null); };
 
   // Matches FloatingObjectBar's own buttons — same 28px box, same radius — so
   // the two bars are one control at two anchors, not two lookalikes.
@@ -7306,36 +8459,65 @@ function BlockActionBar({
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [open]);
 
-  const run = (label: string, transform: (text: string) => string) => {
+  const run = (label: string) => {
     // The block itself may have moved/resized since the trigger was drawn, so
     // re-resolve it fresh at run time rather than trusting the pos this menu
     // was opened with.
     const node = editor.state.doc.nodeAt(pos);
     if (!node || !node.isTextblock) return;
-    const from = pos + 1;
-    const to = pos + node.nodeSize - 1;
-    const current = editor.state.doc.textBetween(from, to, ' ');
-    if (!current.trim()) return;
-    // Captured now, while state is still pre-edit — a failed run below never
-    // calls .commit(), so no undo toast appears for an edit that never happened.
-    const edit = onBeginEdit(chapterId);
-    setBusy(true);
-    setError(null);
-    onRunStart();
-    setTimeout(() => {
-      if (Math.random() < WORDGENIE_FAILURE_RATE) {
-        // Stay open on failure rather than silently closing — the whole point
-        // is that this state used to be invisible.
-        setBusy(false);
-        setError({ label, retry: () => run(label, transform) });
-        return;
+
+    /* A plain-text view of the block, plus a map back to document positions.
+       This is what lets the transforms edit only the spans that changed instead
+       of replacing the paragraph wholesale — replacing it would flatten every
+       bold run, link and footnote marker inside it.
+       Leaf nodes (footnote markers, inline images) become one sentinel
+       character, so an edit can never span or swallow one. */
+    const segs: { start: number; pos: number; len: number }[] = [];
+    let plain = '';
+    node.descendants((child, rel) => {
+      if (child.isText) {
+        segs.push({ start: plain.length, pos: pos + 1 + rel, len: child.text!.length });
+        plain += child.text;
+      } else if (child.isLeaf) {
+        segs.push({ start: plain.length, pos: pos + 1 + rel, len: 1 });
+        plain += OBJECT_SENTINEL;
       }
-      editor.chain().focus().insertContentAt({ from, to }, transform(current)).run();
-      edit.commit(`${label} applied`);
-      setBusy(false);
-      closeMenu();
-      onRunEnd();
-    }, 900);
+      return true;
+    });
+    if (!plain.trim()) return;
+
+    const edits = editsFor(label, plain);
+    if (edits === null) { setNotice({ kind: 'unavailable', label }); return; }
+    const usable = edits.filter((e) => !plain.slice(e.from, e.to).includes(OBJECT_SENTINEL));
+    if (!usable.length) { setNotice({ kind: 'nochange', label }); return; }
+
+    const toPos = (off: number): number => {
+      for (const seg of segs) {
+        if (off >= seg.start && off <= seg.start + seg.len) return seg.pos + (off - seg.start);
+      }
+      return pos + 1 + node.content.size;
+    };
+
+    // Captured before the edit, so the undo toast describes the right state.
+    const edit = onBeginEdit(chapterId);
+    onRunStart();
+    /* Applied back-to-front inside ONE transaction: later edits would shift the
+       offsets of earlier ones otherwise, and a single transaction keeps the
+       whole action as one undo step. */
+    editor.chain().focus().command(({ tr }) => {
+      for (let i = usable.length - 1; i >= 0; i--) {
+        const e = usable[i];
+        const from = toPos(e.from);
+        const to = toPos(e.to);
+        // schema.text('') throws, so a deletion has to go through tr.delete.
+        if (e.insert) tr.insertText(e.insert, from, to);
+        else tr.delete(from, to);
+      }
+      return true;
+    }).run();
+    edit.commit(`${label} applied`);
+    closeMenu();
+    onRunEnd();
   };
 
   // Distinct per-action icon, matching the reference menu (each item had its own
@@ -7344,7 +8526,7 @@ function BlockActionBar({
     {
       label: 'Rewrite',
       icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="#4f46e5"><path d="M12 2l2.2 6.8L21 11l-6.8 2.2L12 20l-2.2-6.8L3 11l6.8-2.2L12 2z" /></svg>,
-      action: () => run('Rewrite', (t) => t), // canned no-op transform, realistic latency is the point
+      action: () => run('Rewrite'),
     },
     {
       label: 'Fix spelling & grammar',
@@ -7354,7 +8536,7 @@ function BlockActionBar({
           <path d="M14 6h6M14 10h6M15 18l2 2l4-4" />
         </svg>
       ),
-      action: () => run('Fix spelling & grammar', (t) => t),
+      action: () => run('Fix spelling & grammar'),
     },
     {
       label: 'Reduce',
@@ -7363,7 +8545,7 @@ function BlockActionBar({
           <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7" />
         </svg>
       ),
-      action: () => run('Reduce', (t) => t.split(' ').slice(0, Math.max(4, Math.ceil(t.split(' ').length * 0.6))).join(' ') + '…'),
+      action: () => run('Reduce'),
     },
     {
       label: 'Expand',
@@ -7372,7 +8554,7 @@ function BlockActionBar({
           <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
         </svg>
       ),
-      action: () => run('Expand', (t) => t + ' — a detail worth lingering on, rather than rushing past.'),
+      action: () => run('Expand'),
     },
   ];
 
@@ -7415,9 +8597,33 @@ function BlockActionBar({
            actions are about. 210 + the bar's own width still lands inside the
            page's content column. */
         <div className="absolute bg-white flex flex-col" style={{ top: 0, left: '100%', marginLeft: 6, zIndex: 11, width: 210, padding: 5, borderRadius: RADIUS_LG, border: `1px solid ${PANEL_BORDER}`, boxShadow: MENU_SHADOW }}>
-          {busy ? (
-            <div className="flex items-center" style={{ gap: 7, padding: '8px 9px', ...ns, fontSize: 13, color: SLATE }}>
-              <SparkleMark /> Working…
+          {notice ? (
+            /* Deliberately not the red error treatment: neither of these is a
+               failure. "Found nothing to change" is a successful run with an
+               empty result, and "can't run locally" is a capability gap — the
+               old build reported both as a silent success, which is the exact
+               thing this menu was rebuilt to stop doing. No Retry, because
+               retrying changes nothing in either case. */
+            <div className="flex flex-col" style={{ padding: '9px 9px 8px', gap: 8 }}>
+              <div className="flex items-start" style={{ gap: 7 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={SLATE} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+                  <circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" />
+                </svg>
+                <span style={{ ...ns, fontSize: 12.5, color: INK, lineHeight: 1.4 }}>
+                  {notice.kind === 'nochange'
+                    ? `Nothing to change — ${notice.label.toLowerCase()} found no issues in this paragraph.`
+                    : `${notice.label} needs the writing model, which isn't connected yet. Nothing was changed.`}
+                </span>
+              </div>
+              <div className="flex items-center" style={{ gap: 6 }}>
+                <button
+                  onClick={() => setNotice(null)}
+                  className="cursor-pointer"
+                  style={{ ...ns, fontSize: 12.5, color: SLATE, background: 'transparent', border: 'none', borderRadius: RADIUS_SM, padding: '6px 11px' }}
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
           ) : error ? (
             <div className="flex flex-col" style={{ padding: '9px 9px 8px', gap: 8 }}>
@@ -7467,7 +8673,7 @@ function BlockActionBar({
                   {TONE_OPTIONS.map((tone) => (
                     <button
                       key={tone}
-                      onClick={() => run(tone, (t) => t)} // canned no-op — a real tone rewrite needs live generation
+                      onClick={() => run(tone)}
                       className="cursor-pointer"
                       style={{ ...ns, fontSize: 13, color: INK, padding: '8px 9px', borderRadius: RADIUS_SM, border: 'none', background: 'transparent', textAlign: 'left' }}
                     >
@@ -7501,7 +8707,7 @@ function BlockActionBar({
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={SLATE} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12" />
                 </svg>
-                Split chapter here
+                Start a new page here
               </button>
             </>
           )}
@@ -7509,13 +8715,13 @@ function BlockActionBar({
       )}
         </div>
 
-        {/* Duplicate and Delete keep the floating bar above the block — same bar,
-            same place as a selected image's, see FloatingObjectBar and
-            blockBarPos. A paragraph, pull-quote, callout or list can't take a node
+        {/* Duplicate and Delete keep the floating bar above the block, centred on
+            it — same bar, same place as a selected image's, see FloatingObjectBar
+            and blockBarPos, which wraps its bar in the same justify-center. A paragraph, pull-quote, callout or list can't take a node
             selection (the caret has to stay free to reach TextInspector), so this
             one is driven by the hovered/caret block instead, but it reads as the
             one floating bar the editor has rather than a second vocabulary. */}
-        <div className="absolute" style={{ top, left, zIndex: 10 }} onMouseDown={(e) => e.preventDefault()}>
+        <div className="absolute flex justify-center" style={{ top, left, width, zIndex: 10 }} onMouseDown={(e) => e.preventDefault()}>
           <div className="flex items-center" style={{ gap: 1, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: 3, boxShadow: MENU_SHADOW, width: 'max-content' }}>
           <Tooltip label="Duplicate" position="top">
             <button
@@ -7586,7 +8792,6 @@ function suggestChapterTitle(bodyText: string): string {
    the floating bar and pushed long titles around). */
 function TitleAssistMenu({ onSuggest }: { onSuggest: () => void }) {
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ retry: () => void } | null>(null);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -7601,19 +8806,14 @@ function TitleAssistMenu({ onSuggest }: { onSuggest: () => void }) {
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [open]);
 
+  /* suggestChapterTitle derives the title from the chapter's own text — it runs
+     locally and synchronously, so there is nothing here that can fail and no
+     delay worth faking. The error state below is kept for when this is wired to
+     a model. */
   const run = () => {
-    setBusy(true);
     setError(null);
-    setTimeout(() => {
-      if (Math.random() < WORDGENIE_FAILURE_RATE) {
-        setBusy(false);
-        setError({ retry: run });
-        return;
-      }
-      onSuggest();
-      setBusy(false);
-      closeMenu();
-    }, 900);
+    onSuggest();
+    closeMenu();
   };
 
   return (
@@ -7635,11 +8835,7 @@ function TitleAssistMenu({ onSuggest }: { onSuggest: () => void }) {
            BlockActionBar): dropping down from a gutter trigger would cover the
            title it is about. */
         <div className="absolute bg-white flex flex-col" style={{ top: 0, left: '100%', marginLeft: 6, zIndex: 11, width: 190, padding: 5, borderRadius: RADIUS_LG, border: `1px solid ${PANEL_BORDER}`, boxShadow: MENU_SHADOW }}>
-          {busy ? (
-            <div className="flex items-center" style={{ gap: 7, padding: '8px 9px', ...ns, fontSize: 13, color: SLATE }}>
-              <SparkleMark /> Working…
-            </div>
-          ) : error ? (
+          {error ? (
             <div className="flex flex-col" style={{ padding: '9px 9px 8px', gap: 8 }}>
               <div className="flex items-start" style={{ gap: 7 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#B91C1C" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
@@ -7781,6 +8977,12 @@ function SimpleFieldEditor({
    read-only render (Preview, Templates-tab thumbnails). ─────────────────────── */
 type CoverElementPatch = Partial<CoverTextElement> & Partial<CoverImageElement> & Partial<CoverShapeElement>;
 const COVER_MIN_PCT = 4;
+/* How wide a photo dropped onto the cover arrives, as a percentage of the stage.
+   Big enough to be obviously there and to be grabbed by a corner without zooming
+   in; small enough that it never lands covering the title you can no longer see
+   to move it out of the way. Resizing is the next thing you do either way, so
+   this only has to be a sane starting size, not a guess at the right one. */
+const COVER_DROP_W_PCT = 38;
 function clampPct(v: number, min: number, max: number) { return Math.min(Math.max(v, min), Math.max(max, min)); }
 
 /* Largest first, matching the chapter panel's Style list and the reading order
@@ -8317,12 +9519,24 @@ const TABLE_ADDER_REACH = 34;
    caret into the last cell of the relevant axis — otherwise "add column" adds
    one beside whichever cell the caret happened to be in, which is a different
    (and occasionally useful, hence the pills stay) action. */
-function TableEdgeAdders({ box, editor, tablePos, onDone }: {
+/* A row can't be dragged shorter than one line of text plus its padding — and
+   it wouldn't render shorter anyway, since a table row's height is a minimum. */
+const MIN_ROW_H = 28;
+
+type TableCmd = 'addColumnBefore' | 'addColumnAfter' | 'deleteColumn'
+  | 'addRowBefore' | 'addRowAfter' | 'deleteRow';
+
+function TableEdgeAdders({ box, cell, editor, tablePos, scale, onDone }: {
   box: { left: number; boxTop: number; width: number; boxHeight: number };
+  cell: { row: number; col: number; left: number; top: number; width: number; height: number } | null;
   editor: Editor;
   tablePos: number;
+  /* Pointer deltas arrive in screen pixels; every measurement here is in
+     canvas pixels, so a drag has to be divided by the zoom. */
+  scale: number;
   onDone: () => void;
 }) {
+  const [rowGrab, setRowGrab] = useState(false);
   /* Measured rather than guessed: the amount of canvas to the right of a table
      depends on the window width, the zoom and which side panels are open, none
      of which this component is told about. One measurement per hover. */
@@ -8336,31 +9550,78 @@ function TableEdgeAdders({ box, editor, tablePos, onDone }: {
       const ox = getComputedStyle(n).overflowX;
       if (ox === 'auto' || ox === 'scroll' || ox === 'hidden') { clip = n.getBoundingClientRect().right; break; }
     }
-    setFlipCol(el.getBoundingClientRect().right + 30 > clip);
+    setFlipCol(el.getBoundingClientRect().right + 36 > clip);
   }, [box.left, box.width, box.boxTop, box.boxHeight]);
 
-  const runAt = (cellIndexFromEnd: 'lastCol' | 'lastRow', cmd: 'addColumnAfter' | 'addRowAfter') => () => {
+  /* Every table command acts on "the cell the caret is in", so all of these
+     put the caret in a specific cell first and then run. Walk to its inner
+     position: table start + 1 to enter it, then each preceding row and cell's
+     full size. */
+  const runAtCell = (rowIdx: number, colIdx: number, cmd: TableCmd) => {
     const node = editor.state.doc.nodeAt(tablePos);
-    if (!node || node.type.name !== 'table') return;
-    const rows = node.childCount;
-    if (!rows) return;
-    const rowIdx = cellIndexFromEnd === 'lastRow' ? rows - 1 : 0;
-    const row = node.child(rowIdx);
-    const colIdx = cellIndexFromEnd === 'lastCol' ? row.childCount - 1 : 0;
-    // Walk to the target cell's inner position: table start + 1 to enter it,
-    // then each preceding row/cell's full size.
+    if (!node || node.type.name !== 'table' || !node.childCount) return;
+    const r0 = Math.min(Math.max(0, rowIdx), node.childCount - 1);
+    const row = node.child(r0);
+    const c0 = Math.min(Math.max(0, colIdx), row.childCount - 1);
     let at = tablePos + 1;
-    for (let r = 0; r < rowIdx; r++) at += node.child(r).nodeSize;
+    for (let r = 0; r < r0; r++) at += node.child(r).nodeSize;
     at += 1;
-    for (let c = 0; c < colIdx; c++) at += row.child(c).nodeSize;
+    for (let c = 0; c < c0; c++) at += row.child(c).nodeSize;
     editor.chain().focus().setTextSelection(at + 1)[cmd]().run();
     onDone();
   };
+  const runAt = (cellIndexFromEnd: 'lastCol' | 'lastRow', cmd: 'addColumnAfter' | 'addRowAfter') => () => {
+    const node = editor.state.doc.nodeAt(tablePos);
+    if (!node || node.type.name !== 'table' || !node.childCount) return;
+    const rowIdx = cellIndexFromEnd === 'lastRow' ? node.childCount - 1 : 0;
+    const colIdx = cellIndexFromEnd === 'lastCol' ? node.child(rowIdx).childCount - 1 : 0;
+    runAtCell(rowIdx, colIdx, cmd);
+  };
+  /* Live-previewed on the DOM and committed once on pointerup — the pattern the
+     block resize already uses. Writing the attribute on every move would fight
+     the pagination reflow and bury the undo stack under sixty identical steps. */
+  const startRowResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!cell) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const node = editor.state.doc.nodeAt(tablePos);
+    if (!node || cell.row >= node.childCount) return;
+    let rowPos = tablePos + 1;
+    for (let r = 0; r < cell.row; r++) rowPos += node.child(r).nodeSize;
+    const rowDom = editor.view.nodeDOM(rowPos);
+    if (!(rowDom instanceof HTMLElement)) return;
+    const startY = e.clientY;
+    const startH = rowDom.getBoundingClientRect().height / scale;
+    let next = startH;
+    setRowGrab(true);
+    const move = (ev: PointerEvent) => {
+      next = Math.max(MIN_ROW_H, startH + (ev.clientY - startY) / scale);
+      rowDom.style.height = `${Math.round(next)}px`;
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setRowGrab(false);
+      // Hand the height to the document and let the node view render it, rather
+      // than leaving the inline style this drag wrote sitting on top of it.
+      rowDom.style.height = '';
+      editor.chain().focus().command(({ tr }) => {
+        const n = tr.doc.nodeAt(rowPos);
+        if (!n) return false;
+        tr.setNodeMarkup(rowPos, undefined, { ...n.attrs, height: Math.round(next) });
+        return true;
+      }).run();
+      onDone();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
   const btn: React.CSSProperties = {
     position: 'absolute', display: 'flex', alignItems: 'center', justifyContent: 'center',
     background: '#fff', border: `1px solid ${PANEL_BORDER}`, color: SLATE,
     borderRadius: RADIUS_SM, boxShadow: CARD_SHADOW, pointerEvents: 'auto', cursor: 'pointer',
-    ...ns, fontSize: 15, lineHeight: 1, paddingBottom: 2,
+    ...ns, fontSize: 16, lineHeight: 1, paddingBottom: 2,
   };
   return (
     <div ref={wrapRef} style={{ position: 'absolute', top: box.boxTop, left: box.left, width: box.width, height: box.boxHeight, pointerEvents: 'none', zIndex: 6 }}>
@@ -8372,12 +9633,82 @@ function TableEdgeAdders({ box, editor, tablePos, onDone }: {
           something else was painted on top of it. The row + never has this
           problem, since a page always has vertical room below a table. */}
       <button type="button" title="Add column" onMouseDown={(e) => e.preventDefault()} onClick={runAt('lastCol', 'addColumnAfter')}
-        style={{ ...btn, ...(flipCol ? { right: 4 } : { right: -26 }), top: 0, width: 20, height: '100%' }}>+</button>
+        style={{ ...btn, ...(flipCol ? { right: 4 } : { right: -32 }), top: 0, width: 26, height: '100%' }}>+</button>
       {/* Tucked close to the table rather than clear of it: a hover-only control
           that reserved permanent space below every table would push the prose
           down for a button that is usually not there. */}
       <button type="button" title="Add row" onMouseDown={(e) => e.preventDefault()} onClick={runAt('lastRow', 'addRowAfter')}
-        style={{ ...btn, bottom: -21, left: 0, height: 17, width: '100%' }}>+</button>
+        style={{ ...btn, bottom: -26, left: 0, height: 22, width: '100%' }}>+</button>
+      {/* Insert and delete belong together, on the row or column itself. Every
+          editor surveyed does it this way — Craft, Confluence, Notion, Loop,
+          Slite, Zoom Docs, Skiff — and delete comes last and destructive. The
+          + strips above stay as the one-click path for "another row at the end",
+          which is the common case and worth not opening a menu for. */}
+      {cell && (
+        <div style={{ position: 'absolute', left: cell.left - box.left + cell.width / 2 - 13, top: -30, pointerEvents: 'auto' }}>
+          <RowMenu
+            persistent
+            ariaLabel="Column actions"
+            items={[
+              { label: 'Insert left', icon: <Icon d={ICONS.insertLeft} size={15} />, onClick: () => runAtCell(cell.row, cell.col, 'addColumnBefore') },
+              { label: 'Insert right', icon: <Icon d={ICONS.insertRight} size={15} />, onClick: () => runAtCell(cell.row, cell.col, 'addColumnAfter') },
+              { label: 'Delete column', icon: <TrashIcon color="currentColor" />, danger: true, onClick: () => runAtCell(cell.row, cell.col, 'deleteColumn') },
+            ]}
+          />
+        </div>
+      )}
+      {/* The corner selects the WHOLE table, which is Word's move-handle
+          position and Notion's corner grip. It completes the scheme the other
+          two affordances start: column menu above a column, row menu beside a
+          row, and the corner — the one spot belonging to neither — for the
+          table itself. Before this the only way in was the drag grip out in the
+          page gutter, which reads as "move this block", not "select this
+          table", and table properties are a level of the panel you reach only
+          through a real table selection. */}
+      <button
+        type="button"
+        title="Select table"
+        aria-label="Select table"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => { editor.chain().focus().setNodeSelection(tablePos).run(); }}
+        style={{ ...btn, left: -30, top: -30, width: 26, height: 26, fontSize: 0 }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="1.5" />
+          <path d="M3 10h18M9 10v10" />
+        </svg>
+      </button>
+      {/* Row resize. A 7px grab strip straddling the row's lower border, which
+          is where a table is grabbed everywhere it can be grabbed at all — and
+          it only paints while the pointer is on it, so a table at rest shows no
+          extra rules. Columns are resized by prosemirror-tables' own handle on
+          the cell edges. */}
+      {cell && (
+        <div
+          onPointerDown={startRowResize}
+          onMouseEnter={(e) => { e.currentTarget.style.background = BLUE; }}
+          onMouseLeave={(e) => { if (!rowGrab) e.currentTarget.style.background = 'transparent'; }}
+          style={{
+            position: 'absolute', left: 0, width: '100%',
+            top: cell.top - box.boxTop + cell.height - 3.5, height: 7,
+            background: rowGrab ? BLUE : 'transparent',
+            cursor: 'row-resize', pointerEvents: 'auto',
+          }}
+        />
+      )}
+      {cell && (
+        <div style={{ position: 'absolute', left: -30, top: cell.top - box.boxTop + cell.height / 2 - 13, pointerEvents: 'auto' }}>
+          <RowMenu
+            persistent
+            ariaLabel="Row actions"
+            items={[
+              { label: 'Insert above', icon: <Icon d={ICONS.insertAbove} size={15} />, onClick: () => runAtCell(cell.row, cell.col, 'addRowBefore') },
+              { label: 'Insert below', icon: <Icon d={ICONS.insertBelow} size={15} />, onClick: () => runAtCell(cell.row, cell.col, 'addRowAfter') },
+              { label: 'Delete row', icon: <TrashIcon color="currentColor" />, danger: true, onClick: () => runAtCell(cell.row, cell.col, 'deleteRow') },
+            ]}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -8468,6 +9799,9 @@ function blockAnchor(dom: HTMLElement, hostRect: DOMRect, scale: number) {
   return {
     top: (rect.top - hostRect.top) / scale,
     left: (rect.left - hostRect.left) / scale,
+    // The block's own width, so a bar anchored here can be CENTRED on the block
+    // rather than pinned to its left edge — see BlockActionBar's floating bar.
+    width: rect.width / scale,
     clearTop: (ceiling - hostRect.top) / scale,
   };
 }
@@ -8614,7 +9948,7 @@ function CoverCanvasStatic({ page, theme, fieldContent }: { page: SimplePage; th
    focus keeps working) — once selected, a small floating handle above the box is the
    only draggable surface, unambiguous since it only exists once already selected. */
 function CoverCanvasEditable({
-  page, theme, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onUpdateElement, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex, overlayOpen, zoom,
+  page, theme, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onAddElement, onUpdateElement, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex, overlayOpen, zoom,
 }: {
   page: SimplePage;
   theme: ThemeDef;
@@ -8629,6 +9963,7 @@ function CoverCanvasEditable({
   onEditorFocus: (editor: Editor) => void;
   onContentChange: (fieldKey: string, html: string) => void;
   onSelectPage: (pageId: string) => void;
+  onAddElement: (pageId: string, el: CoverElement) => void;
   onUpdateElement: (pageId: string, elementId: string, patch: CoverElementPatch) => void;
   onReorderElement: (pageId: string, elementId: string, dir: 'front' | 'back') => void;
   onDuplicateElement: (pageId: string, elementId: string) => void;
@@ -8644,6 +9979,39 @@ function CoverCanvasEditable({
   // enough. Lets dropping a new photo directly onto an already-placed cover
   // image swap it in place, the same way opener-photo/author-photo already do.
   const [imageDragOverId, setImageDragOverId] = useState<string | null>(null);
+  /* Where a photo dragged in from the Photos panel would land, as the element box
+     it would create — drawn as a dashed outline so the cover answers "will this
+     drop do anything, and where?" before you let go, the way the chapter pages
+     already answer it with their insertion line. Null whenever nothing droppable
+     is over the stage. */
+  const [stageDropBox, setStageDropBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  /* The box a dropped photo gets, in stage percentages, centred on the pointer.
+     Square in PIXELS rather than in percent: the stage is a portrait page, so a
+     40%×40% box is a tall rectangle, and a photo dropped as one reads as a
+     mistake against every other image on the cover. Width leads because the page
+     is narrower than it is tall, and the result is clamped rather than shifted —
+     dropping near an edge gives you a photo that touches that edge, not one that
+     silently jumps back towards the middle. */
+  const dropBoxAt = useCallback((clientX: number, clientY: number) => {
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) return null;
+    const w = COVER_DROP_W_PCT;
+    const h = (w * rect.width) / rect.height;
+    const px = ((clientX - rect.left) / rect.width) * 100;
+    const py = ((clientY - rect.top) / rect.height) * 100;
+    return { x: clampPct(px - w / 2, 0, 100 - w), y: clampPct(py - h / 2, 0, 100 - h), w, h };
+  }, []);
+
+  /* Only a photo. The cover's element model is text, image and four shape
+     silhouettes (see CoverShapeElement) — it has no representation for a heading,
+     a table, a 3-column block or any of the seventeen shapes and hundred-odd icons
+     the Elements panel inserts, all of which are ProseMirror nodes belonging to a
+     chapter's flow. Accepting those here would mean either dropping them silently
+     on the floor or inventing a second, partial shape library on the cover, so the
+     stage declines them and the browser shows its own "can't drop here" cursor —
+     which is the truth, and is what it already showed before this handler existed. */
+  const dragCarriesPhoto = (e: React.DragEvent) => e.dataTransfer.types.includes('text/insert-media');
 
   /* Option-to-measure. With an element selected the pointer picks what to
      measure AGAINST; with nothing selected, Figma measures whatever the
@@ -8758,6 +10126,42 @@ function CoverCanvasEditable({
       ref={stageRef}
       className="book-cover-canvas"
       onClick={(e) => { if (e.target === e.currentTarget) onSelectPage(page.id); }}
+      /* Dropping a photo anywhere on the cover. Before this, the ONLY droppable
+         thing on the whole page was an image element that was already there — a
+         photo dragged from the Photos panel onto the cover's background, which is
+         most of the cover on most templates, did nothing at all and said nothing
+         about why. The handlers sit on the stage, so every part of the page that
+         isn't an existing image is a target, including the space between
+         elements and the margins.
+         dataTransfer.getData() is empty during dragover under the HTML5 drag
+         data store's protected mode, so the "is this droppable" test has to read
+         `types`; the payload itself is only legible on drop. */
+      onDragOver={(e) => {
+        if (!dragCarriesPhoto(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setStageDropBox(dropBoxAt(e.clientX, e.clientY));
+      }}
+      /* Guarded on the stage itself: dragleave fires on every crossing into a
+         CHILD element too (the title, a shape), and clearing the preview on those
+         made the outline flicker out while the pointer was still over the page. */
+      onDragLeave={(e) => { if (e.target === e.currentTarget) setStageDropBox(null); }}
+      onDrop={(e) => {
+        setStageDropBox(null);
+        if (!dragCarriesPhoto(e)) return;
+        e.preventDefault();
+        const box = dropBoxAt(e.clientX, e.clientY);
+        if (!box) return;
+        try {
+          const { kind, src } = JSON.parse(e.dataTransfer.getData('text/insert-media')) as { kind: string; src: string };
+          // Video and audio ride the same payload and do reach here, but a cover
+          // has no element that can hold one — and unlike a chapter page, the
+          // cover is a single rendered image in every export, so an embed on it
+          // could never play anywhere.
+          if (kind !== 'image') return;
+          onAddElement(page.id, { id: `cover-photo-${Date.now()}`, type: 'image', src, ...box });
+        } catch { /* malformed payload, ignore */ }
+      }}
       style={{ position: 'relative', overflow: 'hidden', background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`, borderRadius: 3, boxShadow: PAGE_SHADOW, width: geo.w, height: geo.h, cursor: 'default' }}
     >
       {elements.map((el) => {
@@ -8774,10 +10178,17 @@ function CoverCanvasEditable({
               style={{ ...boxStyle, cursor: el.locked ? 'default' : 'grab', outline: isDragOver ? `2px dashed ${BLUE}` : boxStyle.outline }}
               onPointerDown={(e) => beginDrag(el, e)}
               onDragEnter={(e) => { e.preventDefault(); setImageDragOverId(el.id); }}
-              onDragOver={(e) => e.preventDefault()}
+              /* stopPropagation on both, so the stage handlers below never run for
+                 a drag that is over an existing photo. The two outcomes are
+                 different — this swaps the photo in place, the stage adds a new
+                 element — and without this the drop would do BOTH, and the dashed
+                 "new photo here" outline would be drawn over an image that was
+                 about to be replaced instead. */
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setStageDropBox(null); }}
               onDragLeave={() => setImageDragOverId((id) => (id === el.id ? null : id))}
               onDrop={(e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 setImageDragOverId(null);
                 const mediaPayload = e.dataTransfer.getData('text/insert-media');
                 if (!mediaPayload) return;
@@ -8846,6 +10257,24 @@ function CoverCanvasEditable({
 
       {measure && <MeasureOverlay {...measure} />}
 
+      {/* The footprint the photo about to be dropped will occupy — the cover's
+          answer to the insertion line a chapter page draws. An outline rather
+          than a tinted fill, and pointer-events:none so it can't steal the
+          dragleave/drop from the stage underneath it. */}
+      {stageDropBox && (
+        <div
+          aria-hidden
+          className="pointer-events-none"
+          style={{
+            position: 'absolute',
+            left: `${stageDropBox.x}%`, top: `${stageDropBox.y}%`,
+            width: `${stageDropBox.w}%`, height: `${stageDropBox.h}%`,
+            border: `2px dashed ${BLUE}`, borderRadius: RADIUS_SM,
+            background: 'rgba(0,110,254,0.06)', zIndex: 5,
+          }}
+        />
+      )}
+
       <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="header" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
       <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="footer" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
       {selectedId && !overlayOpen && (() => {
@@ -8873,7 +10302,7 @@ function CoverCanvasEditable({
 }
 
 function SimplePageBlock({
-  page, theme, pages, chapterHtml, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onUpdateElement, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex, overlayOpen, onSetBackmatterPhoto, zoom,
+  page, theme, pages, chapterHtml, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onAddElement, onUpdateElement, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex, overlayOpen, onSetBackmatterPhoto, zoom,
 }: {
   page: SimplePage;
   theme: ThemeDef;
@@ -8888,6 +10317,7 @@ function SimplePageBlock({
   onEditorFocus: (editor: Editor) => void;
   onContentChange: (fieldKey: string, html: string) => void;
   onSelectPage: (pageId: string) => void;
+  onAddElement: (pageId: string, el: CoverElement) => void;
   onUpdateElement: (pageId: string, elementId: string, patch: CoverElementPatch) => void;
   onReorderElement: (pageId: string, elementId: string, dir: 'front' | 'back') => void;
   onDuplicateElement: (pageId: string, elementId: string) => void;
@@ -8943,6 +10373,7 @@ function SimplePageBlock({
           onEditorFocus={onEditorFocus}
           onContentChange={onContentChange}
           onSelectPage={onSelectPage}
+          onAddElement={onAddElement}
           onUpdateElement={onUpdateElement}
           onReorderElement={onReorderElement}
           onDuplicateElement={onDuplicateElement}
@@ -8956,7 +10387,9 @@ function SimplePageBlock({
     );
   }
   if (page.type === 'toc') {
-    const chapters = pages.filter((p): p is ChapterPage => p.type === 'chapter' && !p.excludeFromToc);
+    /* Chapter STARTS only — a continuation page has no heading, so it has
+       nothing to list and belongs to the entry above it. */
+    const chapters = chapterStarts(pages, fieldContent);
     // One continuous editable block, not a per-entry click-to-jump list — matches
     // how Word/Google Docs and Vellum actually handle a TOC: you edit it as a single
     // surface, and it regenerates from the real chapter structure whenever that
@@ -9389,7 +10822,23 @@ const GRID_PREVIEW_WIDTHS: Record<string, number[]> = {
    a month, and one wide label column against three narrow number columns is a
    ledger. Row height and column rhythm carry it; nothing depends on type that
    would be 3px tall. */
-const WORKSHEET_GRIDS: Record<string, { cols: number[]; rows: number; lead?: number; fill?: 'first' | 'all'; head?: false }> = {
+/* `mark` is what the CELLS hold, which is the part the silhouette alone can't
+   carry. Column rhythm separates a ledger from a month, but it can't separate a
+   month from a tick sheet — both are a wide run of narrow cells — and it says
+   nothing at all about what you'd write in one. A date sits in the corner, a
+   tick sits in the middle, a figure sits against the right edge and a written
+   answer runs the width of its cell: four marks anyone recognises without
+   reading, drawn at 2-3px. */
+const WORKSHEET_GRIDS: Record<string, {
+  cols: number[]; rows: number; lead?: number; fill?: 'first' | 'all'; head?: false;
+  mark?: 'num' | 'tick' | 'figure' | 'rule' | 'bullet';
+  /* Which columns the mark falls in. Absent means every column after the named
+     one — a habit sheet ticks its day columns, not its habit column. */
+  markFrom?: number;
+  /* A closing row that sums the ones above: the ledger's tell, and the one row
+     of a worksheet that is never blank. */
+  total?: boolean;
+}> = {
   /* The blank one, drawn the same way as the eight under it. It used to render
      its own <table> markup at 0.4 scale and came out as an almost-empty white box:
      an empty <th> still carries its padding, so the header ate the top third, the
@@ -9401,17 +10850,17 @@ const WORKSHEET_GRIDS: Record<string, { cols: number[]; rows: number; lead?: num
   table: { cols: [1, 1], rows: 2 },
   /* Three columns and a named row per day, matching the transpose. It no longer
      shares a silhouette with the Calendar, which is the point of both changes. */
-  'weekly-planner': { cols: [1, 1.8, 2.2], rows: 5, fill: 'first' },
+  'weekly-planner': { cols: [1, 1.8, 2.2], rows: 6, fill: 'first', mark: 'rule', markFrom: 1 },
   /* `lead` is the run of cells before the 1st of the month — the real insert
      opens its first date row with an empty <td> for exactly this reason. Drawn
      faint rather than white, which is both what a month grid does with the days
      that aren't in it and the second tell against the planner: without it the two
      are seven columns each, told apart only by 2 tall rows against 4 short ones. */
-  calendar: { cols: [1, 1, 1, 1, 1, 1, 1], rows: 5, lead: 1 },
+  calendar: { cols: [1, 1, 1, 1, 1, 1, 1], rows: 4, lead: 2, mark: 'num' },
   /* One wide label column against three narrow number columns. 3:1 rather than a
      nudge — at 74px of drawing an uneven split has to be obvious to register as
      uneven at all, and this is the only thing saying "ledger" instead of "grid". */
-  budget: { cols: [3, 1, 1, 1], rows: 4, fill: 'first' },
+  budget: { cols: [3, 1, 1, 1], rows: 4, fill: 'first', mark: 'figure', markFrom: 1, total: true },
 
   /* The ready-made six. Two things separate one from the next at 74px of
      drawing, and neither is type: the COLUMN RHYTHM, and whether column 1 already
@@ -9426,12 +10875,12 @@ const WORKSHEET_GRIDS: Record<string, { cols: number[]; rows: number; lead?: num
      on its side. */
   /* Eight columns, which no other tile has — the habit tracker is the one
      worksheet you can pick out of the grid without reading. */
-  'habit-tracker': { cols: [2, 1, 1, 1, 1, 1, 1, 1], rows: 4 },
+  'habit-tracker': { cols: [2.6, 1, 1, 1, 1, 1], rows: 3, fill: 'first', mark: 'tick', markFrom: 1 },
   /* Four equal boxes and no header band — the quadrant is the insert, and a
      header row on it would be drawing a table that isn't there. Every cell is
      named, hence 'all'. */
   swot: { cols: [1, 1], rows: 2, head: false, fill: 'all' },
-  'goal-setting': { cols: [1.4, 2.6], rows: 5, fill: 'first' },
+  'goal-setting': { cols: [1.4, 2.6], rows: 4, fill: 'first', mark: 'bullet' },
 };
 const WORKSHEET_PREVIEW_IDS = new Set(Object.keys(WORKSHEET_GRIDS));
 
@@ -9445,10 +10894,10 @@ const SHEET_HEAD = '#C2CAD6';
 /* Between the rule and the page — a cell that is present but not yours to fill. */
 const SHEET_LEAD = '#E7ECF2';
 
-/* The frame every worksheet preview draws inside — same 86×46 as TileHtmlPreview
-   and the two grid previews, so the six tiles in the group share one optical box
-   whichever renderer fills them. */
-function WorksheetFrame({ sheet, children }: { sheet: boolean; children: React.ReactNode }) {
+/* The frame a drawn preview sits in — same 86×46 as TileHtmlPreview and the two
+   grid previews, so every tile shares one optical box whichever renderer fills
+   it. Worksheets and charts both draw into it. */
+function TileSheetFrame({ sheet, children }: { sheet: boolean; children: React.ReactNode }) {
   return (
     <div style={{
       width: 86, height: 46, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -9463,7 +10912,7 @@ function WorksheetFrame({ sheet, children }: { sheet: boolean; children: React.R
 function WorksheetPreview({ id, sheet = true }: { id: string; sheet?: boolean }) {
   const grid = WORKSHEET_GRIDS[id];
   return (
-    <WorksheetFrame sheet={sheet}>
+    <TileSheetFrame sheet={sheet}>
       <div style={{
         width: '100%', height: 34, display: 'flex', flexDirection: 'column', gap: 1,
         background: SHEET_RULE, padding: 1, borderRadius: 2, overflow: 'hidden',
@@ -9484,8 +10933,12 @@ function WorksheetPreview({ id, sheet = true }: { id: string; sheet?: boolean })
               <div
                 key={i}
                 style={{
-                  flex: c, minWidth: 0, background: r === 0 && i < (grid.lead ?? 0) ? SHEET_LEAD : WELL_PAGE,
-                  display: 'flex', alignItems: 'center', padding: '0 1.5px',
+                  flex: c, minWidth: 0,
+                  background: r === 0 && i < (grid.lead ?? 0) ? SHEET_LEAD
+                    : grid.total && r === grid.rows - 1 ? SHEET_LEAD : WELL_PAGE,
+                  display: 'flex', alignItems: 'center',
+                  justifyContent: grid.mark === 'figure' ? 'flex-end' : grid.mark === 'tick' ? 'center' : 'flex-start',
+                  padding: '0 1.5px',
                 }}
               >
                 {/* The mark that says this row arrives already named. A bar, not
@@ -9495,12 +10948,128 @@ function WorksheetPreview({ id, sheet = true }: { id: string; sheet?: boolean })
                 {(grid.fill === 'all' || (grid.fill === 'first' && i === 0)) && (
                   <div style={{ height: 2, width: '70%', borderRadius: 1, background: SHEET_HEAD }} />
                 )}
+                {grid.mark && i >= (grid.markFrom ?? 0) && !(r === 0 && i < (grid.lead ?? 0)) && (
+                  grid.mark === 'tick' ? (
+                    /* A real checkmark, not a dot. A tick is the one mark in this
+                       set with a shape of its own, and at 3px it was a speck
+                       indistinguishable from the calendar's date — which is
+                       exactly the pair that still read alike. Six px and a
+                       stroke, so it survives the tile. */
+                    <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke={SHEET_HEAD} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block' }}>
+                      <path d="M5 13l5 5L19 7" />
+                    </svg>
+                  ) : grid.mark === 'bullet' ? (
+                    // A numbered prompt: the bullet, then the rule you answer on.
+                    <>
+                      <div style={{ width: 3, height: 3, borderRadius: '50%', background: SHEET_HEAD, flexShrink: 0 }} />
+                      <div style={{ height: 1, flex: 1, marginLeft: 2, background: SHEET_RULE }} />
+                    </>
+                  ) : grid.mark === 'num' ? (
+                    // Top-left, where a date sits on every calendar ever printed.
+                    <div style={{ width: 3, height: 3, borderRadius: 0.5, background: SHEET_HEAD, alignSelf: 'flex-start', marginTop: 1 }} />
+                  ) : grid.mark === 'figure' ? (
+                    // Against the right edge, the way figures align in a ledger.
+                    <div style={{ height: 2, width: '60%', borderRadius: 1, background: SHEET_HEAD }} />
+                  ) : (
+                    // A written answer: a rule running the width of the cell.
+                    <div style={{ height: 1, width: '88%', borderRadius: 1, background: SHEET_RULE }} />
+                  )
+                )}
               </div>
             ))}
           </div>
         ))}
       </div>
-    </WorksheetFrame>
+    </TileSheetFrame>
+  );
+}
+
+/* The three chart tiles, drawn — not a glyph, and not the real chart scaled.
+   A glyph is a picture OF a chart, which is the one thing a chart tile can draw
+   for real: the block it inserts is already vector and already legible at tile
+   size once the type comes off it. That is the same argument the worksheet tiles
+   won on, and leaving Charts on ICONS.chart left one group in Elements
+   captioning itself while its neighbours previewed themselves.
+   Scaling the real render was the other candidate and it fails on type: the block
+   is 400×240 with 9-11px axis labels and value labels, so at the 0.21 it takes to
+   reach 86px every number in it lands under 2.5px.
+
+   Drawn in the panel's own grey mark ladder, NOT in the colours the block
+   inserts. That was the first version — blue bars, the real CHART_PALETTE pie —
+   and it made these three the only saturated drawings in a panel where every
+   other illustration (the worksheet grids, the column and image-grid splits, the
+   six Elements category marks) is flat grey. It read as a different hand rather
+   than as three more previews, and colour was carrying nothing: what tells a bar
+   chart from a pie is the SHAPE, which is the same thing that tells a month grid
+   from a ledger one group over. The only colour left anywhere in this grid is
+   colour that means something — a shape tile showing its real fill — and a chart
+   tile's accent is the author's to set, not the tile's to promise.
+   Same rungs as the Elements index marks rather than the paler tile-preview ones:
+   these draw straight on the well like that row's mark does, not on the white
+   sheet the worksheet cells give themselves. */
+const CHART_PREVIEW_IDS = new Set(['chart-bar', 'chart-line', 'chart-pie']);
+/* The four values the tiles insert, as a shape — the drawing moves when the
+   sample data does, rather than being a second set of numbers to keep in step. */
+const CHART_PREVIEW_VALUES = [12, 19, 8, 15];
+function ChartPreview({ id, sheet = true }: { id: string; sheet?: boolean }) {
+  const W = 74, H = 34;
+  const max = Math.max(...CHART_PREVIEW_VALUES);
+  const body = () => {
+    if (id === 'chart-pie') {
+      /* The block's own four values, alternating two rungs of the ladder. A pie
+         is the one chart here whose parts have to be told apart WITHOUT colour,
+         which leaves tone to do it — and running the ramp INK→MID→FAINT down the
+         slices puts the two closest rungs side by side, which is where three of
+         them stopped reading as separate wedges. An even count alternating two
+         tones has the full step at every cut including the one that closes the
+         circle, so it carries more slices on fewer rungs. Same two the Elements
+         index draws its Charts mark with.
+         Hairlines in the well's own fill, so the cuts read as gaps rather than
+         as white lines drawn on a grey tile. */
+      const vals = [38, 29, 21, 12];
+      const tones = [MARK_INK, MARK_FAINT, MARK_INK, MARK_FAINT];
+      const total = vals.reduce((a, b) => a + b, 0);
+      const cx = W / 2, cy = H / 2, r = H / 2 - 1;
+      let a0 = -Math.PI / 2;
+      return vals.map((v, i) => {
+        const a1 = a0 + (v / total) * Math.PI * 2;
+        const [x1, y1] = [cx + r * Math.cos(a0), cy + r * Math.sin(a0)];
+        const [x2, y2] = [cx + r * Math.cos(a1), cy + r * Math.sin(a1)];
+        const large = a1 - a0 > Math.PI ? 1 : 0;
+        a0 = a1;
+        return <path key={i} d={`M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${large} 1 ${x2},${y2} Z`} fill={tones[i]} stroke={TILE_WELL} strokeWidth={1} />;
+      });
+    }
+    const plotH = H - 4;
+    const yAt = (v: number) => H - 2 - (v / max) * plotH;
+    if (id === 'chart-line') {
+      const xAt = (i: number) => 3 + (i * (W - 6)) / (CHART_PREVIEW_VALUES.length - 1);
+      const pts = CHART_PREVIEW_VALUES.map((v, i) => [xAt(i), yAt(v)] as const);
+      return (
+        <>
+          <polyline points={pts.map(([x, y]) => `${x},${y}`).join(' ')} fill="none" stroke={MARK_INK} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+          {/* The dots the block draws on each point, ringed in the well so they
+              stay separate where the line runs under one. */}
+          {pts.map(([x, y], i) => <circle key={i} cx={x} cy={y} r={2} fill={MARK_INK} stroke={TILE_WELL} strokeWidth={0.8} />)}
+        </>
+      );
+    }
+    const barW = 11, gap = (W - barW * CHART_PREVIEW_VALUES.length) / (CHART_PREVIEW_VALUES.length + 1);
+    return CHART_PREVIEW_VALUES.map((v, i) => {
+      const y = yAt(v);
+      return <rect key={i} x={gap + i * (barW + gap)} y={y} width={barW} height={H - 2 - y} rx={1.5} fill={MARK_INK} />;
+    });
+  };
+  return (
+    <TileSheetFrame sheet={sheet}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: 'block', overflow: 'visible' }}>
+        {/* One rule at the baseline, a rung lighter than the marks standing on
+            it. The real chart draws three gridlines, and three across 30px of
+            plot is a hatch pattern rather than an axis. */}
+        {id !== 'chart-pie' && <line x1={0} y1={H - 1.5} x2={W} y2={H - 1.5} stroke={MARK_FAINT} strokeWidth={1} />}
+        {body()}
+      </svg>
+    </TileSheetFrame>
   );
 }
 
@@ -9762,8 +11331,12 @@ function PanelHeading({ children, first, divider, flag }: { children: React.Reac
 
 /* Sits above every insert grid. Canva's Elements panel is a far bigger drawer than
    this one and stays usable on exactly this — a search field, not more tabs — so
-   the tabs only have to serve browsing. */
-function InsertSearchField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+   the tabs only have to serve browsing.
+   The placeholder names what it will search, because that is now the level you
+   are standing on rather than the whole editor (see `searchScope`). "Search all
+   tools" over a field that only searched shapes would be a lie, and a bare
+   "Search" leaves you guessing. */
+function InsertSearchField({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
   return (
     <div style={{ position: 'relative', marginBottom: 14 }}>
       <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: SLATE, display: 'flex', pointerEvents: 'none' }}>
@@ -9772,7 +11345,7 @@ function InsertSearchField({ value, onChange }: { value: string; onChange: (v: s
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Search all tools"
+        placeholder={placeholder}
         style={{
           ...ns, width: '100%', height: 34, fontSize: 12.5, color: INK,
           padding: value ? '0 30px 0 32px' : '0 12px 0 32px',
@@ -9832,6 +11405,15 @@ const ELEMENTS_CATEGORIES: { id: string; label: string; icon: string; group?: El
   { id: 'audio', label: 'Audio', icon: ICONS.audio, media: 'audio' },
   { id: 'interactive', label: 'Interactive', icon: ICONS.cta, group: 'Interactive' },
 ];
+
+/* The word the search field uses for a category it has drilled into —
+   "Search shapes", "Nothing in shapes matches…". Lowercased category labels, bar
+   Interactive: "interactive" is an adjective with nothing after it, and a field
+   saying "Search interactive" asks you to supply the noun yourself. */
+const ELEMENTS_SEARCH_LABELS: Record<ElementsCategory, string> = {
+  Shapes: 'shapes', Icons: 'icons', Charts: 'charts', Worksheets: 'worksheets',
+  Interactive: 'interactive blocks',
+};
 
 /* One title row, shared by every panel that drills in — the media picker drew its
    own before this existed and they have to look identical, or two drill-downs in
@@ -9985,8 +11567,9 @@ function PanelEdgeToggle({ side, open, label, onToggle }: {
    grows, and "Charts 3" reads as a warning not to bother.
    The drill-down exists because Elements had reached 49 tiles — about three
    panel-heights, with Charts stranded at the bottom — and because every category
-   has room to grow that a flat list can't give it. Search still spans all of them
-   from any tab, so nothing here is hidden, only filed. */
+   has room to grow that a flat list can't give it. Nothing here is hidden, only
+   filed: the search field on this index searches every category behind it, which
+   is the level that answers "which one is a QR code under" (see searchScope). */
 /* The category marks' own ink ramp, one rung darker than the tile previews'
    (SHEET_HEAD / SHEET_RULE / PreviewBar's faint tone). A tile preview sits in a
    62px well and can afford to whisper; these are 40px marks carrying a whole row,
@@ -10000,10 +11583,11 @@ const MARK_FAINT = '#D3DAE4';
    side of it). It started at 30 to match the old chip, and every preview had to
    be cut back to survive there: Worksheets lost a rule because three closed the
    gaps to 1.6px and filled in as a grey block, and Interactive lost the two text
-   lines above its button because the three marks merged. At 40 both are drawn in
-   full — which is the point of previewing content rather than framing a glyph,
-   and the reason not to split the difference. */
-const CATEGORY_MARK = 40;
+   lines above its button because the three marks merged. At 40 both were drawn
+   in full — which is the point of previewing content rather than framing a
+   glyph — and 50 gives the miniatures room for that detail to read at a glance
+   rather than only survive. */
+const CATEGORY_MARK = 50;
 
 /* The leading mark on each Elements category row: a miniature of what the
    category holds, not an icon in a chip.
@@ -10178,7 +11762,7 @@ function CategoryMark({ id, icon }: { id: string; icon: string }) {
   const marks = CATEGORY_PREVIEWS[id];
   // A category with no preview drawn yet keeps its glyph. An empty well is
   // worse than a plain icon — it reads as a preview that failed to load.
-  if (!marks) return <Icon d={icon} size={22} />;
+  if (!marks) return <Icon d={icon} size={27} />;
   return (
     <svg width={CATEGORY_MARK} height={CATEGORY_MARK} viewBox="0 0 40 40" aria-hidden="true">
       <rect x="5.5" y="8" width="29" height="24" rx="2.5" fill={WELL_PAGE} />
@@ -10216,7 +11800,7 @@ function PanelIndexCards({ cards }: { cards: { id: string; label: string; icon: 
               row instead of a 62px field of it. */}
           <span
             className="book-index-row__chip flex items-center justify-center"
-            style={{ width: CATEGORY_MARK, height: CATEGORY_MARK, flex: `0 0 ${CATEGORY_MARK}px`, borderRadius: 9, color: INK, overflow: 'hidden' }}
+            style={{ width: CATEGORY_MARK, height: CATEGORY_MARK, flex: `0 0 ${CATEGORY_MARK}px`, borderRadius: 12, color: INK, overflow: 'hidden' }}
           >
             <CategoryMark id={c.id} icon={c.icon} />
           </span>
@@ -10248,8 +11832,14 @@ function PanelIndexCards({ cards }: { cards: { id: string; label: string; icon: 
    that flag means "draw this icon stroked, it has no area to fill" and Divider —
    a line, with no filled counterpart — carries it too. Divider answering null is
    the point: it stays put whichever way the toggle is set. */
-function shapeVariant(tile: InsertTile): 'solid' | 'outline' | null {
-  if (!tile.id.startsWith('shape-')) return null;
+/* Which half of a solid/outline pair a tile is, or null for a tile that isn't in
+   one. Two groups have the pairing now — Shapes, where the outline is the same
+   geometry unfilled, and Icons, where it is FontAwesome's separately drawn
+   regular cut — and both are browsed through one control over the grid. Keyed on
+   the id suffix rather than a flag on the tile: the id is what a drag carries and
+   what search turns up, so it is the thing that must be right. */
+function variantOf(tile: InsertTile): 'solid' | 'outline' | null {
+  if (!tile.id.startsWith('shape-') && !tile.id.startsWith('icon-')) return null;
   return tile.id.endsWith('-outline') ? 'outline' : 'solid';
 }
 
@@ -10278,7 +11868,7 @@ function TileSubHeading({ label, first }: { label: string; first: boolean }) {
   return <div style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: INK, margin: '0 0 10px' }}>{label}</div>;
 }
 
-function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDragTile, onLockedClick, onLockedTextStyle, onInsertTile, textExtras }: {
+function InsertPanel({ currentPlan, groups, searchScope, searchLabel, index, header, titleNamesGroup, onDragTile, onLockedClick, onLockedTextStyle, onInsertTile, textExtras }: {
   currentPlan: string;
   groups: InsertTile['group'][];
   onDragTile: (id: string | null) => void;
@@ -10291,11 +11881,29 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
   // Text styles gallery — quick insert-at-cursor tools belong near the other
   // quick tiles, not pushed below a whole scrollable gallery of style cards.
   textExtras?: React.ReactNode;
+  /* What the field searches, and the word for it in the placeholder — the tab
+     you are in, or the category you have drilled into, not every tile in the
+     editor.
+     Global search was the first build, on the reasoning that the hard part of
+     finding a tool is not knowing which tab it lives under. What that ignored is
+     where the field actually IS: it sits inside a panel, under that panel's own
+     title, over that panel's own grid, and a field in that position reads as a
+     filter on what is under it. Typing "line" in Shapes and getting back a line
+     chart and a line of text isn't reach, it's a panel answering a question you
+     didn't ask — and the results pushed the shapes you were looking at off the
+     screen. Every editor that scopes this way scopes it to the drawer: Canva's
+     Elements search searches elements, its Text tab searches text.
+     The index level is the exception that keeps the original argument alive:
+     standing on Elements with no category open, the field searches all of
+     Elements, which is where "I don't know if a QR code is under Interactive"
+     gets answered. The rail tabs are few enough and plain enough (Text, Photos,
+     Elements, Layouts) that crossing between them is not the lost-tool problem;
+     crossing between the five categories behind one of them is. */
+  searchScope: InsertTile['group'][];
+  searchLabel: string;
   /* Rendered in place of the group grids when there's no query — the panel is a
-     table of contents rather than a shelf. Search still owns the screen the moment
-     you type, from the index or from inside a category, because a search that only
-     looked at the level you'd already navigated to would be the exact failure the
-     drill-down introduces. */
+     table of contents rather than a shelf. Search replaces it the moment you
+     type, within this tab's scope. */
   index?: { id: string; label: string; icon: string; onOpen: () => void }[];
   /* The title row, above the search field — drawn by the caller because only it
      knows where back goes. */
@@ -10304,19 +11912,25 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
      header carries it as the panel title, and the Layouts tab's own grid is
      labelled by its sub-headings under a rail tab that says Layouts. Either way
      the group header would be the same word twice in a row.
-     Browse grids only: a search hit still shows the group it lives in, which is
-     the whole reason search spans every tab. */
+     Search results drop the header on the same condition, and for the same
+     reason: scoped search inside a category returns that category's tiles, so
+     the header over them would be the panel title repeated a second time. Where
+     the scope spans several groups — the Elements index, the Text tab — each
+     run of hits keeps its own header, which is what says where a hit lives. */
   titleNamesGroup?: boolean;
 }) {
   // Only the plain Table tile uses this; held as an id rather than a boolean so
   // a second sized block (a grid of images, say) can join without a second flag.
   const [sizingTile, setSizingTile] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  /* Solid by default: it's what the great majority of placed shapes are, and an
+  /* Solid by default: it's what the great majority of placed marks are, and an
      outline is the deliberate choice. Panel-level state, so the setting holds
-     while you place three hollow shapes in a row instead of resetting under you
-     between inserts. */
-  const [shapeStyle, setShapeStyle] = useState<'solid' | 'outline'>('solid');
+     while you place three hollow ones in a row instead of resetting under you
+     between inserts. One piece of state for both grids that have the pair —
+     Shapes and Icons — because it is one preference: someone drawing a hollow
+     book is drawing a hollow book, and having each grid remember its own cut
+     means arriving at Icons set to solid right after choosing outline next door. */
+  const [cutStyle, setCutStyle] = useState<'solid' | 'outline'>('solid');
   const q = query.trim().toLowerCase();
 
   /* One tile, shared by the browse grid and the search results below — the two
@@ -10427,6 +12041,8 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
                     <ColumnsPreview widths={COLUMN_PREVIEW_WIDTHS[tile.id]} sheet={opensChooser} />
                   ) : WORKSHEET_PREVIEW_IDS.has(tile.id) ? (
                     <WorksheetPreview id={tile.id} sheet={opensChooser} />
+                  ) : CHART_PREVIEW_IDS.has(tile.id) ? (
+                    <ChartPreview id={tile.id} sheet={opensChooser} />
                   ) : tile.svg ? (
                     /* The mark at its own size on the well, like a Shapes tile —
                        not a scaled-down page preview, which is what an icon gets
@@ -10489,12 +12105,8 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
 
 
 
-  /* Search spans EVERY insert tile, not just this tab's groups. That's the whole
-     point of it: the reason a tool is hard to find is that you don't know which
-     tab it lives under, and a search that only looks inside the tab you already
-     guessed right can't help with that. Results keep their own group header, so
-     a hit still tells you where it normally lives. */
-  const hits = q ? INSERT_TILES.filter((t) => tileMatches(t, q)) : [];
+  // Scoped to the panel you are standing in — see `searchScope`.
+  const hits = q ? INSERT_TILES.filter((t) => searchScope.includes(t.group) && tileMatches(t, q)) : [];
   const hitGroups = [...new Set(hits.map((t) => t.group))];
 
   /* Three groups draw specimens rather than icon tiles when you browse them, so
@@ -10520,7 +12132,7 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
   return (
     <div style={{ padding: '16px 14px' }}>
       {header}
-      <InsertSearchField value={query} onChange={setQuery} />
+      <InsertSearchField value={query} onChange={setQuery} placeholder={`Search ${searchLabel}`} />
       {!q && index && <PanelIndexCards cards={index} />}
       {!q && groups.map((group) => (
         <div key={group} style={{ marginBottom: 18 }}>
@@ -10568,13 +12180,24 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
                 library read as a staggered stream once Divider took the first slot.
                 Both halves stay in INSERT_TILES under their own ids, so a drag
                 still resolves to exactly the markup its tile previewed and search
-                can still turn up "rectangle outline" by name. */}
-            {group === 'Shapes' && (
+                can still turn up "rectangle outline" by name.
+
+                Icons take the same control, which is the whole reason the library
+                moved off Lucide: Lucide is stroke-only and has no filled cut of
+                anything, so the question "can an icon be solid or outline" had no
+                answer in the old set. FontAwesome draws both, and 79 icons ×
+                2 cuts is exactly the grid the shapes argument was about — the
+                pair belongs behind one switch, not stacked down 158 tiles.
+                The two grids are NOT the same mechanism underneath, though they
+                look alike here: a hollow shape is the solid one unfilled, while a
+                hollow icon is a separately drawn mark (a regular-cut lightbulb has
+                a different silhouette from the solid one, not just a hole in it). */}
+            {(group === 'Shapes' || group === 'Icons') && (
               <div style={{ marginBottom: 12 }}>
                 <SegmentedControl
-                  label="Shape style"
-                  value={shapeStyle}
-                  onChange={setShapeStyle}
+                  label="Style"
+                  value={cutStyle}
+                  onChange={setCutStyle}
                   options={[
                     { value: 'solid', label: 'Solid' },
                     { value: 'outline', label: 'Outline' },
@@ -10584,8 +12207,8 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
             )}
             {tileRuns(group).map((run, i) => {
               const tiles = run.tiles.filter((t) => {
-                const v = shapeVariant(t);
-                return v === null || v === shapeStyle;
+                const v = variantOf(t);
+                return v === null || v === cutStyle;
               });
               if (!tiles.length) return null;
               return (
@@ -10618,7 +12241,7 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
           {group === 'Text' && textExtras}
           {group === 'Text' && (
             <div>
-              <PanelSectionBreak label="Ready-made" />
+              <PanelSectionBreak label={GROUP_HEADINGS.TextTemplates!} />
               <div style={{ marginTop: 12 }}>
                 <TextTemplateCards currentPlan={currentPlan} onDragTile={onDragTile} onLockedClick={onLockedClick} onInsertTile={onInsertTile} />
               </div>
@@ -10652,11 +12275,15 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
         const specimen = specimenGroups[group];
         return (
         <div key={group} style={{ marginBottom: 18 }}>
+          {/* The panel title already names this group when the scope is one
+              group deep — see titleNamesGroup. */}
+          {!(titleNamesGroup && searchScope.length === 1) && (
           <div className="flex items-center justify-between" style={{ padding: '2px 0 8px', marginBottom: 2 }}>
             {/* No gate pill here any more: every tile under the header carries
                 its own, and the category row in the index carries the group's. */}
             <span style={{ ...ns, fontSize: 13.5, fontWeight: 700, color: INK }}>{GROUP_HEADINGS[group] ?? group}</span>
           </div>
+          )}
           {specimen ? specimen(new Set(groupHits.map((t) => t.id))) : (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 8px' }}>
               {/* Explicit arrow, not a bare reference: .map hands its callback the
@@ -10669,8 +12296,12 @@ function InsertPanel({ currentPlan, groups, index, header, titleNamesGroup, onDr
         );
       })}
       {q && !hits.length && (
+        /* Names the scope, because the scope is why there is nothing here — a
+           bare "no tools match" over a panel that only searched shapes reads as
+           "this editor has no arrow" when what it means is "Shapes has no
+           arrow". */
         <div style={{ ...ns, fontSize: 12.5, color: SLATE, lineHeight: 1.6, padding: '10px 2px' }}>
-          No tools match &ldquo;{query.trim()}&rdquo;.
+          Nothing in {searchLabel} matches &ldquo;{query.trim()}&rdquo;.
         </div>
       )}
     </div>
@@ -10930,7 +12561,7 @@ function TextBlockCards({ currentPlan, onDragTile, onLockedClick, onInsertTile, 
    at a card edge shows you the first block and hides the relation, which is the
    only thing that distinguishes one template from another. 0.62 is gentler than
    the ratios TileHtmlPreview and TemplatesPanel use because these are read for
-   shape AND for words — "Key takeaways" has to stay legible on the card. */
+   shape AND for words — "Before"/"After" have to stay legible on the card. */
 const TEMPLATE_CARD_ZOOM = 0.62;
 function TextTemplateCards({ currentPlan, onDragTile, onLockedClick, onInsertTile, only }: {
   currentPlan: string;
@@ -11101,7 +12732,6 @@ function SettingsLeafHeader({ title, onBack }: { title: string; onBack: () => vo
    carry a required marker and feed the pre-publish check. ────────────────────── */
 function MetadataPanel({ metadata, setMetadata }: { metadata: BookMetadata; setMetadata: (m: BookMetadata) => void }) {
   const field: React.CSSProperties = { ...ns, width: '100%', fontSize: 13, padding: '8px 10px', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, marginTop: 5 };
-  const selectField: React.CSSProperties = { ...field, appearance: 'none', paddingRight: 28 };
   const labelStyle: React.CSSProperties = { ...ns, fontSize: 12, fontWeight: 600, color: INK, display: 'block', marginBottom: 14 };
   const set = (k: keyof BookMetadata, v: string) => setMetadata({ ...metadata, [k]: v });
   // Full shorthand, not just borderColor — mixing the two against `field`'s `border`
@@ -11170,31 +12800,34 @@ function MetadataPanel({ metadata, setMetadata }: { metadata: BookMetadata; setM
         </span>
       </label>
       <label style={labelStyle}>Language <span style={{ color: '#B91C1C' }}>*</span>
-        <div style={{ position: 'relative' }}>
-          <select style={{ ...selectField, ...req('language') }} value={metadata.language} onChange={(e) => set('language', e.target.value)}>
-            <option value="">Select a language…</option>
-            <option value="en">English (en)</option>
-            <option value="en-GB">English — UK (en-GB)</option>
-            <option value="es">Spanish (es)</option>
-            <option value="fr">French (fr)</option>
-            <option value="de">German (de)</option>
-            <option value="pt">Portuguese (pt)</option>
-            <option value="it">Italian (it)</option>
-          </select>
-          <SelectChevron />
-        </div>
+        <NativeSelect
+          value={metadata.language}
+          onChange={(v) => set('language', v)}
+          invalid={!metadata.language.trim()}
+          options={[
+            { value: '', label: 'Select a language…' },
+            { value: 'en', label: 'English (en)' },
+            { value: 'en-GB', label: 'English — UK (en-GB)' },
+            { value: 'es', label: 'Spanish (es)' },
+            { value: 'fr', label: 'French (fr)' },
+            { value: 'de', label: 'German (de)' },
+            { value: 'pt', label: 'Portuguese (pt)' },
+            { value: 'it', label: 'Italian (it)' },
+          ]}
+        />
       </label>
       <label style={labelStyle}>Publisher
         <input style={field} value={metadata.publisher} onChange={(e) => set('publisher', e.target.value)} />
       </label>
       <label style={{ ...labelStyle, marginBottom: 0 }}>Reading direction
-        <div style={{ position: 'relative' }}>
-          <select style={selectField} value={metadata.readingDirection} onChange={(e) => set('readingDirection', e.target.value)}>
-            <option value="ltr">Left to right</option>
-            <option value="rtl">Right to left</option>
-          </select>
-          <SelectChevron />
-        </div>
+        <NativeSelect
+          value={metadata.readingDirection}
+          onChange={(v) => set('readingDirection', v)}
+          options={[
+            { value: 'ltr', label: 'Left to right' },
+            { value: 'rtl', label: 'Right to left' },
+          ]}
+        />
         <span style={{ ...ns, display: 'block', fontSize: 11, fontWeight: 400, color: SLATE, marginTop: 4 }}>
           Written into the EPUB spine so e-readers lay out and turn pages correctly for RTL scripts.
         </span>
@@ -11631,6 +13264,44 @@ function fieldChrome(focused?: boolean, disabled?: boolean): React.CSSProperties
    slider. Sliders were my own addition and got cut — they cost a row of height
    each, can't express a precise value without a second control, and Figma puts
    four of these side by side in the space one slider row takes. */
+/* Clockwise from top-left — the order CSS border-radius takes, the order Figma
+   takes, and the order `corners` is stored in. */
+const CORNER_TITLES = ['Top left', 'Top right', 'Bottom right', 'Bottom left'] as const;
+
+/* An L-bend drawn in the corner it names, on the panel's 24 viewBox with the
+   standard 18-unit live area (6–18). The 4-unit bend is the point of the glyph:
+   a square L would name the corner without naming the property. */
+const CORNER_PATHS = [
+  'M6 18V10a4 4 0 0 1 4-4h8',   // top left
+  'M18 18V10a4 4 0 0 0-4-4H6',  // top right
+  'M18 6v8a4 4 0 0 1-4 4H6',    // bottom right
+  'M6 6v8a4 4 0 0 0 4 4h8',     // bottom left
+] as const;
+
+/* Rotation's glyph. The two axes it replaces (an L of one vertical and one
+   horizontal line) named a coordinate system, not an angle — the property is how
+   far the object is turned, so the mark is the one geometry has always used: a
+   baseline, a ray off it, and the arc that measures between them. Same 6-18 live
+   area as CornerGlyph so the two sit at one weight in the same column. */
+function AngleGlyph() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17 7 6 18h12" />
+      <path d="M12 18a6 6 0 0 0-1.76-4.24" />
+    </svg>
+  );
+}
+
+function CornerGlyph({ corner }: { corner: 0 | 1 | 2 | 3 }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <path d={CORNER_PATHS[corner]} />
+    </svg>
+  );
+}
+
 function NumField({ icon, value, min, max, step = 1, suffix, onChange, title, width = '100%', disabled = false }: {
   icon?: React.ReactNode;
   value: number;
@@ -11649,6 +13320,8 @@ function NumField({ icon, value, min, max, step = 1, suffix, onChange, title, wi
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const shown = draft ?? `${Math.round(value * 100) / 100}`;
   const commit = (raw: string) => {
     const n = Number(raw.replace(/[^\d.-]/g, ''));
     if (Number.isFinite(n)) onChange(Math.min(Math.max(min, n), max));
@@ -11658,36 +13331,54 @@ function NumField({ icon, value, min, max, step = 1, suffix, onChange, title, wi
     <div
       title={title}
       className="flex items-center"
-      style={{ ...fieldChrome(focused, disabled), gap: 5, width, minWidth: 0 }}
+      style={{ ...fieldChrome(focused, disabled), gap: 5, width, minWidth: 0, cursor: disabled ? 'default' : 'text' }}
+      /* The input no longer fills the well, so the empty space to its right
+         would otherwise be dead. Clicking anywhere in the box still edits. */
+      onMouseDown={(e) => {
+        if (disabled || e.target === inputRef.current) return;
+        e.preventDefault();
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }}
     >
       {icon && <span className="flex items-center flex-shrink-0" style={{ color: '#9AA5B4' }}>{icon}</span>}
-      <input
-        disabled={disabled}
-        value={draft ?? `${Math.round(value * 100) / 100}`}
-        onChange={(e) => setDraft(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={(e) => { setFocused(false); commit(e.target.value); }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') { commit((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); }
-          if (e.key === 'Escape') { setDraft(null); (e.target as HTMLInputElement).blur(); }
-          // Arrow keys nudge, as they do in every design tool's numeric field.
-          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-            e.preventDefault();
-            const by = e.shiftKey ? step * 10 : step;
-            onChange(Math.min(Math.max(min, value + (e.key === 'ArrowUp' ? by : -by)), max));
-          }
-        }}
-        style={{
-          ...ns, fontSize: 12.5, color: INK, background: 'none', border: 'none', outline: 'none',
-          width: '100%', minWidth: 0, padding: 0,
-        }}
-      />
-      {/* The unit sits beside the input, not inside its value — it was part of
-          the editable string before, so selecting an opacity to retype it meant
+      {/* The input is sized to the value it holds, by an invisible copy of that
+          value in the same grid cell, so the unit can sit against the number
+          instead of drifting to the far wall of the box. "45" and "°" read as
+          one quantity; "45 ......... °" reads as two things in one well. */}
+      <span className="flex items-center" style={{ gap: 1, flex: '0 1 auto', minWidth: 0 }}>
+        <span style={{ position: 'relative', display: 'block', minWidth: 0, overflow: 'hidden' }}>
+          <span aria-hidden style={{ ...ns, fontSize: 12.5, display: 'block', visibility: 'hidden', whiteSpace: 'pre' }}>{shown || '0'}</span>
+          <input
+            ref={inputRef}
+            disabled={disabled}
+            value={shown}
+            onChange={(e) => setDraft(e.target.value)}
+            onFocus={() => setFocused(true)}
+            onBlur={(e) => { setFocused(false); commit(e.target.value); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { commit((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); }
+              if (e.key === 'Escape') { setDraft(null); (e.target as HTMLInputElement).blur(); }
+              // Arrow keys nudge, as they do in every design tool's numeric field.
+              if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault();
+                const by = e.shiftKey ? step * 10 : step;
+                onChange(Math.min(Math.max(min, value + (e.key === 'ArrowUp' ? by : -by)), max));
+              }
+            }}
+            style={{
+              ...ns, fontSize: 12.5, color: INK, background: 'none', border: 'none', outline: 'none',
+              position: 'absolute', inset: 0, width: '100%', minWidth: 0, padding: 0,
+            }}
+          />
+        </span>
+      {/* The unit is beside the input, not inside its value — it was part of the
+          editable string before, so selecting an opacity to retype it meant
           dragging around a "%" that isn't yours to edit (and any typo in it was
-          silently stripped on commit). Same treatment as SizeFields' W/H glyph
-          at the other end of the well: dimmed, non-editable, part of the box. */}
+          silently stripped on commit). Dimmed and non-editable, but set against
+          the number, which is where a unit belongs. */}
       {suffix && <span className="flex-shrink-0" style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#9AA5B4' }}>{suffix}</span>}
+      </span>
     </div>
   );
 }
@@ -11937,7 +13628,7 @@ function StrokeFields({ color, onColor, width, onWidth, style, onStyle, sides, o
 
 /* Figma's small select: current value plus a chevron, a compact popup list with a
    tick on the active row. Used for the image fill mode and the stroke position. */
-function SelectField<T extends string>({ value, options, onChange, width = '100%', openUp = false }: {
+function SelectField<T extends string>({ value, options, onChange, width = '100%', openUp = false, size = 'md', icon, align = 'left', ariaLabel, active = false }: {
   value: T;
   options: { id: T; label: string }[];
   onChange: (v: T) => void;
@@ -11945,6 +13636,24 @@ function SelectField<T extends string>({ value, options, onChange, width = '100%
   /* Opens above. The composer's select sits at the bottom of its card, where a
      downward list would open off the panel. */
   openUp?: boolean;
+  /* `icon` is the filter-button shape: a square outlined button carrying a glyph
+     instead of its value. A labelled pill was the first attempt and it read as
+     a caption under the search field rather than as a control — small, low
+     contrast, easy to look straight past. A 34px square matching the field's own
+     height, sitting beside it, is the thing you actually notice. */
+  size?: 'icon' | 'md';
+  icon?: React.ReactNode;
+  /* Anchors the menu's right edge to the button's. An icon button parked at the
+     right edge of a narrow panel has no room to open leftwards. */
+  align?: 'left' | 'right';
+  ariaLabel?: string;
+  /* Filtering is on. Every filter control that survives a real product —
+     Magnific's, Air's, Dropbox's — marks the narrowed filter rather than leaving
+     it looking like the default, because a grid that's quietly hiding results
+     and one that's genuinely empty are otherwise the same picture. It matters
+     more here than on a labelled control, not less: an icon button doesn't say
+     which value it holds, so the mark is all there is. */
+  active?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -11955,31 +13664,66 @@ function SelectField<T extends string>({ value, options, onChange, width = '100%
     return () => window.removeEventListener('mousedown', close);
   }, [open]);
   const current = options.find((o) => o.id === value);
+  const isIcon = size === 'icon';
   return (
-    <div ref={ref} className="relative" style={{ width, minWidth: 0 }}>
+    <div ref={ref} className="relative" style={{ width: isIcon ? 'auto' : width, display: isIcon ? 'inline-block' : undefined, minWidth: 0, flexShrink: 0 }}>
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-between cursor-pointer"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        /* Icon-only, so the name it can't show has to be reachable some other
+           way. `title` is the hover answer, `aria-label` the screen-reader one. */
+        title={isIcon ? ariaLabel : undefined}
+        className={isIcon ? 'flex items-center justify-center cursor-pointer' : 'flex items-center justify-between cursor-pointer'}
         /* `subtle` used to pick the white-bordered box for the one place this
            sat on a card, where a filled control read as a second input. That was
            the right call everywhere, not just there — see fieldChrome. */
-        style={{ ...fieldChrome(open), width: '100%', gap: 4 }}
+        style={isIcon
+          ? {
+              ...ns, position: 'relative', width: 34, height: 34, padding: 0, borderRadius: RADIUS_MD,
+              /* Open and active are different things and have to look different:
+                 open is transient chrome, active is a filter still narrowing the
+                 grid after the menu has gone. Active takes the fill, open takes
+                 the border only. */
+              background: active ? '#EEF3FF' : '#fff',
+              border: `1px solid ${active ? '#C3D8FF' : open ? BLUE : BORDER}`,
+              color: active ? BLUE : SLATE,
+            }
+          : { ...fieldChrome(open), width: '100%', gap: 4 }}
       >
-        <span style={{ ...ns, fontSize: 12.5, color: INK, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{current?.label ?? value}</span>
-        <svg width="8" height="5" viewBox="0 0 8 5" fill="none" style={{ flexShrink: 0 }}><path d="M1 1L4 4L7 1" stroke={SLATE} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        {isIcon ? (
+          /* No badge dot on top of this. It was there while the glyph was a
+             funnel and stopped working the moment the glyph grew knobs — a dot
+             beside two smaller dots reads as a third, mis-drawn part of the
+             icon rather than as a mark about it. Fill, border and glyph colour
+             all change on active, which is three signals for one bit. */
+          icon
+        ) : (
+          <>
+            <span style={{ ...ns, fontSize: 12.5, color: INK, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{current?.label ?? value}</span>
+            <svg width="8" height="5" viewBox="0 0 8 5" fill="none" style={{ flexShrink: 0 }}><path d="M1 1L4 4L7 1" stroke={SLATE} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </>
+        )}
       </button>
       {open && (
-        <div className="absolute flex flex-col" style={{ ...(openUp ? { bottom: 'calc(100% + 4px)' } : { top: 'calc(100% + 4px)' }), left: 0, minWidth: '100%', zIndex: 40, padding: 4, background: '#fff', borderRadius: RADIUS_MD, border: `1px solid ${PANEL_BORDER}`, boxShadow: MENU_SHADOW }}>
+        <div className="absolute flex flex-col" style={{ ...(openUp ? { bottom: 'calc(100% + 4px)' } : { top: 'calc(100% + 4px)' }), ...(align === 'right' ? { right: 0 } : { left: 0 }), minWidth: '100%', zIndex: 40, padding: 4, background: '#fff', borderRadius: RADIUS_MD, border: `1px solid ${PANEL_BORDER}`, boxShadow: MENU_SHADOW }}>
           {options.map((o) => (
             <button
               key={o.id}
               onClick={() => { onChange(o.id); setOpen(false); }}
-              className="flex items-center text-left cursor-pointer"
-              style={{ gap: 6, ...ns, fontSize: 12.5, padding: '6px 8px', borderRadius: RADIUS_SM, border: 'none', whiteSpace: 'nowrap',
+              className="flex items-center justify-between text-left cursor-pointer"
+              style={{ gap: 10, ...ns, fontSize: 12.5, padding: '6px 8px', borderRadius: RADIUS_SM, border: 'none', whiteSpace: 'nowrap',
                 background: o.id === value ? '#EEF3FF' : 'none', color: o.id === value ? BLUE : INK }}
             >
-              <span style={{ width: 10, flexShrink: 0 }}>{o.id === value ? '✓' : ''}</span>
-              {o.label}
+              {/* Tick right, which is where every other menu in this editor puts
+                  it — SizeFields' auto/fixed list and RowMenu both do, and
+                  RowMenu's own note says why: the left slot belongs to an icon,
+                  and a mark sharing it would read as the item rather than as its
+                  state. This list was the one holdout. */}
+              <span>{o.label}</span>
+              <MenuTick on={o.id === value} />
             </button>
           ))}
         </div>
@@ -12240,6 +13984,22 @@ const SWATCH_MAX_PRESETS = 6;
    at most and one slot each goes to the last custom pick and the + button. */
 const SWATCH_COLORS = [INK, SLATE, '#FFFFFF', '#B91C1C', '#2A7A57'];
 const SWATCH_HIGHLIGHTS = ['#FEF3C7', '#DCFCE7', '#DBEAFE', '#FCE7F3', '#F0F2F5'];
+/* A table's banding: the palest tints in the editor, lighter even than the text
+   highlights. A highlight is a deliberate mark on a few words and is meant to be
+   noticed; a stripe is structure, repeating down every other row of a table
+   someone is trying to READ. Its whole job is to help the eye track across a row
+   without ever being the thing you look at, so it wants to sit just above the
+   page and no further.
+
+   Contrast isn't the constraint at this end — ink on these is around 16:1 — the
+   constraint is that a stripe loud enough to notice is a stripe competing with
+   the text it's behind. */
+/* Four hues and a neutral, one family each. SwatchRow puts the book's own accent
+   at the head of the row, and at these tints two near-whites from neighbouring
+   families are indistinguishable — the pink preset and a warm accent read as the
+   same swatch twice. The row's dedupe only catches an exact hex match, so the
+   fix is to not offer the collision. */
+const SWATCH_STRIPES = ['#FFFBEB', '#F0FDF4', '#EFF6FF', '#F8FAFC'];
 
 /* A row of swatches and a + for anything else — no hex field. The audience here
    is authors, not designers: they don't know their hex, they know "the dark red
@@ -12252,7 +14012,7 @@ const SWATCH_HIGHLIGHTS = ['#FEF3C7', '#DCFCE7', '#DBEAFE', '#FCE7F3', '#F0F2F5'
 function SwatchRow({ value, onChange, tone = 'color', filter }: {
   value: string;
   onChange: (c: string) => void;
-  tone?: 'color' | 'highlight';
+  tone?: 'color' | 'highlight' | 'stripe';
   /* Drops presets a particular control cannot use. Added for the QR code, whose
      shared palette offered #FFFFFF — white modules on the white background the
      symbol paints for itself, i.e. one tap from an invisible code. Only the
@@ -12263,8 +14023,12 @@ function SwatchRow({ value, onChange, tone = 'color', filter }: {
   filter?: (hex: string) => boolean;
 }) {
   const { accentColor } = useContext(EditorPrefsContext);
-  const accent = tone === 'highlight' ? mixWithWhite(accentColor, 0.14) : accentColor;
-  const base = tone === 'highlight' ? SWATCH_HIGHLIGHTS : SWATCH_COLORS;
+  /* The book's accent, taken to the same strength as the row it leads: a wash
+     for a highlight, a stronger tint for a stripe, full strength for a mark. */
+  const accent = tone === 'highlight' ? mixWithWhite(accentColor, 0.14)
+    : tone === 'stripe' ? mixWithWhite(accentColor, 0.08)
+      : accentColor;
+  const base = tone === 'highlight' ? SWATCH_HIGHLIGHTS : tone === 'stripe' ? SWATCH_STRIPES : SWATCH_COLORS;
   // Deduped case-insensitively: a theme whose accent already IS one of the five
   // would otherwise spend two of six slots on the same colour.
   const usable = filter ? [accent, ...base].filter(filter) : [accent, ...base];
@@ -12548,10 +14312,19 @@ function ImageDropzone({ onPicked, onError }: {
    so two different prompts don't always land on the same photo. Landing spot
    for the generated image is a real library entry (via ImageLibraryContext),
    so it's selectable again afterwards exactly like an upload. */
-function GenerateImagePanel({ currentPlan, onGenerated }: { currentPlan: string; onGenerated: (src: string, label: string) => void }) {
+function GenerateImagePanel({ currentPlan, onGenerated, onSessionChange }: {
+  currentPlan: string;
+  onGenerated: (src: string, label: string) => void;
+  /* Which images this panel is already showing in a result group. The library
+     grid below it holds every generated image ever made, so without this the
+     four you just generated appeared twice under one heading — once as the set,
+     once in the archive — which is what made the section read as having no
+     hierarchy at all. */
+  onSessionChange?: (srcs: string[]) => void;
+}) {
   const library = useContext(ImageLibraryContext);
   const [prompt, setPrompt] = useState('');
-  const [aspect, setAspect] = useState<'square' | 'landscape' | 'portrait'>('square');
+  const [aspect, setAspect] = useState<Aspect>('square');
   // Cropping to the chosen ratio is async (image load + canvas), so the button
   // has a real in-flight state rather than appearing to do nothing for a frame.
   const [busy, setBusy] = useState(false);
@@ -12570,25 +14343,77 @@ function GenerateImagePanel({ currentPlan, onGenerated }: { currentPlan: string;
   const [promptH, setPromptH] = useState(76);
   const dragRef = useRef<{ y: number; h: number } | null>(null);
 
+  /* One press buys a SET, not an image. Every tool surveyed returns several —
+     Midjourney and Luma four, Leonardo four-plus, Runway four, HubSpot two —
+     and none returns one, because the first result of a text-to-image prompt is
+     a draft rather than an answer. Ten credits used to buy exactly one image
+     and apply it sight-unseen; the same ten now buys four and you choose.
+
+     Groups are kept rather than replaced, newest first, and each keeps the
+     prompt that made it. That IS the history: Midjourney prints the prompt
+     beside its own 2x2 with a Use action, and attaching it to the results
+     answers "what did this prompt actually give me?" — which a detached chip
+     listing prompts you once typed cannot. */
+  interface GenGroup { id: string; prompt: string; aspect: Aspect; items: { src: string; label: string }[] }
+  const [groups, setGroups] = useState<GenGroup[]>([]);
+  const sessionSrcs = useMemo(() => groups.flatMap((g) => g.items.map((i) => i.src)), [groups]);
+  useEffect(() => { onSessionChange?.(sessionSrcs); }, [sessionSrcs, onSessionChange]);
+
   const generate = async () => {
     if (busy) return;
+    const text = prompt.trim();
+    if (!text) return;
+    const id = `gen-${Date.now()}`;
+    const shape = aspect;
     setBusy(true);
-    const chosen = seededPick(STOCK_IMAGES, `${prompt}:${aspect}`);
-    const label = prompt.trim().slice(0, 40) || 'Generated photo';
-    /* The aspect ratio is applied here rather than just labelled. If the crop
-       can't be produced the original still ships — a generation that silently
-       does nothing would be worse than one that comes back the wrong shape, and
-       the credit has effectively been spent either way. */
-    let src = chosen.src;
-    try { src = await renderToAspect(chosen.src, ASPECT_RATIOS[aspect]); } catch { /* keep the uncropped source */ }
-    library.useCredits(IMAGE_GENERATE_COST);
-    // 'generated', explicitly. `add` defaults source to 'upload', and this call
-    // omitted the argument — so every AI image filed itself under "My uploads"
-    // and the "Wordgenie AI (n)" section stayed on (0) no matter how many you
-    // generated or how many credits it spent.
-    library.add(label, src, 'generated');
-    onGenerated(src, label);
+    /* The group lands EMPTY and immediately, which is what the skeletons render
+       from. The four placeholders therefore occupy their final grid positions
+       from the first frame, so nothing moves when the images arrive — the whole
+       point of skeletons over a spinner. */
+    setGroups((prev) => [{ id, prompt: text, aspect: shape, items: [] }, ...prev]);
+    // Cleared on purpose (see the composer's own note) — the prompt is not lost,
+    // it is on the group that was just pushed, one click from the box again.
     setPrompt('');
+
+    /* Four DISTINCT picks. Seeding by index alone lets the same photo come back
+       twice in one set, which reads as a broken generator rather than a small
+       library — so each pick is drawn from a pool the previous ones were
+       removed from. */
+    const pool = [...STOCK_IMAGES];
+    const picks: typeof STOCK_IMAGES = [];
+    for (let i = 0; i < 4 && pool.length; i++) {
+      const pick = seededPick(pool, `${text}:${shape}:${i}`);
+      picks.push(pick);
+      pool.splice(pool.indexOf(pick), 1);
+    }
+
+    const label = text.slice(0, 40) || 'Generated photo';
+    const items = await Promise.all(picks.map(async (pick, i) => {
+      /* The aspect ratio is applied here rather than just labelled. If the crop
+         can't be produced the original still ships — a generation that silently
+         does nothing would be worse than one that comes back the wrong shape,
+         and the credits have effectively been spent either way. */
+      let src = pick.src;
+      try { src = await renderToAspect(pick.src, ASPECT_RATIOS[shape]); } catch { /* keep the uncropped source */ }
+      return { src, label: picks.length > 1 ? `${label} ${i + 1}` : label };
+    }));
+
+    /* A deliberate wait, which is not padding. Cropping four stock photos takes
+       about a tenth of a second and a real model takes seconds, so without this
+       the loading state is never on screen long enough to be seen — and the
+       loading state is most of the design here. It is also the honest shape to
+       prototype against: every decision about skeletons, staggering and the
+       button's busy label is only testable if the wait exists. */
+    await new Promise((r) => setTimeout(r, 1800));
+
+    library.useCredits(IMAGE_GENERATE_COST);
+    /* Nothing is filed here. The library is a shelf of images you decided to
+       keep, not a log of everything a model ever returned — filing all four
+       would bury it four times as fast as it fills, and three quarters of it
+       would be drafts you rejected. The set stays on screen for the session, so
+       the other three are one click from being kept if you change your mind;
+       only the one you actually pick goes to the shelf, below. */
+    setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, items } : g)));
     setBusy(false);
   };
 
@@ -12691,25 +14516,149 @@ function GenerateImagePanel({ currentPlan, onGenerated }: { currentPlan: string;
           a prompt — a button that only appears once you have typed shifts the
           layout under the cursor. The tooltip carries the reason, since a greyed
           button with no explanation reads as broken rather than disabled. */}
+      <style jsx global>{`
+        /* Skeletons sweep rather than pulse: a sweep has a direction, which reads
+           as progress, where a pulse only reads as "wait". The tint is the AI
+           gradient's purple end at low alpha, so the loading state is branded as
+           the same thing the button is. */
+        @keyframes bookAiShimmer { 0% { background-position: 140% 0; } 100% { background-position: -140% 0; } }
+        /* Blur-up, not fade-in. A picture resolving out of blur reads as being
+           DEVELOPED, which is what generation is; a fade only reads as arriving.
+           Luma ships exactly this, labelled "Dreaming…". */
+        @keyframes bookAiReveal {
+          from { opacity: 0; filter: blur(14px); transform: scale(0.97); }
+          to   { opacity: 1; filter: blur(0);    transform: none; }
+        }
+        @keyframes bookAiFade { from { opacity: 0; } to { opacity: 1; } }
+        .book-ai-skeleton {
+          background: linear-gradient(90deg, #EDF0F5 0%, #EDF0F5 38%, rgba(83,38,189,0.13) 50%, #EDF0F5 62%, #EDF0F5 100%);
+          background-size: 260% 100%;
+          animation: bookAiShimmer 1.3s linear infinite;
+        }
+        .book-ai-reveal { animation: bookAiReveal 0.5s cubic-bezier(0.2,0,0.2,1) both; }
+        /* Blur and sweep are precisely the effects this setting exists to stop.
+           The staggered delays are kept — sequence is information, motion is
+           decoration — but each tile just fades. */
+        @media (prefers-reduced-motion: reduce) {
+          .book-ai-skeleton { animation: none; }
+          .book-ai-reveal { animation: bookAiFade 0.2s both; }
+        }
+      `}</style>
+
+      {/* Below the box and full width, not tucked on the footer rail beside the
+          aspect select. The two are not peers: one narrows an option, the other
+          spends credits and commits. Always present and disabled until there is
+          a prompt — a button that only appears once you have typed shifts the
+          layout under the cursor. The tooltip carries the reason, since a greyed
+          button with no explanation reads as broken rather than disabled. */}
       <Tooltip
         fullWidth
-        label={remaining < IMAGE_GENERATE_COST ? 'Out of credits this month' : !canGenerate ? 'Describe the image first' : 'Generate with AI'}
+        /* `busy` is tested first: canGenerate is false while a generation is in
+           flight, so without this the tooltip told you to describe the image
+           you had just described and were watching being generated. */
+        label={busy ? 'Generating four images…'
+          : remaining < IMAGE_GENERATE_COST ? 'Out of credits this month'
+          : !canGenerate ? 'Describe the image first'
+          : `Generate four images for ${IMAGE_GENERATE_COST} credits`}
         position="top"
       >
+        {/* The design system's AI button: gradient fill, white label, and a
+            gradient that flips direction on hover. Disabled keeps the gradient
+            and washes it out rather than dropping to grey — the control is still
+            the AI one, it just isn't ready. */}
         <button
           disabled={!canGenerate}
           onClick={() => void generate()}
+          onMouseEnter={(e) => { if (canGenerate) e.currentTarget.style.background = AI_GRADIENT_HOVER; }}
+          onMouseLeave={(e) => { if (canGenerate) e.currentTarget.style.background = AI_GRADIENT; }}
           className="w-full cursor-pointer flex items-center justify-center"
           style={{
             ...ns, gap: 7, marginTop: 8, fontSize: 12.5, fontWeight: 600, color: '#fff', border: 'none',
             borderRadius: RADIUS_MD, padding: '9px 12px',
-            background: canGenerate ? BLUE : '#C2C9D4', cursor: canGenerate ? 'pointer' : 'default',
+            background: canGenerate || busy ? AI_GRADIENT : AI_GRADIENT_MUTED,
+            cursor: canGenerate ? 'pointer' : 'default',
+            transition: 'background .15s ease',
           }}
         >
           <AISparkleIcon size={14} mono />
-          {busy ? 'Generating…' : remaining < IMAGE_GENERATE_COST ? 'Out of credits' : 'Generate with AI'}
+          {busy ? 'Generating…'
+            : remaining < IMAGE_GENERATE_COST ? 'Out of credits'
+            : `Generate with AI · ${IMAGE_GENERATE_COST} credits`}
         </button>
       </Tooltip>
+
+      {/* Results, newest first. Each generation keeps its own prompt and the
+          shape it ran at — Midjourney prints both beside its grid, and the shape
+          matters because restoring the words without the ratio gives a different
+          picture from the same chip. */}
+      {groups.map((g, gi) => (
+        <div key={g.id} style={{ marginTop: 16, paddingTop: gi === 0 ? 0 : 14, borderTop: gi === 0 ? 'none' : `1px solid ${BORDER}` }}>
+          {/* The prompt and its shape are one object — what was asked for — so
+              they sit in a well of their own rather than as loose lines above
+              the grid. Without the container the caption read as body text that
+              happened to be there, at the same level as everything else in the
+              panel, which is what made the section look flat. */}
+          <div
+            className="flex items-start"
+            style={{ gap: 8, marginBottom: 7, background: WELL_BG, borderRadius: RADIUS_MD, padding: '8px 10px' }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div
+                title={g.prompt}
+                style={{ ...ns, fontSize: 11.5, color: INK, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
+              >
+                {g.prompt}
+              </div>
+              <div style={{ ...ns, fontSize: 10.5, color: SLATE, marginTop: 2, textTransform: 'capitalize' }}>{g.aspect}</div>
+            </div>
+            {/* "Edit prompt", not "Use" — "Use" is what you do to an IMAGE, and
+                there are four of those directly below it, so the one word had to
+                carry two meanings a few pixels apart. This one names what the
+                click does: the prompt and its shape go back into the box, where
+                you change them before spending anything. Nothing regenerates —
+                a one-click rerun would be ten credits on a misclick. */}
+            <button
+              onClick={() => { setPrompt(g.prompt); setAspect(g.aspect); }}
+              className="cursor-pointer flex-shrink-0"
+              title="Put this prompt back in the box to change it"
+              style={{ ...ns, fontSize: 11, fontWeight: 700, color: BLUE, background: 'none', border: 'none', padding: '1px 2px', whiteSpace: 'nowrap' }}
+            >
+              Edit prompt
+            </button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+            {(g.items.length ? g.items : [0, 1, 2, 3]).map((item, i) => (
+              typeof item === 'number' ? (
+                /* Staggered, so four tiles read as four things being worked on
+                   rather than one element blinking. */
+                <div
+                  key={i}
+                  className="book-ai-skeleton"
+                  style={{ aspectRatio: String(ASPECT_RATIOS[g.aspect]), borderRadius: RADIUS_SM, animationDelay: `${i * 0.12}s` }}
+                />
+              ) : (
+                <button
+                  key={item.src + i}
+                  /* Filed at the moment it is chosen, not at the moment it is
+                     made. 'generated', explicitly — `add` defaults source to
+                     'upload', which is what used to file AI images under "My
+                     uploads" and leave the Wordgenie count on (0). */
+                  onClick={() => { library.add(item.label, item.src, 'generated'); onGenerated(item.src, item.label); }}
+                  className="book-ai-reveal cursor-pointer"
+                  title="Use this image"
+                  style={{
+                    padding: 0, border: `1px solid ${BORDER}`, borderRadius: RADIUS_SM, overflow: 'hidden',
+                    background: '#fff', aspectRatio: String(ASPECT_RATIOS[g.aspect]), animationDelay: `${i * 0.08}s`,
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={item.src} alt="" style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }} />
+                </button>
+              )
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -12738,7 +14687,7 @@ function SectionLabel({ children, first, divider, tight, flag }: { children: Rea
            each other and 1.5px off the panel's own title. */
         ...ns, fontSize: 13.5, fontWeight: 700, color: INK,
         /* `tight` halves the gap for a section that belongs to the one above it
-           rather than standing beside it. "Your uploads" is what "Upload a
+           rather than standing beside it. "My uploads" is what "Upload a
            photo" produces — an action and its own result — so the full 28px
            between-source gap read as two unrelated sources, and a divider there
            would have cut the cause from the effect. The three real sources
@@ -12763,6 +14712,179 @@ function SectionLabel({ children, first, divider, tight, flag }: { children: Rea
   );
 }
 
+/* One tile in the stock grid, whatever it came from. `ratio` is the difference
+   between the two sources: an Unsplash result knows its own proportions before a
+   byte of image arrives, a bundled asset doesn't and simply sizes itself. */
+interface PhotoTile {
+  id: string;
+  thumbUrl: string;
+  fullUrl: string;
+  alt: string;
+  ratio?: number;
+  credit?: { name: string; profileUrl: string };
+  downloadLocation?: string;
+}
+
+/* Unsplash results in, tiles out. `limit` is the Suggested cap — the search
+   results are never trimmed. */
+function unsplashTiles(rs: UnsplashResult[], suggested: boolean): PhotoTile[] {
+  return (suggested ? rs.slice(0, SUGGESTED_LIMIT) : rs).map((r) => ({
+    id: r.id,
+    thumbUrl: r.thumbUrl,
+    fullUrl: r.fullUrl,
+    alt: r.alt,
+    ratio: r.width && r.height ? r.width / r.height : undefined,
+    credit: r.credit,
+    downloadLocation: r.downloadLocation,
+  }));
+}
+
+/* Splits a run of photos into the two columns, alternating.
+   Not CSS `column-count`, which lays out top-to-bottom per column and would put
+   the second-best match underneath the best one instead of beside it — on a
+   relevance-ranked search that buries the results people came for. Alternating
+   keeps reading order across the rows, and with photo shapes as varied as they
+   are the two columns land within a tile of each other anyway. */
+function splitColumns<T>(items: T[]): [T[], T[]] {
+  return [items.filter((_, i) => i % 2 === 0), items.filter((_, i) => i % 2 === 1)];
+}
+
+/* Photos keep their own proportions instead of being squared off. Every stock
+   picker worth copying does this — Craft, Substack and Magnific all run masonry —
+   and the reason is that you pick a photo on its composition, which a centre crop
+   to a square is precisely what hides. Two columns rather than three: the panel
+   is PANEL_W wide, so three tiles come out around 74px across, and Magnific (the
+   only one of the three that lives in a narrow rail rather than a wide modal)
+   uses two for the same reason. */
+function PhotoGrid({ tiles, selectedSrc, onPick, dimmed = false, dragProps }: {
+  tiles: PhotoTile[];
+  selectedSrc: string;
+  onPick: (tile: PhotoTile) => void;
+  /* The grid stays on screen while the next search runs, at reduced strength.
+     Emptying it would collapse the panel's height and then slam it back — twice
+     the motion, and it throws away results that are still perfectly good to look
+     at while the new ones travel. */
+  dimmed?: boolean;
+  dragProps?: (tile: PhotoTile) => React.HTMLAttributes<HTMLElement> & { draggable?: boolean };
+}) {
+  const columns = splitColumns(tiles);
+  return (
+    <div
+      className="book-photo-grid"
+      style={{ display: 'flex', gap: 8, alignItems: 'flex-start', opacity: dimmed ? 0.4 : 1, pointerEvents: dimmed ? 'none' : undefined }}
+      aria-busy={dimmed || undefined}
+    >
+      {columns.map((col, i) => (
+        <div key={i} style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {col.map((t) => (
+            <PhotoTileButton key={t.id} tile={t} selected={Boolean(selectedSrc) && t.fullUrl === selectedSrc} onPick={onPick} dragProps={dragProps} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PhotoTileButton({ tile, selected, onPick, dragProps }: {
+  tile: PhotoTile;
+  selected: boolean;
+  onPick: (tile: PhotoTile) => void;
+  dragProps?: (tile: PhotoTile) => React.HTMLAttributes<HTMLElement> & { draggable?: boolean };
+}) {
+  /* Each photo fades itself in when its own bytes land. Deliberately not a
+     staggered cascade keyed off the index: these genuinely arrive in whatever
+     order the network returns them, so a stagger would hold a decoded image back
+     waiting for a slower one above it — animating a lie about the loading order,
+     and making the grid slower than it is. */
+  const [loaded, setLoaded] = useState(false);
+  const drag = dragProps?.(tile) ?? {};
+  /* A div, not a button, because the photographer credit has to be a real link
+     to their profile — Unsplash's guidelines require it — and an anchor nested
+     inside a button is invalid. The two live side by side instead: the button
+     fills the tile and takes the pick, the link sits over it in the corner. */
+  return (
+    <div
+      className="book-photo-tile"
+      style={{
+        position: 'relative', borderRadius: RADIUS_MD, overflow: 'hidden',
+        background: TILE_WELL,
+        aspectRatio: tile.ratio ? String(tile.ratio) : undefined,
+        border: selected ? `${RING_WIDTH}px solid ${BLUE}` : '1px solid transparent',
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onPick(tile)}
+        title={tile.credit ? `Photo by ${tile.credit.name} on Unsplash` : tile.alt}
+        className="book-photo-tile__hit"
+        style={{ display: 'block', width: '100%', height: '100%', padding: 0, border: 'none', background: 'none', cursor: drag.draggable ? 'grab' : 'pointer' }}
+        {...drag}
+      >
+        <img
+          src={tile.thumbUrl}
+          alt={tile.alt}
+          loading="lazy"
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onError={() => setLoaded(true)}
+          className="book-photo-tile__img"
+          style={{ width: '100%', height: tile.ratio ? '100%' : 'auto', objectFit: 'cover', display: 'block', opacity: loaded ? 1 : 0 }}
+        />
+      </button>
+      {tile.credit && (
+        /* Hover-only, the way Substack's picker does it, rather than burned into
+           every tile the way Craft's is. At this tile size a permanent caption
+           covers a real fraction of the photo you're trying to judge. The
+           persistent "Photos from Unsplash" line under the grid carries the
+           standing half of the attribution; this carries the per-photo half. */
+        <span className="book-photo-tile__credit">
+          <a
+            href={tile.credit.profileUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            style={{ ...ns, color: '#fff', fontSize: 10.5, fontWeight: 600, textDecoration: 'none' }}
+          >
+            {tile.credit.name}
+          </a>
+        </span>
+      )}
+      {selected && (
+        <span className="book-photo-tile__check" aria-hidden>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* Stand-in tiles while the first search runs. The heights are a fixed, varied
+   sequence rather than one repeated box: a column of identical rectangles reads
+   as a list loading, and what's coming is photographs of assorted shapes. */
+const SKELETON_RATIOS = [0.78, 1.4, 1, 0.72, 1.5, 0.86, 1.2, 0.8];
+
+function PhotoSkeletonGrid({ count = 6 }: { count?: number }) {
+  const [a, b] = splitColumns(SKELETON_RATIOS.slice(0, count));
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }} aria-hidden>
+      {[a, b].map((col, i) => (
+        <div key={i} style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {col.map((r, j) => (
+            <div key={j} className="book-photo-skeleton" style={{ aspectRatio: String(r), borderRadius: RADIUS_MD }} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* One line of quiet slate under the field, used by every state the grid can be
+   in. Same size and colour throughout, so moving between "24,000 photos" and
+   "Search limit reached" changes the words and nothing else. */
+function PhotoStatusLine({ children }: { children: React.ReactNode }) {
+  return <div style={{ ...ns, fontSize: 11.5, color: SLATE, lineHeight: 1.45, padding: '0 0 8px' }}>{children}</div>;
+}
+
 /* Sourcing a photo — generate/upload/search a library — lives on the left with
    the rest of Insert, not in the right Properties panel: picking a new image is
    the same kind of task as inserting one in the first place, whereas dark
@@ -12783,18 +14905,31 @@ function SectionLabel({ children, first, divider, tight, flag }: { children: Rea
    selection, now including the two photo slots that used to fall through to
    "Properties" (see selectionLabel). Either way something else is already
    saying it, so the panel starts at its first real section. */
-function PhotoSourcePanel({ currentPlan, currentSrc, onPick, draggableToPlace = false, onDragTile }: {
+function PhotoSourcePanel({ currentPlan, currentSrc, onPick, onDragTile }: {
   currentPlan: string;
   currentSrc: string;
   onPick: (src: string, label: string) => void;
-  // Set only by MediaPickerPanel's "choose a brand-new image" flow — there's
-  // somewhere to drop a new photo (the canvas). The Replace-image/Opener-photo/
-  // Author-photo callers leave this off: swapping an image that's already
-  // placed is a click action everywhere (Canva included), not a drag one.
-  draggableToPlace?: boolean;
+  /* Every tile in this panel drags, in every one of the panel's modes. This used
+     to be gated behind a `draggableToPlace` flag that only MediaPickerPanel and
+     the no-selection Photos tab passed — so the moment an image, cover image,
+     opener photo or author avatar was selected, the panel re-rendered in
+     "replace" mode and the identical grid of identical tiles silently stopped
+     being draggable, with nothing on screen to say why or that it had.
+     The old argument for the gate was that swapping an already-placed image is a
+     click action, not a drag one. That's right about CLICK, and click still does
+     exactly that. But drag was never the swap — it places a photo at the point
+     you drop it, which is a thing worth doing whether or not something else
+     happens to be selected, and the drop handlers already tell the two apart:
+     drop onto an existing image and it replaces that one in place, drop anywhere
+     else and it inserts. Click replaces, drag places, in every mode. */
   onDragTile?: (id: string | null) => void;
 }) {
   const library = useContext(ImageLibraryContext);
+  /* Two states, because the box you type in and the query that has been searched
+     are no longer the same thing. Everything below reads `query` — the submitted
+     one — so the grid, the fallback filter and the no-results line all keep
+     describing the search you actually ran, not the half-typed word above them. */
+  const [draft, setDraft] = useState('');
   const [query, setQuery] = useState('');
   const [uploadError, setUploadError] = useState('');
   /* Was `showUploads`, defaulting to false behind a "Browse my uploads" button.
@@ -12811,12 +14946,23 @@ function PhotoSourcePanel({ currentPlan, currentSrc, onPick, draggableToPlace = 
   const UPLOADS_PREVIEW = 6;
   const uploads = useMemo(() => library.images.filter((i) => i.source === 'upload'), [library.images]);
   const generated = useMemo(() => library.images.filter((i) => i.source === 'generated'), [library.images]);
-  const unsplash = useUnsplashSearch(query);
+  const [sessionSrcs, setSessionSrcs] = useState<string[]>([]);
+  const archived = useMemo(() => generated.filter((i) => !sessionSrcs.includes(i.src)), [generated, sessionSrcs]);
+  /* Bumped by Retry. Failures are deliberately never cached, so asking again
+     really does make a fresh request — but the query string hasn't changed, and
+     without this the hook's effect would have no reason to run a second time. */
+  const [attempt, setAttempt] = useState(0);
+  /* '' is Any, and is also the value that keeps the cache key a bare query — see
+     unsplashKey. Applies to the suggestions as well as to search: it describes
+     the shape of photo you're after, which doesn't change depending on whether
+     you typed something. */
+  const [orientation, setOrientation] = useState('');
+  const unsplash = useUnsplashSearch(query, attempt, orientation);
   /* The seed only searches while the box is empty — passing '' parks the hook in
-     its idle branch, so typing immediately stops the suggestion request rather
-     than racing the one the user actually asked for. */
+     its idle branch, so submitting immediately stops the suggestion request
+     rather than racing the one the user actually asked for. */
   const suggestSeed = useContext(PhotoSuggestContext);
-  const suggested = useUnsplashSearch(query.trim() ? '' : suggestSeed);
+  const suggested = useUnsplashSearch(query.trim() ? '' : suggestSeed, attempt, orientation);
   const curatedFallback = useMemo(() => {
     const q = query.trim().toLowerCase();
     return q ? STOCK_IMAGES.filter((i) => i.label.toLowerCase().includes(q)) : STOCK_IMAGES;
@@ -12824,19 +14970,70 @@ function PhotoSourcePanel({ currentPlan, currentSrc, onPick, draggableToPlace = 
 
   const pick = (src: string, label: string) => onPick(src, label);
 
-  const pickUnsplash = (r: UnsplashResult) => {
-    fetch('/api/unsplash/track-download', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ downloadLocation: r.downloadLocation }),
-    }).catch(() => {});
-    pick(r.fullUrl, r.alt);
+  /* One section, two sources — a live Unsplash result and a bundled asset — and
+     the grid should not have to know which it is holding. Both become a
+     PhotoTile; only `ratio` and `credit` tell them apart, and both are optional. */
+  const idle = !query.trim();
+  const active = idle ? suggested : unsplash;
+  const loading = active.status === 'loading';
+  const resultTiles = useMemo<PhotoTile[]>(
+    () => (active.status === 'ok' ? unsplashTiles(active.results, idle) : []),
+    [active.status, active.results, idle],
+  );
+  /* The results still on screen from the previous query, straight off the hook.
+     Empty on the first search of a session, which is exactly when the skeleton
+     is the right answer instead. */
+  const heldTiles = useMemo<PhotoTile[]>(() => unsplashTiles(active.stale, idle), [active.stale, idle]);
+
+  /* No ratio: these are local files whose proportions nothing told us, and they
+     decode fast enough that sizing themselves on arrival is invisible. */
+  const curatedTiles = (items: { label: string; src: string }[]): PhotoTile[] =>
+    items.map((i) => ({ id: i.label, thumbUrl: i.src, fullUrl: i.src, alt: i.label }));
+
+  /* Governs the dim and the skeleton alike, so a search that answers quickly
+     passes with the grid never changing at all. */
+  const settled = useSettledFlag(loading);
+  // A search in flight, long enough to be worth saying so. Suggestions loading
+  // in the background are not this: nobody pressed anything.
+  const busy = !idle && loading && settled;
+
+  const pickTile = (t: PhotoTile) => {
+    /* Unsplash's terms want this ping on every real use of a photo, not only on
+       something literally called a download — putting one into a book is that
+       use. Bundled assets carry no downloadLocation and skip it. */
+    if (t.downloadLocation) {
+      fetch('/api/unsplash/track-download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ downloadLocation: t.downloadLocation }),
+      }).catch(() => {});
+    }
+    pick(t.fullUrl, t.alt);
   };
+
+  // Same 'text/insert-media' payload the other grids write, and the same
+  // download ping the click path fires — the terms don't distinguish the two.
+  const tileDragProps = (t: PhotoTile) => ({
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      if (t.downloadLocation) {
+        fetch('/api/unsplash/track-download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ downloadLocation: t.downloadLocation }),
+        }).catch(() => {});
+      }
+      e.dataTransfer.setData('text/insert-media', JSON.stringify({ kind: 'image', src: t.fullUrl }));
+      e.dataTransfer.effectAllowed = 'copy';
+      onDragTile?.('__media_image__');
+    },
+    onDragEnd: () => onDragTile?.(null),
+  });
 
   // Shared by every draggable grid below — same 'text/insert-media' payload
   // MediaPickerPanel's own "Ready to place" card already writes, so the
   // chapter-body onDrop handler needs no changes to accept a drag from here.
-  const dragProps = (src: string) => draggableToPlace ? {
+  const dragProps = (src: string) => ({
     draggable: true,
     onDragStart: (e: React.DragEvent) => {
       e.dataTransfer.setData('text/insert-media', JSON.stringify({ kind: 'image', src }));
@@ -12844,7 +15041,7 @@ function PhotoSourcePanel({ currentPlan, currentSrc, onPick, draggableToPlace = 
       onDragTile?.('__media_image__');
     },
     onDragEnd: () => onDragTile?.(null),
-  } : {};
+  });
 
   const grid = (items: ImageLibraryEntry[]) => (
     <OptionGrid
@@ -12874,7 +15071,11 @@ function PhotoSourcePanel({ currentPlan, currentSrc, onPick, draggableToPlace = 
       />
       {uploadError && <div style={{ ...ns, fontSize: 11.5, color: '#B91C1C', marginTop: 6, lineHeight: 1.45 }}>{uploadError}</div>}
 
-      <SectionLabel tight>{`Your uploads (${uploads.length})`}</SectionLabel>
+      {/* "My uploads", matching the presentation editor and the global sidebar's
+          own Media ▸ My uploads. This panel is a VIEW of that same library, not a
+          second one, and it said "Your" while everywhere else said "My" — two
+          names for one shelf is the thing a user actually trips over. */}
+      <SectionLabel tight>{`My uploads (${uploads.length})`}</SectionLabel>
       {uploads.length === 0 ? (
         /* An empty state that says what the section is FOR, not that it's empty —
            the "(0)" in the label already carries that, and the old copy
@@ -12885,7 +15086,7 @@ function PhotoSourcePanel({ currentPlan, currentSrc, onPick, draggableToPlace = 
         /* Pulled up under its own heading. SectionLabel's 9px paddingBottom is
            sized for a grid or a control starting below it; a single line of
            explanatory text belongs to the heading more tightly than that, and at
-           the full gap it floated between "Your uploads" and the divider under
+           the full gap it floated between "My uploads" and the divider under
            "Stock photos" without clearly belonging to either. */
         <div style={{ ...ns, fontSize: 12, color: SLATE, lineHeight: 1.5, padding: 0, marginTop: -3 }}>
           Photos you upload appear here, ready to reuse on any page.
@@ -12915,89 +15116,202 @@ function PhotoSourcePanel({ currentPlan, currentSrc, onPick, draggableToPlace = 
           verbatim, the same duplication "Upload"/"My uploads" had. "Stock photos"
           holds in both states and pairs with "Your photos" above it. */}
       <SectionLabel divider>Stock photos</SectionLabel>
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search Unsplash…"
-        style={{ ...ns, width: '100%', fontSize: 13, padding: '7px 10px', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, marginBottom: 8 }}
-      />
-      {!query.trim() ? (
-        /* Real suggestions, seeded from what this book is actually about. Falls
-           back to the bundled library whenever there is nothing to go on (a book
-           with no subjects or title yet) or the request fails — an unconfigured
-           Unsplash key has to degrade to a usable grid, never a dead section. */
-        suggested.status === 'ok' && suggested.results.length > 0 ? (
-          <OptionGrid
-            flush
-            columns={3}
-            value={suggested.results.find((r) => r.fullUrl === currentSrc)?.id ?? null}
-            onChange={(id) => { const r = suggested.results.find((x) => x.id === id); if (r) pickUnsplash(r); }}
-            options={suggested.results.slice(0, SUGGESTED_LIMIT).map((r) => ({
-              id: r.id,
-              title: `Photo by ${r.credit.name} on Unsplash`,
-              render: <img src={r.thumbUrl} alt={r.alt} style={{ width: '100%', aspectRatio: '1', objectFit: 'cover', display: 'block' }} />,
-            }))}
-          />
-        ) : suggested.status === 'loading' ? (
-          <div style={{ ...ns, fontSize: 12, color: SLATE, padding: '6px 0 4px' }}>Finding photos for this book…</div>
-        ) : (
-          grid(STOCK_IMAGES.slice(0, SUGGESTED_LIMIT))
-        )
-      ) : unsplash.status === 'loading' ? (
-        <div style={{ ...ns, fontSize: 12, color: SLATE, padding: '6px 0 4px' }}>Searching…</div>
-      ) : unsplash.status === 'ok' ? (
-        unsplash.results.length === 0
-          ? <div style={{ ...ns, fontSize: 12, color: SLATE, padding: '6px 0 4px' }}>No images match “{query}”.</div>
-          : (
-            <OptionGrid
-              flush
-              columns={3}
-              value={unsplash.results.find((r) => r.fullUrl === currentSrc)?.id ?? null}
-              onChange={(id) => { const r = unsplash.results.find((x) => x.id === id); if (r) pickUnsplash(r); }}
-              options={unsplash.results.map((r) => ({
-                id: r.id,
-                title: `Photo by ${r.credit.name} on Unsplash`,
-                render: <img src={r.thumbUrl} alt={r.alt} style={{ width: '100%', aspectRatio: '1', objectFit: 'cover', display: 'block' }} />,
-                // Unsplash's full-res URL, not the thumbnail, so a dragged-in
-                // photo matches what clicking it would have picked — and the
-                // same download-tracking ping pickUnsplash fires on click,
-                // since Unsplash's API terms require it on every use, not
-                // only the click path.
-                ...(draggableToPlace ? {
-                  draggable: true,
-                  onDragStart: (e: React.DragEvent) => {
-                    fetch('/api/unsplash/track-download', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ downloadLocation: r.downloadLocation }),
-                    }).catch(() => {});
-                    e.dataTransfer.setData('text/insert-media', JSON.stringify({ kind: 'image', src: r.fullUrl }));
-                    e.dataTransfer.effectAllowed = 'copy';
-                    onDragTile?.('__media_image__');
-                  },
-                  onDragEnd: () => onDragTile?.(null),
-                } : {}),
-              }))}
-            />
-          )
+      {/* Submits on Enter or the button, never on a keystroke. Typing used to fire
+          one request per 400ms pause, and Unsplash's demo tier allows fifty an
+          hour for the whole key — a single session of browsing photos could spend
+          it and drop this section to its curated fallback for everyone. The
+          button is also the honest shape for a search that costs something: there
+          is a moment where it happens, and you pick it. */}
+      {/* Field and filter on one line. The filter used to sit on its own row
+          below as a labelled pill, where it read as a caption under the search
+          box rather than as a control you could press — the exact placement
+          Fiverr's Shutterstock picker uses for the same filter, and the exact
+          reason it's easy to miss in a column this narrow. Beside the field, at
+          the field's own height, it's a second control on the search row, which
+          is what it is. */}
+      <form onSubmit={(e) => { e.preventDefault(); setQuery(draft.trim()); }} className="flex items-center" style={{ gap: 6, marginBottom: 9 }}>
+        {/* The submit button is positioned against THIS box, not the form. Once
+            the filter button joined the row, a `right: 4` measured from the form
+            would have put the magnifier on top of it. */}
+        <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+        <input
+          value={draft}
+          /* Emptying the box returns to Suggested without waiting for a submit.
+             The alternative is a grid of results sitting under a search box that
+             no longer says what they are — and, once you searched again, a
+             “No images match “”” that names nothing. */
+          onChange={(e) => { setDraft(e.target.value); if (!e.target.value.trim()) setQuery(''); }}
+          placeholder="Search Unsplash…"
+          /* Height is explicit, matching InsertSearchField above. Relying on
+             padding + line-height left the field an odd number of pixels tall,
+             so the button's centred vertical inset and its fixed `right` didn't
+             land on the same number — the gap the eye catches first. 34 − 26 = 8,
+             4 a side, and the right inset is the same 4. */
+          style={{
+            ...ns, width: '100%', height: 34, boxSizing: 'border-box', fontSize: 13, color: INK,
+            padding: '0 36px 0 10px', background: '#fff', outline: 'none',
+            border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD,
+          }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = BLUE; }}
+          onBlur={(e) => { e.currentTarget.style.borderColor = BORDER; }}
+        />
+        {/* Filled, not a bare glyph. A magnifier drawn in the same slate as the
+            placeholder beside it reads as the decoration that sits in every
+            search field — the thing you look past — and this one is the control
+            that spends the request. Solid blue square, white icon: the same
+            fill/white-label pair as every other primary button here, shrunk to
+            fit inside the field. Muted by opacity rather than a second blue,
+            matching how the other filled buttons show a disabled state. */}
+        <button
+          type="submit"
+          aria-label={busy ? 'Searching Unsplash' : 'Search Unsplash'}
+          aria-busy={busy || undefined}
+          disabled={!draft.trim() || busy}
+          className="flex items-center justify-center"
+          style={{
+            position: 'absolute', top: '50%', right: 4, transform: 'translateY(-50%)',
+            width: 26, height: 26, borderRadius: 6, border: 'none',
+            background: BLUE, color: '#fff',
+            opacity: draft.trim() ? 1 : 0.4,
+            cursor: draft.trim() && !busy ? 'pointer' : 'default',
+            transition: 'opacity .12s ease',
+          }}
+          onMouseEnter={(e) => { if (draft.trim() && !busy) e.currentTarget.style.opacity = '0.86'; }}
+          onMouseLeave={(e) => { if (draft.trim()) e.currentTarget.style.opacity = '1'; }}
+        >
+          {/* The button that spent the request is where the request reports back,
+              so the waiting happens on the thing you pressed rather than in a
+              second indicator somewhere else in the panel. Gated by the same
+              `settled` rule as the grid, so a fast search never flickers it. */}
+          {busy
+            ? <svg className="book-photo-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round"><path d="M12 3a9 9 0 1 0 9 9" /></svg>
+            : <Icon d={ICONS.search} size={14} />}
+        </button>
+        </div>
+        {/* Deliberately not defaulted from whatever the panel was opened to
+            replace — the Media tab's add-a-photo path opens with nothing
+            selected at all, so an inferred default would mean the same search
+            returned different photos depending on how you got here. A default
+            that moves is worse than a plain one.
+            It was a real <select> until now, which meant the operating system
+            drew the menu: a macOS popup in the middle of a panel that draws
+            every other menu itself. Same options, the app's own popover. */}
+        <SelectField
+          size="icon"
+          align="right"
+          icon={<Icon d={ICONS.filter} size={16} />}
+          active={orientation !== ''}
+          value={orientation}
+          onChange={setOrientation}
+          ariaLabel="Filter by orientation"
+          options={[
+            { id: '', label: 'Any orientation' },
+            { id: 'landscape', label: 'Landscape' },
+            { id: 'portrait', label: 'Portrait' },
+            // Unsplash's own value is `squarish`; nobody asks for a squarish photo.
+            { id: 'squarish', label: 'Square' },
+          ]}
+        />
+      </form>
+
+      {/* Everything the section can be saying, in one place and one voice. The
+          grid below never disappears to make room for a message — every failure
+          here still leaves you photos you can use. */}
+      {loading && settled && heldTiles.length === 0 ? (
+        <PhotoStatusLine>{idle ? 'Finding photos for this book…' : `Searching for “${query}”…`}</PhotoStatusLine>
+      ) : !idle && active.status === 'ok' && resultTiles.length > 0 ? (
+        /* The count is what tells a narrow search apart from a broken one —
+           Adobe Express puts it in the same place. Nothing sits here in the idle
+           state: the suggestions are the section's resting content, and a line
+           captioning them was explaining something nobody had asked about yet. */
+        <PhotoStatusLine>
+          {active.total > resultTiles.length
+            ? `${active.total.toLocaleString()} photos for “${query}”.`
+            : `${resultTiles.length} photos for “${query}”.`}
+        </PhotoStatusLine>
+      ) : !idle && active.status === 'ok' ? (
+        <PhotoStatusLine>No photos for “{query}”. Try a shorter word, or one of these:</PhotoStatusLine>
+      ) : !idle && active.status === 'error' ? (
+        <PhotoStatusLine>
+          {active.reason === 'rate_limited'
+            /* Names the thing that happened and when it stops — the old copy
+               ("Live search unavailable") described a broken feature and invited
+               a retry that could not possibly work. */
+            ? 'Unsplash search has hit its hourly limit. It’s back within the hour — these are ready now:'
+            : 'Unsplash search isn’t responding. These are ready now:'}
+          {' '}
+          <button
+            type="button"
+            onClick={() => setAttempt((n) => n + 1)}
+            className="cursor-pointer"
+            style={{ ...ns, fontSize: 11.5, fontWeight: 700, color: BLUE, background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+          >
+            Try again
+          </button>
+        </PhotoStatusLine>
+      ) : null}
+
+      {loading && heldTiles.length > 0 ? (
+        /* The previous results, held and dimmed. `settled` gates the dim as well
+           as the skeleton, so a search that answers in under 200ms goes by
+           without the grid changing at all. */
+        <PhotoGrid tiles={heldTiles} selectedSrc={currentSrc} onPick={pickTile} dimmed={settled} dragProps={tileDragProps} />
+      ) : loading ? (
+        settled ? <PhotoSkeletonGrid count={idle ? SUGGESTED_LIMIT : 8} /> : null
+      ) : resultTiles.length > 0 ? (
+        <PhotoGrid tiles={resultTiles} selectedSrc={currentSrc} onPick={pickTile} dragProps={tileDragProps} />
       ) : (
-        <>
-          <div style={{ ...ns, fontSize: 11.5, color: SLATE, padding: '2px 0 8px', lineHeight: 1.4 }}>Live search unavailable — showing curated picks.</div>
-          {curatedFallback.length === 0
-            ? <div style={{ ...ns, fontSize: 12, color: SLATE, padding: '6px 0 4px' }}>No images match “{query}”.</div>
-            : grid(curatedFallback)}
-        </>
+        /* Every remaining path — suggestions that failed quietly, a search with
+           no matches, a spent quota — lands on the bundled library. An empty
+           panel is the one answer none of the pickers worth copying ever gives. */
+        <PhotoGrid
+          tiles={curatedTiles(idle ? STOCK_IMAGES.slice(0, SUGGESTED_LIMIT) : curatedFallback.length > 0 ? curatedFallback : STOCK_IMAGES)}
+          selectedSrc={currentSrc}
+          onPick={pickTile}
+          dragProps={tileDragProps}
+        />
       )}
 
-      <SectionLabel divider>{`Wordgenie AI (${generated.length})`}</SectionLabel>
-      <GenerateImagePanel currentPlan={currentPlan} onGenerated={onPick} />
+      {/* The standing half of Unsplash's attribution requirement, which the
+          per-photo credit on hover can't carry on its own. Substack's picker puts
+          the same line in the same place. */}
+      <div style={{ ...ns, fontSize: 11, color: SLATE, paddingTop: 8 }}>
+        Photos from{' '}
+        <a
+          href="https://unsplash.com/?utm_source=designrr&utm_medium=referral"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: SLATE, textDecoration: 'underline', textUnderlineOffset: 2 }}
+        >
+          Unsplash
+        </a>
+      </div>
+
+      {/* Heads the TOOL, not the archive under it. It used to carry the archive's
+          count, which was fine while the archive was the only thing in the
+          section — now that a generation renders its own set of results here,
+          a count at the top described neither the thing directly below it nor
+          the thing it was counting. */}
+      <SectionLabel divider>Wordgenie AI</SectionLabel>
+      <GenerateImagePanel currentPlan={currentPlan} onGenerated={onPick} onSessionChange={setSessionSrcs} />
       {/* The images you've made, under the thing that makes them — the same
-          action-then-result shape as "Upload a photo" › "Your uploads". The
+          action-then-result shape as "Upload a photo" › "My uploads". The
           heading counted these from the start but nothing ever rendered them, so
           "Wordgenie AI (2)" claimed two images you had no way to see or reuse
           once you'd navigated away; a generated image was single-use despite
           having cost credits. */}
-      {generated.length > 0 && <div style={{ paddingTop: 12 }}>{grid(generated)}</div>}
+      {/* Only what ISN'T already on screen above — otherwise the set you just
+          generated is shown twice, large then small, a few pixels apart. Earns
+          its own label because it is a different thing from the set above it:
+          everything you have ever generated, including from earlier sessions. */}
+      {archived.length > 0 && (
+        <div style={{ paddingTop: 16 }}>
+          <div style={{ ...ns, fontSize: 11, fontWeight: 700, color: EYEBROW_COLOR, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: 8 }}>
+            All AI photos ({generated.length})
+          </div>
+          {grid(archived)}
+        </div>
+      )}
       <div style={{ paddingBottom: 16 }} />
     </div>
   );
@@ -13342,7 +15656,7 @@ function MediaPickerPanel({ currentPlan, picker, onPick, onClear, onDragTile, on
         />
       </div>
       {picker.kind === 'image'
-        ? <PhotoSourcePanel currentPlan={currentPlan} currentSrc={picker.picked?.src ?? ''} onPick={onPick} draggableToPlace onDragTile={onDragTile} />
+        ? <PhotoSourcePanel currentPlan={currentPlan} currentSrc={picker.picked?.src ?? ''} onPick={onPick} onDragTile={onDragTile} />
         : <MediaUrlPicker kind={picker.kind} onPick={onPick} onClear={onClear} />}
       {picker.picked && (
         <div style={{ padding: '4px 14px 16px' }}>
@@ -13619,7 +15933,7 @@ function DimensionField({ label, px, dim, onChangePct, mode, onMode }: {
                 background: mode === id ? '#EEF3FF' : 'none', color: mode === id ? BLUE : INK }}
             >
               <span>{lbl}</span>
-              <span style={{ width: 10, flexShrink: 0, textAlign: 'right' }}>{mode === id ? '✓' : ''}</span>
+              <MenuTick on={mode === id} />
             </button>
           ))}
         </div>
@@ -13968,16 +16282,18 @@ function ImageInspector({ editor, onGoToMedia, onStartCrop, onTransform }: { edi
       </PanelGroup>
 
       <PanelGroup label="Layout">
-        <FieldLabel>Text wrap</FieldLabel>
+        {/* No "Text wrap" label above it: the three tiles are labelled, and with
+            full-bleed gone they're the only thing in the group's first slot, so
+            the heading was naming a control that already named itself. */}
         <div style={{ marginBottom: 14 }}>
           <OptionGrid
+            columns={3}
             value={attrs.wrap}
             onChange={(wrap) => editor.chain().focus().updateAttributes('image', { wrap }).run()}
             options={[
               { id: 'inline' as WrapValue, label: 'Inline', icon: ICONS.wrapInline },
               { id: 'left' as WrapValue, label: 'Wrap left', icon: ICONS.wrapLeft },
               { id: 'right' as WrapValue, label: 'Wrap right', icon: ICONS.wrapRight },
-              { id: 'full-bleed' as WrapValue, label: 'Full-bleed', icon: ICONS.wrapFull },
             ]}
           />
         </div>
@@ -14040,7 +16356,7 @@ function ImageInspector({ editor, onGoToMedia, onStartCrop, onTransform }: { edi
         <FieldLabel>Rotation</FieldLabel>
         <div className="flex items-center" style={{ gap: 6 }}>
           <NumField
-            icon={<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4v16h16" /></svg>}
+            icon={<AngleGlyph />}
             value={rotation} min={-360} max={360} suffix="°" title="Rotation" width={86}
             onChange={(v) => onTransform({ kind: 'rotate-to', deg: v })}
           />
@@ -14090,14 +16406,38 @@ function ImageInspector({ editor, onGoToMedia, onStartCrop, onTransform }: { edi
             </button>
           </Tooltip>
         </div>
-        {perCorner && (
-          <div className="flex items-center" style={{ gap: 6, marginTop: 8 }}>
-            {(['Top left', 'Top right', 'Bottom right', 'Bottom left'] as const).map((title, i) => (
-              <NumField key={title} title={title} value={corners[i]} min={0} max={200}
-                onChange={(v) => { const next = [...corners]; next[i] = v; setCorners(next); }} />
+        {/* Two rows of two, laid out where the corners actually are, each field
+            carrying the corner it controls. One row of four identical boxes was
+            the shape this shipped as, and nothing on screen said which was which
+            — only a native `title`, which needs a one-second hover and never
+            appears for keyboard or touch. Figma answers it with both signals at
+            once and so does this: position tells you before you read anything,
+            the glyph confirms it, and neither has to carry the meaning alone.
+            (Glyph-only labels were rejected on the two type-metric fields for
+            exactly that reason — a lone glyph with no convention behind it. A
+            corner mark is a picture of its own referent, and here it is the
+            second signal, not the only one.)
+
+            `corners` stays clockwise TL→TR→BR→BL, the order CSS border-radius
+            and Figma both use; reading order is TL TR / BL BR, hence the index
+            per cell rather than a map over the array. The FIELD_H spacer keeps
+            both rows in the two columns above them instead of letting them
+            spread under the independent-corners button. */}
+        {perCorner && ([[0, 1], [3, 2]] as const).map((row, r) => (
+          <div key={r} className="flex items-center" style={{ gap: 6, marginTop: 8 }}>
+            {row.map((i) => (
+              <div key={i} style={{ flex: 1, minWidth: 0 }}>
+                <NumField
+                  icon={<CornerGlyph corner={i} />}
+                  title={CORNER_TITLES[i]}
+                  value={corners[i]} min={0} max={200}
+                  onChange={(v) => { const next = [...corners]; next[i] = v; setCorners(next); }}
+                />
+              </div>
             ))}
+            <div className="flex-shrink-0" style={{ width: FIELD_H }} />
           </div>
-        )}
+        ))}
       </PanelGroup>
 
       <AddableSection
@@ -14165,6 +16505,125 @@ function ImageInspector({ editor, onGoToMedia, onStartCrop, onTransform }: { edi
           from it as if it were that section's body. */}
       <div style={{ ...ns, fontSize: 11.5, color: SLATE, lineHeight: 1.5, marginTop: 16 }}>
         This image is a block in the flowing text, not an object placed on top of it — surrounding paragraphs reflow around it automatically.
+      </div>
+    </InspectorShell>
+  );
+}
+
+/* The caption under a photo, as its own subject. The panel shows this the
+   moment the caret is IN the caption and ImageInspector the moment the photo
+   itself is selected — never both at once, and never a text group buried among
+   crop, wrap and drop shadow. It's the same rule the rest of the editor already
+   follows: a cover photo shows photo properties, the line of type next to it
+   shows text properties, and which one you clicked is what decides.
+
+   Its subject is addressed by POSITION, not by the editor's selection. The
+   caption is a contenteditable the image node view owns and ProseMirror's
+   selection never enters it, so there is nothing for updateAttributes to
+   resolve against — and clicking a caption directly, without selecting the
+   photo first, has to work. The node view hands over the pos it already tracks
+   (see CAPTION_FOCUS_EVENT) and every write goes back to that pos.
+
+   It holds no state of its own: the values are read off the node on each
+   render, and the subscription below re-renders on any transaction, so typing
+   in the caption and setting it in bold stay in step. */
+function CaptionInspector({ editor, pos }: { editor: Editor; pos: number }) {
+  const [, tick] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const read = () => { if (!editor.isDestroyed) tick(); };
+    editor.on('transaction', read);
+    return () => { editor.off('transaction', read); };
+  }, [editor]);
+
+  const node = editor.state.doc.nodeAt(pos);
+  if (!node || node.type.name !== 'image') {
+    /* The photo was deleted out from under an open panel. A frame at most — the
+       selection clears right behind it — so this says nothing that would
+       mislead if it flashes, matching the panel's own fallback. */
+    return (
+      <InspectorShell>
+        <div style={{ ...ns, fontSize: 12.5, color: SLATE }}>Select something on the page to edit it.</div>
+      </InspectorShell>
+    );
+  }
+  const attrs = node.attrs as ImageNodeAttrs;
+  /* setNodeMarkup at a known pos rather than a chain: no .focus(), because
+     focusing the canvas would pull the caret straight back out of the caption
+     the author is editing, and no updateAttributes, because that resolves
+     against a selection which by definition isn't in here. */
+  const setCap = (patch: Partial<ImageNodeAttrs>) => {
+    const live = editor.state.doc.nodeAt(pos);
+    if (!live || live.type.name !== 'image') return;
+    editor.view.dispatch(editor.state.tr.setNodeMarkup(pos, undefined, { ...live.attrs, ...patch }));
+  };
+
+  return (
+    <InspectorShell>
+      {/* Same pair, same widths, same order as TextInspector's Typography group
+          — a caption is text, and there is no reason for the font and size
+          controls to be a different shape here than three feet up the panel. */}
+      <PanelGroup label="Typography" first>
+        <div className="flex items-end" style={{ gap: 8 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <FieldLabel>Font</FieldLabel>
+            <StyledDropdown
+              value={attrs.capFont ?? ''}
+              /* "Body font", not "Theme default": a caption with nothing set
+                 follows the book's body face, and naming that is more useful
+                 than naming where the value comes from. */
+              options={fontDropdownOptions({ id: '', label: 'Body font' })}
+              searchable
+              onChange={(v) => setCap({ capFont: v })}
+            />
+          </div>
+          <div style={{ flexShrink: 0 }}>
+            <FieldLabel>Size</FieldLabel>
+            {/* Capped at 32, not the 48 prose gets. A caption set larger than
+                the text it sits under stops reading as a caption. */}
+            <FontSizeField
+              value={attrs.capSize || CAPTION_DEFAULT_SIZE}
+              min={8}
+              max={32}
+              onChange={(n) => setCap({ capSize: n })}
+            />
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          {/* Bold and italic only. Underline in a caption reads as a link the
+              reader can't follow, and strike-through says the words are
+              retracted — nobody sets a caption in either. Italic, on the other
+              hand, is how most trade books set one. */}
+          <InspectorSection label="Format">
+            <PillRow
+              items={[
+                { key: 'b', label: 'B', active: !!attrs.capBold, onClick: () => setCap({ capBold: !attrs.capBold }), style: { fontWeight: 800 } },
+                { key: 'i', label: 'I', active: !!attrs.capItalic, onClick: () => setCap({ capItalic: !attrs.capItalic }), style: { fontStyle: 'italic' } },
+              ]}
+            />
+          </InspectorSection>
+
+          {/* No Justify: a caption is a line or two, and justifying one either
+              changes nothing or opens rivers in a 46%-wide column. */}
+          <InspectorSection label="Alignment">
+            <PillRow
+              items={(['left', 'center', 'right'] as const).map((a) => ({
+                key: a,
+                label: <Icon d={ICONS[a === 'left' ? 'alignLeft' : a === 'center' ? 'alignCenter' : 'alignRight']} size={15} />,
+                active: (attrs.capAlign || 'center') === a,
+                onClick: () => setCap({ capAlign: a }),
+              }))}
+            />
+          </InspectorSection>
+        </div>
+      </PanelGroup>
+
+      <PanelGroup label="Colour">
+        <SwatchRow value={attrs.capColor || CAPTION_DEFAULT_COLOR} onChange={(c) => setCap({ capColor: c })} />
+      </PanelGroup>
+
+      <div style={{ ...ns, fontSize: 11.5, color: SLATE, lineHeight: 1.5, marginTop: 16 }}>
+        The caption is written under the photo on the page. Click the photo itself for its size, crop and border.
       </div>
     </InspectorShell>
   );
@@ -14383,7 +16842,7 @@ function StyledDropdown({ value, options, onChange, searchable = false }: {
             >
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.option.label}</span>
               {r.option.id === value && (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={BLUE} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginLeft: 6 }}><path d="M20 6L9 17l-5-5" /></svg>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={BLUE} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginLeft: 6 }}><path d={ICONS.tick} /></svg>
               )}
             </button>
           ))}
@@ -14569,7 +17028,11 @@ function TextInspector({ editor, variant = 'prose' }: { editor: Editor; variant?
      replacing it, so legacy or pasted markup can put a heading inside one, and
      what that block is is a quote. Picking Heading from here unwraps it first
      (below), so the two can't disagree for anything this control writes. */
-  const currentStyle = editor.isActive('blockquote') ? 'quote'
+  /* Chapter title outranks every other test: it is its own node rather than a
+     heading level, so `isActive('heading')` is false for it and it would have
+     reported itself as a paragraph. */
+  const currentStyle = editor.isActive('chapterTitle') ? 'chapterTitle'
+    : editor.isActive('blockquote') ? 'quote'
     : activeHeadingLevel !== undefined ? (activeHeadingLevel === subheadingLevel ? 'subheading' : 'heading')
     : 'p';
   const currentAlign = (['left', 'center', 'right', 'justify'] as const).find((a) => editor.isActive({ textAlign: a })) ?? 'left';
@@ -14695,7 +17158,8 @@ function TextInspector({ editor, variant = 'prose' }: { editor: Editor; variant?
                    re-picking the row that already has the checkmark would have
                    turned a Heading back into a paragraph, which is not what
                    choosing "Heading" can ever mean. */
-                if (id === 'heading') chain.setHeading({ level: headingLevel });
+                if (id === 'chapterTitle') chain.setNode('chapterTitle');
+                else if (id === 'heading') chain.setHeading({ level: headingLevel });
                 else if (id === 'subheading' && subheadingLevel) chain.setHeading({ level: subheadingLevel });
                 /* setParagraph before wrapping, for the reason above: quoting a
                    heading would otherwise leave the heading inside the quote and
@@ -14710,7 +17174,12 @@ function TextInspector({ editor, variant = 'prose' }: { editor: Editor; variant?
                  Paragraph only because that's the default value, and a list
                  shouldn't be ordered by which entry happens to be selected. */
               options={[
-                { id: 'heading', label: 'Heading', group: 'Basic', style: { fontSize: 15, fontWeight: 700 } },
+                /* Offered only where the node is registered — the chapter body.
+                   The single-field editors behind a cover line or the ToC heading
+                   have no chapter to start, and listing it there would be a row
+                   that silently does nothing. */
+                ...(editor.schema.nodes.chapterTitle ? [{ id: 'chapterTitle', label: 'Chapter title', group: 'Basic', style: { fontSize: 17, fontWeight: 700 } }] : []),
+                { id: 'heading', label: 'Section heading', group: 'Basic', style: { fontSize: 15, fontWeight: 700 } },
                 /* Only offered where the editor actually registers a second level —
                    a field that has one heading has no "inner" one to demote to. */
                 ...(subheadingLevel ? [{ id: 'subheading', label: 'Subheading', group: 'Basic', style: { fontSize: 13.5, fontWeight: 700 } }] : []),
@@ -14739,6 +17208,21 @@ function TextInspector({ editor, variant = 'prose' }: { editor: Editor; variant?
                 })),
               ]}
             />
+            {/* The one property a chapter title has that no other block does, so
+                it belongs directly under the row that names the block rather
+                than down in the type group with font and size. Default on: a
+                chapter opening a page is what every trade book and Kindle
+                Create do, and turning it off is the new capability, not the new
+                normal. */}
+            {currentStyle === 'chapterTitle' && (
+              <div style={{ marginTop: 8 }}>
+                <ToggleRow
+                  label="Start on a new page"
+                  checked={editor.getAttributes('chapterTitle').breakBefore !== false}
+                  onChange={(v) => editor.chain().focus().updateAttributes('chapterTitle', { breakBefore: v }).run()}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -15059,7 +17543,7 @@ function TextToolsPanel({ editor }: { editor: Editor | null }) {
           the rule and spacing between sections carry the separation on their own.
           The inert line appears once, on the first of the two — the second one's
           dead buttons say it again without the panel repeating itself. */}
-      <PanelSectionBreak label="Dynamic fields" />
+      <PanelSectionBreak label="Dynamic fields" hint="Book details that fill themselves in when you preview or export." />
       <div style={{ marginTop: 12 }}>
         <OptionGrid
           value={null}
@@ -15816,7 +18300,6 @@ function ChartInspector({ editor }: { editor: Editor }) {
           <FullButton label="+ Add row" onClick={() => setPoints([...points, { label: `Row ${points.length + 1}`, value: 0 }])} />
         </div>
       </InspectorSection>
-      <BlockSizeSection editor={editor} nodeName="chartBlock" />
     </InspectorShell>
   );
 }
@@ -15837,6 +18320,9 @@ function IconInspector({ editor }: { editor: Editor }) {
           category-grouped view is the Insert panel's job, and repeating it here
           would make the same grid the answer to two different questions. */}
       <InspectorSection label="Icon">
+        {/* Drawn in the cut this icon is currently set to, so the switcher shows
+            the library the way the page will get it rather than a solid grid you
+            then have to convert. */}
         <OptionGrid
           columns={6}
           value={attrs.name}
@@ -15844,8 +18330,21 @@ function IconInspector({ editor }: { editor: Editor }) {
           options={BOOK_ICONS.map((i) => ({
             id: i.name,
             title: i.label,
-            render: <span className="flex" dangerouslySetInnerHTML={{ __html: bookIconHtml(i.name, INK, 18) }} />,
+            render: <span className="flex" dangerouslySetInnerHTML={{ __html: bookIconHtml(i.name, INK, 18, 'book-btn-icon', attrs.style ?? 'solid') }} />,
           }))}
+        />
+      </InspectorSection>
+
+      {/* A property of the mark, not a different mark — which is why it sits here
+          next to Colour rather than sending you back to the insert panel to place
+          a second icon. Same pair the Shapes grid and ShapeInspector offer, and
+          the same word for it in both places. */}
+      <InspectorSection label="Style">
+        <SegmentedControl
+          label="Style"
+          value={attrs.style ?? 'solid'}
+          onChange={(v) => update({ style: v })}
+          options={[{ value: 'solid', label: 'Solid' }, { value: 'outline', label: 'Outline' }]}
         />
       </InspectorSection>
 
@@ -16159,8 +18658,113 @@ function StackInspector({ editor }: { editor: Editor }) {
   );
 }
 
+/* The table the panel is describing. It is reached two ways — selected whole by
+   the drag handle or a click on its edge, or drilled into with a caret in a cell
+   (activeObjectKind keeps reporting 'table' either way) — so this resolves from
+   the selection's ancestors rather than assuming a NodeSelection. */
+function selectedTable(editor: Editor): { node: PMNode; pos: number } | null {
+  const { selection } = editor.state;
+  if (selection instanceof NodeSelection && selection.node.type.name === 'table') {
+    return { node: selection.node, pos: selection.from };
+  }
+  const { $from } = selection;
+  for (let d = $from.depth; d > 0; d -= 1) {
+    if ($from.node(d).type.name === 'table') return { node: $from.node(d), pos: $from.before(d) };
+  }
+  return null;
+}
+
+/* A text position inside one cell of a table, by grid coordinate. Every
+   prosemirror-tables command works off wherever the selection is, so every one
+   of them needs this first. The walk is the same one the hover + buttons do:
+   table start + 1 to enter it, then each preceding row's and cell's full size. */
+function tableCellPos(table: PMNode, tablePos: number, rowIdx: number, colIdx: number): number | null {
+  if (rowIdx < 0 || rowIdx >= table.childCount) return null;
+  const row = table.child(rowIdx);
+  if (colIdx < 0 || colIdx >= row.childCount) return null;
+  let at = tablePos + 1;
+  for (let r = 0; r < rowIdx; r += 1) at += table.child(r).nodeSize;
+  at += 1;
+  for (let c = 0; c < colIdx; c += 1) at += row.child(c).nodeSize;
+  return at + 1;
+}
+
+/* Rows and columns set as a count, which is what the panel shows. Typing a
+   larger number appends at the end, a smaller one trims from the end — inserting
+   or deleting in the MIDDLE is a per-row gesture that belongs on the row, not in
+   a panel that can't say which row you mean, and that's the hover + on the
+   canvas plus the row's own menu.
+
+   One command per step, re-reading the node each time: every add or delete
+   shifts the positions the next step needs. */
+function setTableCount(editor: Editor, axis: 'row' | 'col', target: number) {
+  for (let guard = 0; guard < 40; guard += 1) {
+    const t = selectedTable(editor);
+    if (!t || t.node.childCount === 0) return;
+    const current = axis === 'row' ? t.node.childCount : t.node.child(0).childCount;
+    if (current === target) return;
+    const grow = target > current;
+    const at = tableCellPos(t.node, t.pos, axis === 'row' ? t.node.childCount - 1 : 0, axis === 'col' ? t.node.child(0).childCount - 1 : 0);
+    if (at == null) return;
+    const chain = editor.chain().focus().setTextSelection(at);
+    if (axis === 'row') (grow ? chain.addRowAfter() : chain.deleteRow()).run();
+    else (grow ? chain.addColumnAfter() : chain.deleteColumn()).run();
+  }
+}
+
+const VALIGN_ICONS: Record<string, string> = {
+  top: 'M4 4h16M12 20V9M8 13l4-4 4 4',
+  middle: 'M4 12h16M12 4v5M12 15v5',
+  bottom: 'M4 20h16M12 4v11M8 11l4 4 4-4',
+};
+
+const CELL_ALIGNS = [
+  { id: 'left', label: 'Left', icon: ICONS.alignLeft },
+  { id: 'center', label: 'Centre', icon: ICONS.alignCenter },
+  { id: 'right', label: 'Right', icon: ICONS.alignRight },
+] as const;
+const ALIGN_IDS = ['left', 'center', 'right', 'justify'] as const;
+
+const VALIGNS = [
+  { id: 'top', label: 'Top' },
+  { id: 'middle', label: 'Middle' },
+  { id: 'bottom', label: 'Bottom' },
+] as const;
+
+const TABLE_STYLES = [
+  { id: 'plain', label: 'Plain' },
+  { id: 'striped', label: 'Striped rows' },
+  { id: 'minimal', label: 'Minimal' },
+] as const;
+
+/* A four-row table at 34x26, drawn rather than named. Schematic tints rather
+   than the live page's: the swatch has to read on the panel's own white, and
+   the real table takes its tint from the page it sits on. */
+function TableStylePreview({ id }: { id: string }) {
+  const line = '#C9D2DD';
+  const fill = '#EDF1F6';
+  const rows = [0, 1, 2, 3];
+  return (
+    <svg width="100%" viewBox="0 0 34 26" fill="none" style={{ display: 'block' }}>
+      {id === 'striped' && rows.filter((r) => r % 2 === 1).map((r) => (
+        <rect key={r} x="0.5" y={0.5 + r * 6.25} width="33" height="6.25" fill={fill} />
+      ))}
+      {/* Horizontal rules: every style has them, which is what makes Minimal
+          read as a table at all once its verticals are gone. */}
+      {[0, 1, 2, 3, 4].map((r) => (
+        <line key={r} x1="0.5" y1={0.5 + r * 6.25} x2="33.5" y2={0.5 + r * 6.25}
+          stroke={line} strokeWidth={id === 'minimal' && r === 1 ? 1.4 : 0.8} />
+      ))}
+      {id !== 'minimal' && [0, 1, 2].map((c) => (
+        <line key={c} x1={0.5 + c * 11} y1="0.5" x2={0.5 + c * 11} y2="25.5" stroke={line} strokeWidth="0.8" />
+      ))}
+      {id !== 'minimal' && <line x1="33.5" y1="0.5" x2="33.5" y2="25.5" stroke={line} strokeWidth="0.8" />}
+    </svg>
+  );
+}
+
 function TableInspector({ editor }: { editor: Editor }) {
-  const attrs = editor.getAttributes('table') as { locked: boolean };
+  const attrs = editor.getAttributes('table') as { locked: boolean; tstyle?: string; pad?: number; bw?: number; bc?: string; tint?: string };
   if (attrs.locked) {
     return (
       <InspectorShell>
@@ -16168,25 +18772,207 @@ function TableInspector({ editor }: { editor: Editor }) {
       </InspectorShell>
     );
   }
+  const table = selectedTable(editor);
+  const rows = table?.node.childCount ?? 0;
+  const cols = table?.node.child(0)?.childCount ?? 0;
+  /* A header row is one whose cells are tableHeader — the same test
+     rowBreakContext uses to decide what to repeat on a continuation page, which
+     is the whole reason the toggle is worth having on a book table. */
+  const hasHeader = !!table && rows > 0 && table.node.child(0).childCount > 0
+    && table.node.child(0).child(0).type.name === 'tableHeader';
+  /* `pad` stays in the schema — tables saved with a custom cell padding still
+     render with it — but it has no control any more. It was a typographic
+     detail with one right answer, and every value other than the default made
+     the table look worse. */
+  const set = (patch: { tstyle?: string; bw?: number; bc?: string; tint?: string }) => editor.chain().focus().updateAttributes('table', patch).run();
+  const style = String(attrs.tstyle || 'plain');
+  /* setCellAttribute writes to every cell in the current CellSelection, and to
+     the one the caret is in when there's no range — which is exactly the scope
+     these controls claim. */
+  const setCell = (name: string, value: string | null) => editor.chain().focus().setCellAttribute(name, value).run();
+  const cellAttrs = {
+    ...editor.getAttributes('tableCell'),
+    ...editor.getAttributes('tableHeader'),
+  } as { bg?: string | null; valign?: string | null };
+  const canMerge = editor.can().mergeCells();
+  const canSplit = editor.can().splitCell();
+  const cellBg = cellAttrs.bg || null;
+  const cellValign = cellAttrs.valign || null;
+
   return (
     <InspectorShell>
-      <InspectorSection label="Rows">
+      {/* Two numbers instead of the four Add/Delete buttons that were here. The
+          buttons never said what the table WAS — you read the shape off the
+          canvas and then pressed a button an unknown number of times — and add
+          was already on the canvas as a hover + at each edge, which is where
+          Notion, Canva and FigJam all keep it. Docs' table sidebar holds
+          properties for the same reason. */}
+      {/* Named, not initialled. "R" and "C" were glyph-only labels, which this
+          panel's own field rules already rule out — and unlike a padding box or
+          a corner radius, a bare letter has no drawing to fall back on.
+
+          No section heading over them either: "Grid" only restated what two
+          fields called Rows and Columns already say, and this panel's rule is
+          labels outside the field, one heading system — not a heading whose
+          children are self-describing. */}
+      {/* Two bold groups over quiet grey subsections — the panel's own two
+          levels. Everything here used to be one level: "Lines" and "Selected
+          cells" were section labels in the same grey at nearly the same size as
+          the field labels under them, so a scope change read like another
+          field. The split that matters is table-wide versus the cells you
+          selected, and now it's the loudest thing in the panel. */}
+      <PanelGroup label="Table" first>
+      <div style={{ marginBottom: 14 }}>
+        <div className="flex items-start" style={{ gap: 6 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <FieldLabel>Rows</FieldLabel>
+            <NumField title="Rows" value={rows} min={1} max={30} onChange={(v) => setTableCount(editor, 'row', v)} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <FieldLabel>Columns</FieldLabel>
+            <NumField title="Columns" value={cols} min={1} max={12} onChange={(v) => setTableCount(editor, 'col', v)} />
+          </div>
+        </div>
+        {/* Structure, so it sits with rows and columns rather than under the
+            style previews, where it was cramped against them and read as one
+            of the four looks. */}
+        <div style={{ marginTop: 10 }}>
+          <ToggleRow label="Header row" checked={hasHeader} onChange={() => editor.chain().focus().toggleHeaderRow().run()} />
+        </div>
+      </div>
+      {/* Drawn, not described. A style is a look, and "Alternating row shading"
+          is a sentence you have to turn into a picture in your head before you
+          know whether you want it — the gallery Word and Google Docs both use
+          shows you instead. Four is the whole set on purpose: these are the
+          looks a book table actually takes. */}
+      <InspectorSection label="Style">
+        <div className="flex" style={{ gap: 6 }}>
+          {TABLE_STYLES.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              title={t.label}
+              aria-label={t.label}
+              aria-pressed={style === t.id}
+              onClick={() => set({ tstyle: t.id })}
+              className="cursor-pointer"
+              style={{
+                flex: 1, minWidth: 0, padding: 5, background: '#fff', borderRadius: RADIUS_MD,
+                border: `1px solid ${style === t.id ? BLUE : BORDER}`,
+                boxShadow: style === t.id ? `0 0 0 1px ${BLUE}` : 'none',
+              }}
+            >
+              <TableStylePreview id={t.id} />
+            </button>
+          ))}
+        </div>
+        {style === 'striped' && (
+          /* Only where it has something to colour. A hue, not a fill: the
+             stripe takes it at 13%, so the choice can't fight the text. */
+          <div style={{ marginTop: 12 }}>
+            <FieldLabel>Stripe colour</FieldLabel>
+            {/* The highlight palette, not the mark palette — a stripe is colour
+                BEHIND text, which is the line this editor's two palettes are
+                already drawn along (see SWATCH_COLORS / SWATCH_HIGHLIGHTS).
+                Saturated hues here were also a lie: the swatch showed full-
+                strength blue and the table drew a 13% wash of it. Pastels need
+                no weakening, so the swatch now shows what you get. */}
+            <SwatchRow tone="stripe" value={attrs.tint || ''} onChange={(c) => set({ tint: c })} />
+          </div>
+        )}
+      </InspectorSection>
+      {/* The rules. One pair for the table rather than per selected edge —
+          Docs and Word paint edges, but a book table's lines are a single
+          decision, and the style gallery above already owns which edges exist. */}
+      {/* "Stroke", because that is this editor's word for the edge of an object —
+          Image, Shape and both cover inspectors all label it that way over the
+          same borderWidth/borderColor pair. "Thickness" alone belongs to a
+          divider, where the line IS the object rather than an edge of one.
+
+          One label per control: "Lines" sat above "Thickness" and "Colour" as a
+          title over two more titles, which is a level this panel doesn't have.
+          The field is narrow, like Rotation's — at full width the value and its
+          unit end up at opposite ends of the panel. */}
+      <div style={{ marginBottom: 18 }}>
+        <FieldLabel>Stroke thickness</FieldLabel>
+        <NumField title="Stroke thickness" value={attrs.bw || 1} min={0} max={6} suffix="px" width={86}
+          onChange={(v) => set({ bw: v })} />
+        <div style={{ marginTop: 12 }}>
+          <FieldLabel>Stroke colour</FieldLabel>
+          {/* A stroke, so the mark palette — but not white, which is an edge you
+              can't see on white paper. Same filter, and the same reason, as the
+              QR code's. */}
+          <SwatchRow value={attrs.bc || BORDER} filter={(hex) => hex.toUpperCase() !== '#FFFFFF'} onChange={(c) => set({ bc: c })} />
+        </div>
+      </div>
+      </PanelGroup>
+      {/* Everything here acts on the CELLS YOU SELECTED, which is how every
+          editor surveyed scopes table formatting — drag across a range and the
+          controls apply to it. With the caret in one cell it's just that cell. */}
+      <PanelGroup label="Selected cells">
+      <InspectorSection label="Fill">
+        {/* Also colour behind text, so also the highlight palette. A cell fill
+            from the mark palette meant ink-on-ink: the fill went dark and the
+            text stayed dark, because nothing here recolours the text to match. */}
+        <SwatchRow tone="highlight" value={cellBg || ''} onChange={(c) => setCell('bg', c)} />
+        {cellBg && (
+          <button
+            type="button"
+            onClick={() => setCell('bg', null)}
+            className="cursor-pointer"
+            style={{ ...ns, fontSize: 11.5, color: SLATE, background: 'none', border: 'none', padding: '6px 0 0' }}
+          >
+            Remove fill
+          </button>
+        )}
+      </InspectorSection>
+      {/* Horizontal alignment across the selected range — the one control the
+          cells group was missing, and the counterpart to the vertical one below.
+          setTextAlign runs over every textblock in the selection, so a whole
+          column of figures can be set right-aligned in one go. With a caret in
+          a single cell the full text panel is showing instead, which carries
+          this same control among the rest of the text properties. */}
+      {/* Glyphs, not words. Alignment is the one property whose icon IS the
+          thing — a left-aligned stack of rules says it faster than "Left", and
+          it's what every editor's toolbar uses. */}
+      <InspectorSection label="Text alignment">
         <PillRow
-          items={[
-            { key: 'add-row', label: '+ Add row', active: false, onClick: () => editor.chain().focus().addRowAfter().run() },
-            { key: 'del-row', label: '– Delete row', active: false, onClick: () => editor.chain().focus().deleteRow().run() },
-          ]}
+          items={CELL_ALIGNS.map((a) => ({
+            key: a.id,
+            label: <Icon d={a.icon} size={15} />,
+            active: editor.isActive({ textAlign: a.id }) || (a.id === 'left' && !ALIGN_IDS.some((x) => editor.isActive({ textAlign: x }))),
+            onClick: () => editor.chain().focus().setTextAlign(a.id).run(),
+          }))}
         />
       </InspectorSection>
-      <InspectorSection label="Columns">
+      <InspectorSection label="Vertical alignment">
         <PillRow
-          items={[
-            { key: 'add-col', label: '+ Add column', active: false, onClick: () => editor.chain().focus().addColumnAfter().run() },
-            { key: 'del-col', label: '– Delete column', active: false, onClick: () => editor.chain().focus().deleteColumn().run() },
-          ]}
+          items={VALIGNS.map((v) => ({
+            key: v.id,
+            label: <Icon d={VALIGN_ICONS[v.id]} size={15} />,
+            active: (cellValign || 'top') === v.id,
+            onClick: () => setCell('valign', v.id),
+          }))}
         />
+        {/* Merge and split have been in prosemirror-tables all along and nothing
+            called them. Merging is the one thing a table can't express any other
+            way — a heading that spans three columns. Labelled, because two bare
+            verbs under an alignment control read as more alignment. */}
       </InspectorSection>
-      <BlockSizeSection editor={editor} nodeName="table" />
+      {/* One button, never two. Merging and splitting are opposite states of
+          the same cell, so only one can ever apply — prosemirror-tables answers
+          which through can(), and showing the other greyed out only asks the
+          reader to work out why. Nothing at all when neither applies, which is
+          the common case of one unmerged cell. */}
+      {(canMerge || canSplit) && (
+        <FullButton
+          label={canMerge ? 'Merge cells' : 'Split cell'}
+          onClick={() => (canMerge
+            ? editor.chain().focus().mergeCells().run()
+            : editor.chain().focus().splitCell().run())}
+        />
+      )}
+      </PanelGroup>
     </InspectorShell>
   );
 }
@@ -16267,7 +19053,7 @@ function CoverInspector({ page, theme, selectedElementId, onUpdateElement, onCha
               <FieldLabel>Rotation</FieldLabel>
               <div className="flex items-center" style={{ gap: 6 }}>
                 <NumField
-                  icon={<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4v16h16" /></svg>}
+                  icon={<AngleGlyph />}
                   value={Math.round(coverShapeRotation(shape))} min={0} max={360} suffix="°" title="Rotation" width={86}
                   // 360 and 0 are the same angle, so the field never shows a value
                   // its own up-arrow can't reach again.
@@ -16670,22 +19456,24 @@ function PageNumberInspector({ pageNumbers, setPageNumbers }: {
   setPageNumbers: (v: PageNumberSettings) => void;
 }) {
   const update = (patch: Partial<PageNumberSettings>) => setPageNumbers({ ...pageNumbers, ...patch });
-  const selectStyle: React.CSSProperties = { ...ns, width: '100%', fontSize: 13, padding: '8px 10px', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, background: '#fff', appearance: 'none', paddingRight: 28 };
   const numberFieldStyle: React.CSSProperties = { ...ns, width: '100%', fontSize: 13, padding: '8px 10px', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD };
 
   return (
     <InspectorShell>
       <InspectorSection label="Position">
         <div style={{ position: 'relative' }}>
-          <select style={selectStyle} value={pageNumbers.position} onChange={(e) => update({ position: e.target.value as PageNumberPosition })}>
-            <option value="footer-center">Footer · Center</option>
-            <option value="footer-left">Footer · Left</option>
-            <option value="footer-right">Footer · Right</option>
-            <option value="header-center">Header · Center</option>
-            <option value="header-left">Header · Left</option>
-            <option value="header-right">Header · Right</option>
-          </select>
-          <SelectChevron />
+          <NativeSelect
+            value={pageNumbers.position}
+            onChange={(v) => update({ position: v as PageNumberPosition })}
+            options={[
+              { value: 'footer-center', label: 'Footer · Center' },
+              { value: 'footer-left', label: 'Footer · Left' },
+              { value: 'footer-right', label: 'Footer · Right' },
+              { value: 'header-center', label: 'Header · Center' },
+              { value: 'header-left', label: 'Header · Left' },
+              { value: 'header-right', label: 'Header · Right' },
+            ]}
+          />
         </div>
       </InspectorSection>
       <InspectorSection label="Numbering">
@@ -16785,7 +19573,11 @@ function PublisherOverlay({
   const epubLocked = shouldShowTierBadge(currentPlan as never, EPUB_REQUIRED_PLAN);
 
   const statusStyle = (status: CheckStatus) => {
-    if (status === 'pass') return { bg: '#E7F3ED', fg: '#2A7A57', glyph: '✓' };
+    // Drawn, not typed — '!' and '–' below are real Nunito Sans characters, so a
+    // fallback U+2713 was the one mark in this row set in a different typeface.
+    if (status === 'pass') return { bg: '#E7F3ED', fg: '#2A7A57', glyph: (
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d={ICONS.tick} /></svg>
+    ) };
     if (status === 'fail') return { bg: '#FBEAE8', fg: '#B91C1C', glyph: '!' };
     if (status === 'warn') return { bg: '#FDF3E2', fg: '#8A5A08', glyph: '!' };
     return { bg: '#F0F2F5', fg: SLATE, glyph: '–' };
@@ -16977,7 +19769,10 @@ function PreviewPage({ page, pages, theme, chapterContent, fieldContent, metadat
     const titleHtml = fieldContent[`${page.id}::title`] ?? page.titleHtml;
     const eyebrowHtml = fieldContent[`${page.id}::eyebrow`] ?? DEFAULT_EYEBROW_HTML;
     const openerRule = openerRuleOf(page, theme);
-    const chapterNumber = pages.filter((pg) => pg.type === 'chapter').findIndex((pg) => pg.id === page.id) + 1;
+    const chapterNumber = chapterNumberOf(pages, fieldContent, page.id);
+    // Same rule the live editor applies: no heading, no chapter, so no opener
+    // furniture and no title block — see isChapterStart.
+    const hasTitle = isChapterStart(page, fieldContent);
     /* Same two-step as the exporter, in the same order: numbers baked in, then
        field tokens resolved. This is the first place the author sees what the
        token actually becomes, since the editor keeps showing the token itself. */
@@ -16992,7 +19787,7 @@ function PreviewPage({ page, pages, theme, chapterContent, fieldContent, metadat
             inline styles on this wrapper don't cascade onto dangerouslySetInnerHTML
             children the way they would onto plain text. */}
         <style jsx global>{`.book-preview-title h2 { margin: 0; font: inherit; color: inherit; }`}</style>
-        {page.layout === 'opener' && (
+        {page.layout === 'opener' && hasTitle && (
           page.openerImage ? (
             <div style={{ position: 'relative', margin: '-55px -63px 20px', height: 220, overflow: 'hidden' }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -17010,15 +19805,17 @@ function PreviewPage({ page, pages, theme, chapterContent, fieldContent, metadat
             </div>
           )
         )}
-        <div
-          className="book-preview-title"
-          style={{
-            fontFamily: theme.headingFont, color: headingColor,
-            fontSize: page.layout === 'opener' ? 38 : 26,
-            margin: page.layout === 'opener' ? '0 0 20px' : '0 0 14px',
-          }}
-          dangerouslySetInnerHTML={{ __html: titleHtml }}
-        />
+        {hasTitle && (
+          <div
+            className="book-preview-title"
+            style={{
+              fontFamily: theme.headingFont, color: headingColor,
+              fontSize: page.layout === 'opener' ? 38 : 26,
+              margin: page.layout === 'opener' ? '0 0 20px' : '0 0 14px',
+            }}
+            dangerouslySetInnerHTML={{ __html: titleHtml }}
+          />
+        )}
         <div
           className={`book-chapter-prose${page.layout === 'two-column' ? ' is-two-col' : page.layout === 'image-led' ? ' is-image-led' : ''}`}
           style={{ fontFamily: bodyFont }}
@@ -17031,7 +19828,9 @@ function PreviewPage({ page, pages, theme, chapterContent, fieldContent, metadat
     return <CoverCanvasStatic page={page} theme={theme} fieldContent={fieldContent} />;
   }
   if (page.type === 'toc') {
-    const chapters = pages.filter((p): p is ChapterPage => p.type === 'chapter' && !p.excludeFromToc);
+    /* Chapter STARTS only — a continuation page has no heading, so it has
+       nothing to list and belongs to the entry above it. */
+    const chapters = chapterStarts(pages, fieldContent);
     const headingHtml = fieldContent[`${page.id}::heading`] ?? '<p>Table of Contents</p>';
     return (
       <div style={{ position: 'relative', background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`, borderRadius: 3, boxShadow: PAGE_SHADOW, minHeight: geo.h, padding: `${geo.padY}px ${geo.padX}px`, overflow: 'hidden' }}>
@@ -17189,6 +19988,11 @@ function PreviewOverlay({
             // word (the cover's own title defaults to literally "Cover") — same
             // dedup the Pages panel already applies to this exact pairing.
             const showType = p.type.toLowerCase() !== p.title.trim().toLowerCase();
+            // Same borrowed name a continuation page gets in the Pages panel.
+            const owner = pages.find((x) => x.id === owningChapterId(pages, fieldContent, p.id));
+            const railTitle = owner && owner.id !== p.id
+              ? `${chapterTitleText(owner, fieldContent) || owner.title}, continued`
+              : p.title;
             return (
               <div key={p.id} style={{ marginBottom: 18 }}>
                 <div
@@ -17217,8 +20021,8 @@ function PreviewOverlay({
                     <span style={{ ...ns, fontSize: 9.5, fontWeight: 700, color: '#fff' }}>{i + 1}</span>
                   </div>
                 </div>
-                <div style={{ ...ns, fontSize: 12, fontWeight: 600, color: INK, marginTop: 6 }}>{p.title}</div>
-                {showType && <div style={{ ...ns, fontSize: 10, color: SLATE, textTransform: 'capitalize' }}>{p.type}</div>}
+                <div style={{ ...ns, fontSize: 12, fontWeight: 600, color: INK, marginTop: 6 }}>{railTitle}</div>
+                {showType && railTitle === p.title && <div style={{ ...ns, fontSize: 10, color: SLATE, textTransform: 'capitalize' }}>{p.type}</div>}
               </div>
             );
           })}
@@ -17298,6 +20102,115 @@ function HistoryPanel({
   );
 }
 
+/* ── live page thumbnail ──────────────────────────────────────────────────────
+   A thumbnail of ONE SHEET, cloned out of the canvas that is already rendering
+   it, rather than re-rendered from the stored HTML.
+
+   Re-rendering is what PreviewPage does, and it can only ever draw a section:
+   it pours a chapter's whole HTML into one elastic page, so there is no second
+   or third sheet of it to show. That is why every continuation row in this
+   panel used to be eight grey ruled lines — a placeholder standing in for a
+   page the renderer had no way to produce. It also means the one sheet it CAN
+   draw is drawn by a different code path than the canvas, so page 1 of a
+   chapter was a near-miss rather than a preview: a figure the canvas pushes to
+   the next page sits half-clipped at the bottom of the PreviewPage version.
+
+   The canvas already solves this. A chapter is one editor laid out as a stack
+   of sheets, with the page boundaries inserted as spacer decorations, and every
+   page is mounted (there is no virtualization) — so the pixels for sheet N
+   exist in the document right now, at pageTop(N). Cloning that subtree and
+   sliding it up by pageTop gives a preview that is exact by construction,
+   including images, footnotes, tables and any break the engine moved, and stays
+   exact when the pagination rules change because there is only one renderer.
+
+   What has to come off the clone is the editing chrome. Everything the canvas
+   draws over a page — the gap inserts, the drag handle, the block bar, the
+   resize handles, the measure overlay — is an absolutely positioned DIRECT
+   child of the stack, and the only absolute direct children that are page are
+   the sheets themselves. So the rule is that one line, read off the LIVE
+   element's computed styles (the clone isn't in the document yet, so it has
+   none), rather than per-overlay tagging that the next overlay would forget. */
+function sanitizeThumbClone(src: HTMLElement, clone: HTMLElement) {
+  const kids = Array.from(src.children);
+  for (let i = kids.length - 1; i >= 0; i--) {
+    const el = kids[i] as HTMLElement;
+    if (el.hasAttribute('data-page-sheet')) continue;
+    if (getComputedStyle(el).position !== 'absolute') continue;
+    clone.children[i]?.remove();
+  }
+  // Nothing in here is typed into, and a live contenteditable inside a
+  // 126px-wide clone is a second place the caret can land.
+  clone.querySelectorAll('[contenteditable]').forEach((el) => el.setAttribute('contenteditable', 'false'));
+  // The selection ring belongs to the canvas: repeated at thumbnail size it
+  // competes with this panel's own active outline, which is the one that means
+  // "you are here" in a list of pages.
+  clone.querySelectorAll('.ProseMirror-selectednode').forEach((el) => el.classList.remove('ProseMirror-selectednode'));
+  // The sheet's own border and drop shadow are how a page reads against the
+  // grey canvas. In the panel the thumbnail's card already draws that edge, and
+  // the sheet fills it exactly, so a second one lands a hairline inside the
+  // first.
+  clone.querySelectorAll<HTMLElement>('[data-page-sheet]').forEach((sheet) => {
+    sheet.style.border = 'none';
+    sheet.style.boxShadow = 'none';
+    sheet.style.borderRadius = '0';
+  });
+}
+
+function LiveSheetThumb({ getPageEl, pageId, sheetIndex, width, rev, children }: {
+  getPageEl: (id: string) => HTMLElement | null;
+  pageId: string;
+  sheetIndex: number;
+  /** The thumbnail's rendered width; the sheet is scaled down to it. */
+  width: number;
+  /** Bumped when the book's content changes — see PagesPanel, where it's debounced. */
+  rev: number;
+  /** Drawn instead whenever the canvas can't be read: before hydration, or
+      while a version checkpoint is on screen in place of the live book. */
+  children: React.ReactNode;
+}) {
+  const geo = useContext(PageGeometryContext);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const fallbackRef = useRef<HTMLDivElement | null>(null);
+
+  /* Which of the two is showing is set on the nodes, not held in state. A
+     `setLive` here would be a setState inside a layout effect that runs for
+     every thumbnail in the panel, so opening Pages on a long book would mean a
+     cascade of renders before the first paint — and the render it triggers
+     would produce identical markup either way, since the clone is appended by
+     this effect rather than by React. */
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const fallback = fallbackRef.current;
+    const show = (liveNow: boolean) => {
+      host.style.display = liveNow ? 'block' : 'none';
+      if (fallback) fallback.style.display = liveNow ? 'none' : 'block';
+    };
+    const src = getPageEl(pageId)?.querySelector<HTMLElement>('[data-page-stack]') ?? null;
+    if (!src) { show(false); return; }
+    const clone = src.cloneNode(true) as HTMLElement;
+    sanitizeThumbClone(src, clone);
+    /* The stack's own height and padding come with it, and its sheets are
+       positioned against it — so sliding the whole thing up by one page's top
+       offset puts sheet `sheetIndex` in the window below. */
+    clone.style.marginTop = `${-pageTop(sheetIndex, geo)}px`;
+    host.replaceChildren(clone);
+    show(true);
+    return () => { host.replaceChildren(); show(false); };
+  }, [getPageEl, pageId, sheetIndex, rev, geo]);
+
+  return (
+    <div style={{ width: '100%', height: Math.round(width * (geo.h / geo.w)), overflow: 'hidden' }}>
+      <div style={{ width: geo.w, height: geo.h, overflow: 'hidden', transform: `scale(${width / geo.w})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
+        {/* aria-hidden and never focusable: it is a copy of content the canvas
+            already exposes, and the row's own button carries this page's name. */}
+        <div ref={hostRef} aria-hidden style={{ display: 'none' }} />
+        <div ref={fallbackRef}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Pages panel — the visual page navigator, first tab of the left rail rather than the
    left: Designrr's live product puts its Navigator on the right, and the left-hand
    filmstrip this supersedes was pulled for crowding out the insert tools. Deliberately
@@ -17305,69 +20218,225 @@ function HistoryPanel({
    counts) as a text list; this one is for finding a page by what it looks like, and
    so reuses the Preview overlay's thumbnail vocabulary (scaled live PreviewPage,
    corner number badge, blue outline on the active page). ── */
-/* The icons a row's action bar is made of. DuplicateIcon and TrashIcon already
-   exist (see presentationIcons.tsx); these three don't. */
+/* ── "+ Add page" in the gutter ───────────────────────────────────────────────
+   One affordance for both kinds of gap, because under the heading-derives-
+   structure rule they now mean the same thing: a new page starts here.
+
+   Between two top-level pages it inserts an untitled page (addPageAfter).
+   Between two sheets of one chapter it splits the chapter at the block that
+   currently opens the lower sheet, which produces exactly the same thing — an
+   untitled page — because the split's second half has no heading.
+
+   Invisible until the pointer is in the gutter: a rule this often would be
+   noise on a page you are reading rather than restructuring. The strip itself
+   stays hit-testable so there is something to hover; only the pill and the line
+   fade in. Nothing lives in this band (the sheets stop at its top edge and the
+   next one starts at its bottom), so it intercepts no text clicks. */
+function PageGapInsert({ top, height, onAdd }: { top: number | string; height: number; onAdd: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      className="flex items-center justify-center"
+      /* Editing chrome, not page content: LiveSheetThumb strips everything
+         carrying this attribute out of its clone of the canvas. */
+      data-canvas-chrome=""
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{ position: 'absolute', left: 0, right: 0, top, height, zIndex: 4 }}
+    >
+      <div style={{
+        position: 'absolute', left: 0, right: 0, top: '50%', height: 1.5, marginTop: -0.75,
+        background: BLUE, borderRadius: 1, opacity: hover ? 1 : 0, transition: 'opacity .1s ease',
+      }} />
+      <button
+        onClick={onAdd}
+        className="cursor-pointer"
+        title="Add a page here"
+        style={{
+          ...ns, position: 'relative', display: 'flex', alignItems: 'center', gap: 4,
+          height: 24, padding: '0 10px', borderRadius: 999, border: `1px solid ${BLUE}`,
+          background: '#fff', color: BLUE, fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap',
+          boxShadow: '0 1px 3px rgba(15,23,51,0.12)',
+          opacity: hover ? 1 : 0, transition: 'opacity .1s ease',
+          pointerEvents: hover ? 'auto' : 'none',
+        }}
+      >
+        <PlusIcon />
+        Add page
+      </button>
+    </div>
+  );
+}
+
 function PlusIcon({ color = 'currentColor' }: { color?: string }) {
   return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>;
 }
 function MoveTopIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 4h14M12 20V8M7 13l5-5 5 5" /></svg>;
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 4h14M12 20V8M7 13l5-5 5 5" /></svg>;
 }
 function MoveBottomIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 20h14M12 4v12M7 11l5 5 5-5" /></svg>;
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 20h14M12 4v12M7 11l5 5 5-5" /></svg>;
+}
+function MoreIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>;
 }
 
-/* A row's own actions, as a floating bar rather than a "···" menu. Duplicate and
-   Delete live in a bar everywhere else in this editor — that's what
-   FloatingObjectBar is on the canvas — so the page and chapter lists shouldn't be
-   the one place they hide behind a menu: a click to open, a line to read and a
-   second click, for what a named icon does in one aimed press.
-   Revealed on hover/focus and absolutely positioned over the row, so at rest it
-   still costs the row no width — which was the only thing the menu was buying
-   (chapter titles truncating behind an inline icon cluster is what put those
-   actions in a menu in the first place).
-   A disabled action stays in place with its reason in the tooltip rather than
-   vanishing, so the bar doesn't change shape from one row to the next. */
-function RowActionBar({ items }: {
-  /* `active` is for the one item here that is a state rather than a verb —
-     whether a chapter is in the contents. Every other button does something and
-     forgets; that one has to show which way it currently sits, or you'd have to
-     open the tooltip to read it back. */
-  items: { label: string; icon: React.ReactNode; onClick: () => void; disabled?: boolean; hint?: string; danger?: boolean; active?: boolean }[];
+/* A row's own actions, behind a "···" rather than the inline icon bar this
+   replaces. That bar was the right call while a row carried two obvious verbs;
+   Chapters rows had grown to four, and the survey of this exact pattern is
+   consistent once a row passes two or three — Jira's sidebar rows, Arcade's
+   per-step menu, Canva's per-page menu, Vellum's chapter gear, Atticus' row
+   menu are all menus. The two specific things the bar couldn't do:
+     · "Move to top"/"Move to bottom" are arrow glyphs nobody reads without
+       opening a tooltip each, so the bar cost four hovers to decode.
+     · "In contents" is a STATE, not a verb. A blue-tinted icon only hints at
+       it; a checked menu row says it.
+   A disabled item also gets to explain itself on a second line here, instead of
+   hiding its reason in a tooltip on a greyed-out square.
+   Still revealed on hover/focus and absolutely positioned over the row, so at
+   rest it costs the row no width — but it stays visible while its own menu is
+   open, or moving the pointer to the menu would fade the trigger out from
+   under it. */
+const MENU_W = 186;
+
+type RowMenuItem = { label: string; icon: React.ReactNode; onClick: () => void; disabled?: boolean; hint?: string; danger?: boolean; checked?: boolean };
+
+function RowMenu({ items, ariaLabel, persistent = false }: {
+  items: RowMenuItem[];
+  ariaLabel: string;
+  /* Laid out in the row and always on, rather than revealed over it — which
+     puts it at the same persistence as the drag handle at the row's other end,
+     the pairing every reorderable list surveyed uses (Qatalog and Rox carry
+     both permanently; Notion hides both). The cost is 26px of the title's
+     width, which is what sent these actions into a menu to begin with. */
+  persistent?: boolean;
 }) {
+  /* Portalled to the body at fixed coordinates rather than absolutely
+     positioned inside the row. The panel that holds these rows is
+     `overflow: hidden` and only 150px wide on the Pages tab — narrower than the
+     menu — so an in-flow menu was clipped on one side or the other whichever
+     way it was aligned, and a `transform` anywhere up the row's ancestry
+     silently trapped its z-index (which is what put it behind the rows below
+     it). Neither can happen out here.
+     The trade is that a fixed menu doesn't follow its trigger, so scrolling
+     closes it — the same thing every menu in this position does. */
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const open = at !== null;
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as HTMLElement)) setAt(null); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setAt(null); };
+    const onScroll = () => setAt(null);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    // Capture phase: the panel scrolls, not the window, so a bubbling listener
+    // on document would never hear it.
+    document.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
+    };
+  }, [open]);
+
   return (
     <div
-      className="flex items-center"
-      /* The bar swallows the row's own press: every button here acts on the row,
-         and a click that also jumped to the page — or began a reorder drag, since
-         these rows are draggable — would fire two intents from one press. */
+      ref={ref}
+      /* The trigger swallows the row's own press: every item here acts on the
+         row, and a click that also jumped to the page — or began a reorder drag,
+         since these rows are draggable — would fire two intents from one press. */
       onMouseDown={(e) => e.stopPropagation()}
       draggable={false}
       onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      style={{ gap: 1, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: 3, boxShadow: MENU_SHADOW, width: 'max-content' }}
+      className={persistent ? 'flex-shrink-0' : `transition-opacity duration-100 ${open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
     >
-      {items.map((it) => {
-        const color = it.disabled ? '#C3CBD6' : it.danger ? '#B91C1C' : it.active ? BLUE : INK;
-        const button = (
-          <button
-            disabled={it.disabled}
-            onClick={(e) => { e.stopPropagation(); it.onClick(); }}
-            aria-label={it.label}
-            className="flex items-center justify-center"
-            style={{
-              width: 26, height: 26, borderRadius: RADIUS_SM, border: 'none', background: 'none',
-              color, flexShrink: 0, cursor: it.disabled ? 'not-allowed' : 'pointer',
-            }}
-            onMouseEnter={(e) => { if (!it.disabled) e.currentTarget.style.background = '#F5F6F8'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
-          >
-            {it.icon}
-          </button>
-        );
-        // The label is the tooltip — an icon bar carries no visible text, so the
-        // action's name and (when it can't run) its reason share the one bubble.
-        return <Tooltip key={it.label} label={it.disabled && it.hint ? it.hint : it.label} position="top">{button}</Tooltip>;
-      })}
+      <button
+        aria-label={ariaLabel}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (open) { setAt(null); return; }
+          const r = e.currentTarget.getBoundingClientRect();
+          const h = items.length * 30 + 8;
+          // Right-aligned to the trigger, then clamped into the viewport — and
+          // flipped above it when there isn't room below.
+          const left = Math.min(Math.max(8, r.right - MENU_W), window.innerWidth - MENU_W - 8);
+          const top = r.bottom + 4 + h > window.innerHeight - 8 ? r.top - 4 - h : r.bottom + 4;
+          setAt({ top: Math.max(8, top), left });
+        }}
+        className="flex items-center justify-center cursor-pointer"
+        /* The floating one is a chip lifted off a thumbnail, so it carries a
+           border and a shadow to stay legible over artwork. The persistent one
+           sits on the panel's own white — the same chrome there would read as a
+           raised button on every row.
+           Its own shadow, not MENU_SHADOW: that one is 0/8/24, built to float a
+           dropdown panel, and on a 26px square it threw the chip's visual mass
+           8px low with a 24px bleed out the sides. The box was measurably
+           centred in the thumbnail's corner — 6.00px to the top edge and 6.00px
+           to the right, scanned off the render at 8x — and still read as sitting
+           low and left, because a directional shadow is what the eye weighs, not
+           the border box. A tight, near-symmetric one instead. */
+        style={{
+          width: 26, height: 26, borderRadius: RADIUS_SM, padding: 0,
+          color: persistent ? SLATE : INK,
+          background: open ? '#EEF1F5' : persistent ? 'none' : '#fff',
+          border: persistent ? 'none' : `1px solid ${BORDER}`,
+          boxShadow: persistent ? 'none' : '0 1px 3px rgba(15,23,51,0.10)',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = '#F5F6F8'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = open ? '#EEF1F5' : persistent ? 'none' : '#fff'; }}
+      >
+        <MoreIcon />
+      </button>
+      {at && createPortal(
+        <div
+          role="menu"
+          className="flex flex-col"
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed', top: at.top, left: at.left, width: MENU_W,
+            zIndex: 1000, padding: 4, background: '#fff',
+            borderRadius: RADIUS_MD, border: `1px solid ${PANEL_BORDER}`, boxShadow: MENU_SHADOW,
+          }}
+        >
+          {items.map((it) => (
+            <button
+              key={it.label}
+              role="menuitem"
+              disabled={it.disabled}
+              onClick={(e) => { e.stopPropagation(); setAt(null); it.onClick(); }}
+              className="flex items-start text-left"
+              style={{
+                ...ns, gap: 8, padding: '6px 8px', borderRadius: RADIUS_SM, border: 'none',
+                background: 'none', width: '100%',
+                color: it.disabled ? '#A9B2BF' : it.danger ? '#B91C1C' : INK,
+                cursor: it.disabled ? 'not-allowed' : 'pointer',
+              }}
+              onMouseEnter={(e) => { if (!it.disabled) e.currentTarget.style.background = it.danger ? '#FEF2F2' : '#F5F6F8'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+            >
+              {/* Icon left, tick right — the arrangement a menu that carries
+                  both needs, since a glyph in the tick's slot would read as the
+                  state itself. The icons are the same ones these actions wore in
+                  the bar this replaced; what they've gained is a name beside
+                  them instead of a tooltip you had to sit still to read. */}
+              <span className="flex items-center justify-center" style={{ width: 16, flexShrink: 0, height: 17 }}>{it.icon}</span>
+              <span style={{ minWidth: 0, flex: 1, fontSize: 12.5, lineHeight: '17px' }}>
+                {it.label}
+                {it.disabled && it.hint && (
+                  <span style={{ display: 'block', fontSize: 11, lineHeight: '15px', color: '#A9B2BF', marginTop: 1 }}>{it.hint}</span>
+                )}
+              </span>
+              <span style={{ color: BLUE, height: 17 }} className="flex items-center"><MenuTick on={!!it.checked} /></span>
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
@@ -17375,18 +20444,47 @@ function RowActionBar({ items }: {
 /* One column, not a grid — PowerPoint, Google Slides and Canva's own default
    rail all read a page list this way; Canva's grid only shows up as a
    separate, deliberately-entered "Grid view" for bulk reordering, not the
-   everyday panel. A single wide column also means an actually-legible
-   thumbnail instead of a 124px postage stamp. */
-function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, metadata, activePageId, onJump, onAddPageAt, onDuplicatePage, onDeletePage, onReorder }: {
+   everyday panel.
+   One column, thumbnail filling the panel's width. The height problem
+   this solves is real — at the old 240px panel's full 212px width a US Letter
+   sheet is 274 tall, so with two text lines each row ran ~330px and two pages
+   were visible at a time — but a GRID is not how anything solves it. Of the
+   portrait-page navigators surveyed, PandaDoc, Dropbox's PDF editor, Zillow's
+   60-page lease viewer, Evernote and QuickBooks' report builder are all a
+   single column of small thumbnails in a narrow panel; Dropbox offers a grid
+   behind a toggle with the list as its default, Dovetail's grid is a popover
+   page-picker rather than a panel, and InDesign's side-by-side option means
+   SPREADS (two facing pages), which is semantic rather than density. Same story
+   as slide software, where the grid is Canva's "Grid view" and PowerPoint's
+   Slide Sorter — a mode you enter on purpose.
+   Unlabelled, though, unlike the row this replaced: not one thumbnail rail
+   surveyed — Pitch, Canva, Figma Slides, Gamma, Chronicle, Manus, Zillow,
+   Dropbox — puts a name on every row, and Arcade labels only the selected step.
+   Chapters is already the named list, so a name repeated down all twenty sheets
+   of a chapter was Pages doing that tab's job in the room it needed for its
+   own. The name moves to the tooltip. (QuickBooks is the one counter-example:
+   it captions every page. Its documents have four sections, not forty.) */
+function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, metadata, activePageId, activeSheetIndex, getPageEl, onJump, onAddPageAt, onDuplicatePage, onDeletePage, onReorder }: {
   pages: PageMeta[];
   theme: ThemeDef;
   chapterContent: Record<string, string>;
   fieldContent: Record<string, string>;
   activePageId: string | null;
-  onJump: (id: string) => void;
+  /* Which SHEET of that section the panel is pointing at, when it knows. The
+     canvas only reports a section — nothing downstream of the paginator tracks
+     which of a chapter's sheets the caret sits on — so this is null for a
+     selection made on the canvas and set only when the sheet was picked here.
+     Null means "somewhere in this section", which the row styling says with a
+     tint across every sheet of it rather than a ring on a sheet it can't
+     identify. */
+  activeSheetIndex: number | null;
+  onJump: (id: string, sheetIndex: number) => void;
   // The book's real pages, one entry per sheet — a 20-page chapter contributes
   // 20 of these. See bookPages in BookEditorView.
   bookPages: { sectionId: string; indexInSection: number; sectionPages: number }[];
+  /** The canvas element rendering a page, so a thumbnail can be cloned out of
+      the sheet stack that is already laid out there — see LiveSheetThumb. */
+  getPageEl: (id: string) => HTMLElement | null;
   onAddPageAt: (afterId: string) => void;
   metadata: BookMetadata;
   onDuplicatePage: (id: string) => void;
@@ -17403,21 +20501,79 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
   // card and the panel's right edge (where the canvas begins), reading
   // as a stray gap between two panels that were actually flush.
   const geo = useContext(PageGeometryContext);
-  const thumbW = INSPECTOR_W - 14 * 2;
-  const thumbH = thumbW * (geo.h / geo.w);
+  /* MEASURED off the column, not computed from the panel constant. Deriving it
+     arithmetically means every term has to be right — the panel width, its 1px
+     border, both paddings — and any one of them being off by a pixel makes the
+     thumbnail wider than the column it sits in. It then overhangs on the right,
+     and because the "···" is inset from the COLUMN while the border you read it
+     against is the THUMBNAIL's, the corner gaps stop matching: 4px top against
+     5px right, from a 1px error nobody can see on the page itself.
+     A scrollbar that takes width does the same thing an order of magnitude
+     worse (a 15px classic scrollbar would leave the chip ~19px from the
+     thumbnail's right edge and 4px from its top), and so does browser zoom that
+     lands the panel on a fractional width. None of those are reproducible in a
+     headless browser, which is exactly why this should never have been
+     arithmetic: the column knows its own width, so ask it. */
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [colW, setColW] = useState(PAGES_PANEL_W - 1 - 12 * 2);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const sync = () => {
+      const w = el.clientWidth;
+      // Guard the set: an unconditional one re-renders on every observation and
+      // the observer fires again on the resulting layout.
+      if (w > 0) setColW((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const thumbW = colW;
+  const thumbH = Math.round(thumbW * (geo.h / geo.w));
   const chapterCount = pages.filter((p) => p.type === 'chapter').length;
   const lastChapterId = [...pages].reverse().find((p) => p.type === 'chapter')?.id;
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; pos: 'before' | 'after' } | null>(null);
+  /* Marking the current page is only half of it: the rail scrolls, so on any
+     real book the mark is below the fold the moment you move on the canvas.
+     `nearest` rather than `center`, so a page already on screen doesn't lurch
+     the list under the pointer just because the caret crossed a boundary. */
+  const activeRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { activeRowRef.current?.scrollIntoView({ block: 'nearest' }); }, [activePageId, activeSheetIndex]);
+
+  /* One re-clone per pause in typing, not one per keystroke: a thumbnail is a
+     copy of a whole chapter's DOM, and a twenty-sheet chapter would otherwise
+     rebuild twenty of them on every character. The delay also lets the canvas's
+     own pagination pass (which runs on a frame, then dispatches) settle, so the
+     clone is taken of the page count the book has actually reflowed to rather
+     than the one it is mid-way through leaving. */
+  const [rev, setRev] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => setRev((r) => r + 1), 250);
+    return () => clearTimeout(t);
+  }, [pages, bookPages, chapterContent, fieldContent, metadata, theme, thumbW]);
 
   return (
     <div className="flex flex-col" style={{ height: '100%' }}>
-      <div style={{ padding: '16px 14px', flex: 1, overflowY: 'auto' }}>
-        <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
-          <div style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: EYEBROW_COLOR }}>Pages</div>
-          <div style={{ ...ns, fontSize: 11.5, color: SLATE }}>{bookPages.length} page{bookPages.length === 1 ? '' : 's'}</div>
-        </div>
-        <div className="flex flex-col" style={{ gap: 16 }}>
+      {/* Pinned, like the footer below it, rather than scrolling away with the
+          first page — but no rule under it. The heading sits on the same white
+          as the list and is told apart by weight and colour instead, which is
+          enough at this size; a line as well made the panel read as two stacked
+          components. Set out exactly like the Chapters header, count under
+          label: the two tabs are one component, so their headers shouldn't
+          disagree about their own shape, and Chapters can't put its count on
+          the same line ("4 chapters · 447 words" wraps into the label). */}
+      <div className="flex-shrink-0" style={{ padding: '16px 12px 8px' }}>
+        {/* INK, not the eyebrow grey. This is the panel's own title, and at
+            10.5px it was the lightest thing in a header whose count sat right
+            under it — the hierarchy read upside down. */}
+        <div style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: INK }}>Pages</div>
+        <div style={{ ...ns, fontSize: 11, color: SLATE, marginTop: 3 }}>{bookPages.length} page{bookPages.length === 1 ? '' : 's'}</div>
+      </div>
+      <div style={{ padding: '8px 12px 14px', flex: 1, overflowY: 'auto' }}>
+        <div ref={listRef} className="flex flex-col" style={{ gap: 14 }}>
           {bookPages.map((bp, i) => {
             const p = pages.find((x) => x.id === bp.sectionId);
             if (!p) return null;
@@ -17427,136 +20583,197 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
                thing than the row claims — so continuation sheets are
                navigation only. */
             const isFirstOfSection = bp.indexInSection === 0;
-            const active = p.id === activePageId && isFirstOfSection;
+            /* Two strengths, the pairing every rail researched for this uses:
+               Pitch rings the slide AND runs a blue bar down its gutter, Manus
+               rings it AND fills its number badge, Arcade rings it AND tints the
+               card. One cue alone — which is all this had, a 1.5px outline — is
+               invisible at a glance in a list of near-identical page previews.
+               `inSection` is the weak one and exists because of the null case
+               above: a chapter the caret is in but whose sheet we can't name
+               still has to look different from one you aren't reading. It used
+               to look like nothing at all — the old `&& isFirstOfSection` test
+               meant that while you were on sheet 4 of a 6-sheet chapter, NO row
+               in this panel was marked. */
+            const inSection = p.id === activePageId;
+            const active = inSection && (activeSheetIndex == null ? isFirstOfSection : bp.indexInSection === activeSheetIndex);
             const canDuplicate = p.type === 'chapter';
-            const canDelete = p.type === 'chapter' && chapterCount > 1;
-            const deleteHint =
-              p.type === 'chapter' && chapterCount <= 1 ? 'The book needs at least one chapter'
-              : p.type === 'toc' ? 'Remove the contents page from the Chapters tab'
-              : p.type === 'cover' || p.type === 'backmatter' ? `Can't delete the ${p.type === 'cover' ? 'cover' : 'back matter'}`
-              : undefined;
-            // The cover page's title literally defaults to "Cover" — same word
-            // as its type — so both lines read as an identical-looking pair.
-            const showType = p.type.toLowerCase() !== p.title.trim().toLowerCase();
-            // Fixed to the thumbnail's own width, not left to stretch across the
-            // panel — a wider row than its thumbnail is what put the "···"
-            // button (anchored to the row's corner) off in the dead space past
-            // the thumbnail's actual right edge instead of on it.
+            /* The contents page is deletable from here. deletePage has always
+               handled it — see the "at least one chapter" note where it's
+               declared, which exists precisely so removing the TOC isn't
+               blocked — and only this panel's own guard was stopping it,
+               sending you to the Chapters tab for something this row can do.
+               Cover and back matter stay put: a book with neither isn't a state
+               this editor has. */
+            const canDelete = p.type === 'chapter' ? chapterCount > 1 : p.type === 'toc';
+            /* Disabled ONLY where the state is recoverable — which is the line
+               the guidance actually draws, and not the one this menu drew first.
+               Nielsen's rule for inactive controls turns on whether the user can
+               get to the feature at all: grey out what they might unlock through
+               their own actions, leave out what sits behind a permanent barrier,
+               because a greyed row is a promise that something you could do
+               would light it up. Nothing lights up "Duplicate" on a cover — a
+               cover is not a duplicable page in any state of this book — so
+               offering it greyed is a puzzle with no solution. Those items are
+               gone from the menus that can't run them.
+               The last chapter's Delete is the one genuine disabled case left:
+               add a page and it lights up. So it's also the only one that still
+               prints a reason. */
+            const deleteHint = p.type === 'chapter' && chapterCount <= 1 ? 'The book needs at least one page' : undefined;
+            /* An untitled page is a continuation: it has no name of its own, so
+               it borrows the name of the chapter it belongs to. That name is no
+               longer printed under the cell — it's what the tooltip says. */
+            const ownerId = owningChapterId(pages, fieldContent, p.id);
+            const isContinuation = p.type === 'chapter' && ownerId !== p.id;
+            const owner = pages.find((x) => x.id === ownerId);
+            const rowTitle = isContinuation
+              ? (owner ? chapterTitleText(owner, fieldContent) || owner.title : 'Untitled page')
+              : p.title;
+            /* The whole label, since the cell shows nothing but a number: which
+               page this is, and where it sits inside its chapter. Sheets 2..n of
+               a chapter render as generic ruled placeholder lines rather than
+               real text, so without this they are identical grey cards. */
+            const cellLabel = bp.sectionPages > 1
+              ? `${rowTitle} — ${bp.indexInSection + 1} of ${bp.sectionPages}`
+              : isContinuation ? `${rowTitle} — continued` : rowTitle;
             const isChapter = p.type === 'chapter' && isFirstOfSection;
             const isDragging = dragId === p.id;
             const showDropBefore = isChapter && dropTarget?.id === p.id && dropTarget.pos === 'before';
             const showDropAfter = isChapter && dropTarget?.id === p.id && dropTarget.pos === 'after';
             return (
-              <div key={`${bp.sectionId}:${bp.indexInSection}`}>
-                {showDropBefore && <div style={{ height: 2, background: BLUE, borderRadius: 1, width: thumbW, marginBottom: 14 }} />}
-                <div
-                  className="group"
-                  // Only chapters move — cover, contents and back matter stay
-                  // pinned, same constraint reorderChapter itself already
-                  // enforces (see its own comment where it's declared).
-                  draggable={isChapter}
-                  onDragStart={(e) => {
-                    if (!isChapter) return;
-                    e.dataTransfer.setData('text/chapter-reorder', p.id);
-                    e.dataTransfer.effectAllowed = 'move';
-                    setDragId(p.id);
-                  }}
-                  onDragEnd={() => { setDragId(null); setDropTarget(null); }}
-                  onDragOver={(e) => {
-                    if (!isChapter || !dragId || dragId === p.id) return;
-                    e.preventDefault();
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const pos = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
-                    setDropTarget((prev) => (prev?.id === p.id && prev.pos === pos ? prev : { id: p.id, pos }));
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    if (!isChapter || !dragId || dragId === p.id || !dropTarget) return;
-                    onReorder(dragId, p.id, dropTarget.pos);
-                    setDragId(null);
-                    setDropTarget(null);
-                  }}
-                  style={{ position: 'relative', width: thumbW, opacity: isDragging ? 0.4 : 1, cursor: isChapter ? 'grab' : 'default' }}
-                >
+              <div
+                key={`${bp.sectionId}:${bp.indexInSection}`}
+                className="group"
+                ref={active ? activeRowRef : undefined}
+                title={cellLabel}
+                // Only chapters move — cover, contents and back matter stay
+                // pinned, same constraint reorderChapter itself already
+                // enforces (see its own comment where it's declared).
+                draggable={isChapter}
+                onDragStart={(e) => {
+                  if (!isChapter) return;
+                  e.dataTransfer.setData('text/chapter-reorder', p.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                  setDragId(p.id);
+                }}
+                onDragEnd={() => { setDragId(null); setDropTarget(null); }}
+                onDragOver={(e) => {
+                  if (!isChapter || !dragId || dragId === p.id) return;
+                  e.preventDefault();
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const pos = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+                  setDropTarget((prev) => (prev?.id === p.id && prev.pos === pos ? prev : { id: p.id, pos }));
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (!isChapter || !dragId || dragId === p.id || !dropTarget) return;
+                  onReorder(dragId, p.id, dropTarget.pos);
+                  setDragId(null);
+                  setDropTarget(null);
+                }}
+                style={{ position: 'relative', opacity: isDragging ? 0.4 : 1, cursor: isChapter ? 'grab' : 'default' }}
+              >
+                {(showDropBefore || showDropAfter) && (
+                  <div style={{ position: 'absolute', left: 0, right: 0, [showDropBefore ? 'top' : 'bottom']: -5, height: 2, background: BLUE, borderRadius: 1, zIndex: 3 }} />
+                )}
                 <button
-                  onClick={() => onJump(p.id)}
-                  className="text-left cursor-pointer"
+                  onClick={() => onJump(p.id, bp.indexInSection)}
+                  aria-label={cellLabel}
+                  aria-current={active ? 'true' : undefined}
+                  className="cursor-pointer block"
                   style={{ width: '100%', border: 'none', background: 'none', padding: 0 }}
                 >
-                  {/* Width was implicit (block-level, so it stretched to the
-                      button's full 100%) while the scaled preview inside stayed
-                      thumbW wide — the gap between them showed as blank space
-                      down the right edge, inside the outline. Pinned to the
-                      content's actual size instead. */}
-                  <div style={{ position: 'relative', width: thumbW, borderRadius: RADIUS_MD, outline: active ? RING : `1.5px solid ${BORDER}`, outlineOffset: 1 }}>
+                  {/* Two cues, never one: Manus rings the thumbnail AND fills its
+                      number badge, Pitch rings it AND runs a bar down the gutter,
+                      Arcade rings it AND tints the card. A 1.5px outline on its
+                      own — all this had — disappears in a grid of near-identical
+                      page previews.
+                      The third, weaker ring is for the chapter the caret is in
+                      when we can't name the sheet (see activeSheetIndex): it used
+                      to show nothing at all, so reading sheet 4 of a 6-sheet
+                      chapter left no mark anywhere in this panel. */}
+                  <div style={{
+                    position: 'relative', width: '100%', borderRadius: RADIUS_SM,
+                    outline: active ? `2px solid ${BLUE}` : inSection ? '1.5px solid #A8C4F7' : `1.5px solid ${BORDER}`,
+                    outlineOffset: 1,
+                  }}>
                     {/* p.bg first, like every other surface that paints a page:
                         the continuation-sheet fallback below draws straight onto
                         this box, so a page given its own colour would have shown
                         its later sheets on the template's instead. */}
-                    <div style={{ width: thumbW, height: thumbH, overflow: 'hidden', borderRadius: 5, background: p.bg ?? theme.bg }}>
-                      {isFirstOfSection ? (
+                    <div style={{ width: '100%', height: thumbH, overflow: 'hidden', borderRadius: RADIUS_SM, background: p.bg ?? theme.bg }}>
+                      {p.type === 'chapter' ? (
+                        /* Every sheet of a chapter, not just its first: the real
+                           one, cloned out of the canvas at this sheet's offset.
+                           See LiveSheetThumb for why a re-render can't produce
+                           sheet 2 of a chapter at all. */
+                        <LiveSheetThumb getPageEl={getPageEl} pageId={p.id} sheetIndex={bp.indexInSection} width={thumbW} rev={rev}>
+                          {isFirstOfSection ? (
+                            <PreviewPage page={p} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} />
+                          ) : (
+                            /* Only while the canvas is unreadable — before
+                               hydration, or on a version checkpoint. Ruled lines
+                               rather than an empty box: it still reads as a page
+                               of prose at this size, without claiming to show
+                               the real text. */
+                            <div className="flex flex-col justify-start" style={{ padding: `${geo.padY}px ${geo.padX}px`, gap: 4 }}>
+                              {Array.from({ length: 8 }, (_, k) => (
+                                <div key={k} style={{ height: 14, borderRadius: 2, background: BORDER, width: k % 4 === 3 ? '62%' : '100%' }} />
+                              ))}
+                            </div>
+                          )}
+                        </LiveSheetThumb>
+                      ) : (
+                        /* Cover, contents and back matter are one sheet each and
+                           the canvas draws them without a page stack, so they
+                           stay on the shared read-only renderer. */
                         <div style={{ width: geo.w, height: geo.h, transform: `scale(${thumbW / geo.w})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
                           <PreviewPage page={p} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} />
                         </div>
-                      ) : (
-                        /* A continuation sheet has no thumbnail yet: PreviewPage
-                           renders a whole section unpaginated, so there's no
-                           second page of it to scale down. Ruled lines rather
-                           than an empty box — it still reads as a page of prose
-                           at this size, without claiming to show the real text. */
-                        <div className="flex flex-col justify-start" style={{ padding: '14px 12px', gap: 5 }}>
-                          {Array.from({ length: 9 }, (_, k) => (
-                            <div key={k} style={{ height: 3, borderRadius: 2, background: BORDER, width: k % 4 === 3 ? '62%' : '100%' }} />
-                          ))}
-                        </div>
                       )}
                     </div>
-                    <div className="absolute flex items-center justify-center" style={{ bottom: 6, left: 6, minWidth: 19, height: 19, borderRadius: 4, background: 'rgba(15,23,51,0.55)', padding: '0 4px' }}>
+                    <div className="absolute flex items-center justify-center" style={{ bottom: 5, left: 5, minWidth: 18, height: 18, borderRadius: 4, background: active ? BLUE : 'rgba(15,23,51,0.55)', padding: '0 4px' }}>
                       <span style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#fff' }}>{i + 1}</span>
                     </div>
-                  </div>
-                  <div style={{ marginTop: 8, minWidth: 0, maxWidth: thumbW }}>
-                    <div style={{ ...ns, fontSize: 13, fontWeight: 600, color: active ? BLUE : INK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</div>
-                    {bp.sectionPages > 1 ? (
-                      <div style={{ ...ns, fontSize: 11, color: SLATE }}>{bp.indexInSection + 1} of {bp.sectionPages}</div>
-                    ) : showType ? (
-                      <div style={{ ...ns, fontSize: 11, color: SLATE, textTransform: 'capitalize' }}>{p.type}</div>
-                    ) : null}
                   </div>
                 </button>
 
                 {/* A sibling of the jump button, not a descendant of it — a button
                     inside a button is invalid HTML and browsers normalize the
-                    nesting unpredictably. The wrapping div (not Tooltip's own —
-                    Tooltip's trigger wrapper is itself `position:relative`, so
-                    the bar was anchoring to *that* tiny inline box instead of
-                    the row, landing wherever the wrapper's own place in normal
-                    flow was: right after the row's text, i.e. between cards)
-                    is what carries `position:absolute` here, anchored to the
-                    row exactly where the thumbnail's own corner is — the
-                    thumbnail is always the row's first, top element, so this
-                    stays correctly placed regardless of how the title below
-                    wraps. Hidden until hovered or focused — Canva's own
-                    reveal-on-hover behavior for its per-page controls, so the
-                    row reads clean at rest. */}
-                <div
-                  className="transition-opacity duration-100 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                  /* On every row, including a chapter's continuation sheets.
-                     Duplicate and Delete there act on the whole section, which
-                     is the only thing they can mean — you can't delete page 3
-                     of a chapter and keep pages 1, 2 and 4. */
-                  style={{ position: 'absolute', top: 6, right: 6 }}
-                >
-                  <RowActionBar
+                    nesting unpredictably. On the thumbnail's top-right corner,
+                    where Canva and Arcade put the same control, revealed on
+                    hover so the grid reads clean at rest.
+                    On every cell, including a chapter's continuation sheets:
+                    Duplicate and Delete there act on the whole section, which is
+                    the only thing they can mean — you can't delete page 3 of a
+                    chapter and keep pages 1, 2 and 4. */}
+                {/* 4px from the page container on both axes, symmetric by
+                   construction. Worth knowing when this is next touched: several
+                   templates run a coloured rule full-bleed across the top of the
+                   page (the contents page has a 1.5px blue bar 0.25px inside the
+                   container), so on those pages the thing the eye measures the
+                   chip against up top is that bar rather than the container's own
+                   edge, and the top gap READS smaller than the right one. It was
+                   tried at 8 to buy clearance from the artwork; that made the
+                   right gap the conspicuous one instead. No single inset squares
+                   it for every page, because the top reference is page content
+                   and the right is the frame — equal insets is the rule, and the
+                   fix for a crowded corner belongs in the template that paints to
+                   its own top edge. */}
+                <div style={{ position: 'absolute', top: 4, right: 4 }}>
+                  <RowMenu
+                    ariaLabel={`Actions for ${cellLabel}`}
                     items={[
                       { label: 'Add page after', icon: <PlusIcon />, onClick: () => onAddPageAt(p.id) },
-                      { label: 'Duplicate page', icon: <DuplicateIcon color="currentColor" />, onClick: () => onDuplicatePage(p.id), disabled: !canDuplicate, hint: 'Only chapter pages can be duplicated' },
-                      { label: 'Delete page', icon: <TrashIcon color="currentColor" />, onClick: () => onDeletePage(p.id), disabled: !canDelete, hint: deleteHint, danger: true },
+                      ...(canDuplicate ? [{ label: 'Duplicate page', icon: <DuplicateIcon color="currentColor" />, onClick: () => onDuplicatePage(p.id) }] : []),
+                      /* A chapter's Delete stays on the menu even when it's the
+                         last one — that's the recoverable case. Cover and back
+                         matter drop theirs entirely. */
+                      ...(canDelete || p.type === 'chapter'
+                        ? [{ label: 'Delete page', icon: <TrashIcon color="currentColor" />, onClick: () => onDeletePage(p.id), disabled: !canDelete, hint: deleteHint, danger: true }]
+                        : []),
                     ]}
                   />
                 </div>
-                </div>
-                {showDropAfter && <div style={{ height: 2, background: BLUE, borderRadius: 1, width: thumbW, marginTop: 14 }} />}
               </div>
             );
           })}
@@ -17567,7 +20784,7 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
           No "add table of contents" here: a ToC isn't a page you decide to add,
           it's a view of the chapters, so it's added and removed from Chapters —
           which is also where the chapters it lists are. */}
-      <div style={{ padding: '12px 14px', borderTop: `1px solid ${BORDER}`, flexShrink: 0 }}>
+      <div style={{ padding: '12px', borderTop: `1px solid ${BORDER}`, flexShrink: 0 }}>
         <FullButton label="+ Add page" onClick={() => onAddPageAt(lastChapterId ?? pages[pages.length - 1].id)} />
       </div>
     </div>
@@ -17587,8 +20804,12 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
    structure — rather than Chapters duplicating Pages' job from the other rail.
    Same reorder/delete/jump controls as before, plus a direct "Add chapter"
    entry point since dragging a tile in from Insert is no longer how you do that. ── */
-function ChaptersPanel({ pages, wordTotal, wordCounts, titleWordCounts, onJump, onMoveToEdge, onReorder, onDelete, onAddChapter, onAddToc, onSetTocExcluded }: {
+function ChaptersPanel({ pages, fieldContent, wordTotal, wordCounts, titleWordCounts, onJump, onMoveToEdge, onReorder, onDelete, onAddChapter, onAddToc }: {
   pages: PageMeta[];
+  /* Needed only to tell a chapter from a continuation page — see isChapterStart.
+     This panel is the book's STRUCTURE, so an untitled page has no row here at
+     all; its words are counted against the chapter it belongs to instead. */
+  fieldContent: Record<string, string>;
   wordTotal: number;
   // Already tracked for the book total; writers work to the per-chapter number,
   // so it belongs on the row rather than only in the toolbar's sum.
@@ -17599,40 +20820,49 @@ function ChaptersPanel({ pages, wordTotal, wordCounts, titleWordCounts, onJump, 
   onReorder: (draggedId: string, targetId: string, pos: 'before' | 'after') => void;
   onDelete: (id: string) => void;
   onAddChapter: () => void;
-  /* Both halves of the table of contents now live on this panel, because both
-     are properties of an element that is already in this list. Vellum puts
-     remove and scope in the gear menu beside the ToC's own title in the
-     Navigator; Atticus puts Include In on the three-dot menu of any page or
-     chapter row in its left nav. We had arrived at the remove half already —
-     the row below has carried "Remove table of contents" all along — and then
-     built a second switch in Book settings, so the contents page had three
-     controls in three panels that disagreed with each other: this one removed
-     it, Pages said you couldn't and sent you to Book settings, and Book
-     settings held the switch. One element, one place. */
+  /* Adding and removing the contents page both live on this panel, because the
+     contents page is an element already in this list — it had grown a second
+     switch over in Book settings, and the two disagreed with each other.
+     Choosing which chapters it lists is NOT here: a per-chapter "include in
+     contents" toggle turned out to be a minority feature (Kindle Create and
+     Atticus have it; Reedsy Studio only offers ToC depth and tells you to move
+     the section to back matter, Vellum scopes by element type rather than by
+     chapter, and Word, Google Docs and Canva derive inclusion from heading
+     level alone). Here a chapter is its heading, so the same escape hatch those
+     products point at already exists: a page with no heading is a continuation
+     and was never listed. */
   onAddToc: () => void;
-  onSetTocExcluded: (chapterId: string, excluded: boolean) => void;
 }) {
   const hasToc = pages.some((p) => p.type === 'toc');
-  const chapterCount = pages.filter((p) => p.type === 'chapter').length;
+  const chapterCount = chapterStarts(pages, fieldContent).length;
   // Position among chapters only (not the raw page index) — cover/toc sit before
   // the first chapter and back matter after the last, so "already at the edge"
   // has to be measured against other chapters, not neighboring page types.
-  const chapterOrder = pages.filter((p) => p.type === 'chapter').map((p) => p.id);
+  const chapterOrder = chapterStarts(pages, fieldContent).map((p) => p.id);
+  const rows = pages.filter((p) => p.type !== 'chapter' || isChapterStart(p, fieldContent));
+  /* A chapter's word count is its own plus every continuation page under it —
+     the row claims to count the chapter, and the chapter is all of those pages. */
+  const wordsInChapter = (id: string) => pages.reduce((sum, p) => (
+    owningChapterId(pages, fieldContent, p.id) === id
+      ? sum + (wordCounts[p.id] ?? 0) + (titleWordCounts[p.id] ?? 0)
+      : sum
+  ), 0);
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; pos: 'before' | 'after' } | null>(null);
 
   return (
     <div className="flex flex-col" style={{ height: '100%' }}>
-      <div style={{ padding: '16px 14px', flex: 1, overflowY: 'auto' }}>
-      {/* Stacked, not a justify-between row: at the navigator's width the count
-          ("4 chapters · 447 words") wrapped and collided with the eyebrow. */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: EYEBROW_COLOR }}>Chapters</div>
-        <div style={{ ...ns, fontSize: 11.5, color: SLATE, marginTop: 2 }}>{chapterCount} chapter{chapterCount === 1 ? '' : 's'} · {wordTotal} words</div>
+      {/* Pinned and unruled, laid out exactly like the Pages header — the two
+          tabs are one component, so their headers sit at the same height and
+          read the same way. */}
+      <div className="flex-shrink-0" style={{ padding: '16px 14px 8px' }}>
+        <div style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: INK }}>Chapters</div>
+        <div style={{ ...ns, fontSize: 11, color: SLATE, marginTop: 3 }}>{chapterCount} chapter{chapterCount === 1 ? '' : 's'} · {wordTotal} words</div>
       </div>
-      <div className="flex flex-col" style={{ gap: 2, marginBottom: 12 }}>
-        {pages.map((p, i) => {
+      <div style={{ padding: '8px 14px 14px', flex: 1, overflowY: 'auto' }}>
+      <div className="flex flex-col" style={{ gap: 4 }}>
+        {rows.map((p, i) => {
           const isChapter = p.type === 'chapter';
           const posAmongChapters = isChapter ? chapterOrder.indexOf(p.id) : -1;
           const canMoveToTop = isChapter && posAmongChapters > 0;
@@ -17669,13 +20899,18 @@ function ChaptersPanel({ pages, wordTotal, wordCounts, titleWordCounts, onJump, 
                 }}
                 // relative so the hover action bar can overlay the row's right
                 // edge instead of taking a column of its width.
-                style={{ position: 'relative', gap: 2, padding: 2, borderRadius: RADIUS_SM, opacity: isDragging ? 0.4 : 1 }}
+                style={{ position: 'relative', gap: 2, padding: '4px 2px', borderRadius: RADIUS_SM, opacity: isDragging ? 0.4 : 1 }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = '#F7F8FA'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
               >
-                {/* Drag handle — a visible affordance rather than making the whole
-                    row silently draggable, matching how Reedsy Studio marks its
-                    chapter rows (a dedicated handle icon, not an implicit drag). */}
+                {/* Drag handle — always visible, which is what every reorderable
+                    list surveyed does (Qatalog, Rox, Circle, Behance, Maze,
+                    Juicebox, Jira, Linear, Shopify, Zendesk) and what Atlassian's
+                    guidelines call for, on the grounds that you have to know a
+                    row is draggable before you'll try to grab it. Light grey, not
+                    ink: it's an affordance the row wears, not something to read.
+                    Its 18px column is reserved on non-chapter rows too, so the
+                    titles all start on the same line. */}
                 {isChapter ? (
                   <div className="flex items-center justify-center flex-shrink-0" style={{ width: 18, height: 28, cursor: 'grab', color: '#C3CBD6' }} title="Drag to reorder">
                     <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor"><circle cx="2.5" cy="2.5" r="1.5" /><circle cx="7.5" cy="2.5" r="1.5" /><circle cx="2.5" cy="8" r="1.5" /><circle cx="7.5" cy="8" r="1.5" /><circle cx="2.5" cy="13.5" r="1.5" /><circle cx="7.5" cy="13.5" r="1.5" /></svg>
@@ -17695,27 +20930,39 @@ function ChaptersPanel({ pages, wordTotal, wordCounts, titleWordCounts, onJump, 
                       well before the panel's own width would justify it. Two lines
                       before any clamp gives real titles room without letting a
                       pathological one blow out the row indefinitely. */}
-                  <div style={{ ...ns, fontSize: 13, fontWeight: 600, color: INK, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i + 1}. {p.title}</div>
-                  <div style={{ ...ns, fontSize: 10.5, color: SLATE, textTransform: 'capitalize' }}>
+                  {/* Two lines, and never three. One line + ellipsis is what
+                      every navigator surveyed does (Notion, ElevenLabs, Craft,
+                      Plane) and nothing found wraps a list row to three — a list
+                      is scannable because its rows are the same height, and each
+                      extra line trades more of that away. Two is the concession
+                      this one place earns: a chapter row has no thumbnail, so the
+                      name is the entire row, and real book chapters are long
+                      ("The Weight of Everything That Came Before"). Past two the
+                      title attribute takes over, which is what the surveyed
+                      products lean on from line one. */}
+                  <div title={p.title} style={{ ...ns, fontSize: 13, fontWeight: 600, color: INK, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i + 1}. {p.title}</div>
+                  <div style={{ ...ns, fontSize: 11, color: SLATE, textTransform: 'capitalize', marginTop: 2 }}>
                     {p.type}
-                    {isChapter && <span style={{ textTransform: 'none' }}> · {(wordCounts[p.id] ?? 0) + (titleWordCounts[p.id] ?? 0)} words</span>}
+                    {isChapter && <span style={{ textTransform: 'none' }}> · {wordsInChapter(p.id)} words</span>}
                   </div>
                 </button>
-                {/* Overlaid on the row's right edge, not laid out beside the
-                    title — an inline icon cluster is what cost chapter names
-                    most of the row ("The Weight of Everything" → "The Weight …")
-                    while the panel still had room. Absolute + reveal-on-hover
-                    keeps the title's full width at rest and still puts every
-                    action one click away, which the menu didn't. */}
+                {/* In the row's flow now, not overlaid on it: a button that is
+                    always visible can't sit on top of the title it would cover.
+                    That costs the name 26px of width, which is what put these
+                    actions behind a menu in the first place — the 2-line clamp
+                    below is what pays for it. */}
                 {isChapter && (
-                  <div
-                    className="transition-opacity duration-100 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                    style={{ position: 'absolute', top: '50%', right: 2, transform: 'translateY(-50%)' }}
-                  >
-                    <RowActionBar
+                  <div className="flex items-center flex-shrink-0">
+                    <RowMenu
+                      persistent
+                      ariaLabel={`Actions for ${p.title}`}
                       items={[
-                        { label: 'Move to top', icon: <MoveTopIcon />, onClick: () => onMoveToEdge(p.id, 'top'), disabled: !canMoveToTop, hint: 'Already the first chapter' },
-                        { label: 'Move to bottom', icon: <MoveBottomIcon />, onClick: () => onMoveToEdge(p.id, 'bottom'), disabled: !canMoveToBottom, hint: 'Already the last chapter' },
+                        /* No reason line on these two: a greyed-out "Move to
+                           top" on the row that is visibly already at the top
+                           explains itself. The two below keep theirs, because
+                           nothing on screen says why they're off. */
+                        { label: 'Move to top', icon: <MoveTopIcon />, onClick: () => onMoveToEdge(p.id, 'top'), disabled: !canMoveToTop },
+                        { label: 'Move to bottom', icon: <MoveBottomIcon />, onClick: () => onMoveToEdge(p.id, 'bottom'), disabled: !canMoveToBottom },
                         /* Only while there is a contents page to be in or out
                            of. Previously this was a toggle in Book settings that
                            did nothing until you had selected a chapter on the
@@ -17723,12 +20970,6 @@ function ChaptersPanel({ pages, wordTotal, wordCounts, titleWordCounts, onJump, 
                            first" placeholder on every visit. Here the row you
                            clicked IS the chapter — there is nothing to select
                            first, which is why Atticus puts it on the row too. */
-                        ...(hasToc ? [{
-                          label: (p as ChapterPage).excludeFromToc ? 'Not in contents — add it back' : 'In contents — leave it out',
-                          icon: <Icon d={ICONS.list} size={15} />,
-                          onClick: () => onSetTocExcluded(p.id, !(p as ChapterPage).excludeFromToc),
-                          active: !(p as ChapterPage).excludeFromToc,
-                        }] : []),
                         {
                           label: 'Delete chapter',
                           icon: <TrashIcon color="currentColor" />,
@@ -17749,13 +20990,15 @@ function ChaptersPanel({ pages, wordTotal, wordCounts, titleWordCounts, onJump, 
                     (see addTocPage) — so it gets a plain delete, no reorder controls
                     since its position is fixed right after the cover. */}
                 {p.type === 'toc' && (
-                  <div
-                    className="transition-opacity duration-100 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                    style={{ position: 'absolute', top: '50%', right: 2, transform: 'translateY(-50%)' }}
-                  >
-                    <RowActionBar items={[{ label: 'Remove table of contents', icon: <TrashIcon color="currentColor" />, onClick: () => onDelete(p.id), danger: true }]} />
+                  <div className="flex items-center flex-shrink-0">
+                    <RowMenu persistent ariaLabel="Actions for the table of contents" items={[{ label: 'Remove table of contents', icon: <TrashIcon color="currentColor" />, onClick: () => onDelete(p.id), danger: true }]} />
                   </div>
                 )}
+                {/* Cover and back matter have no row actions at all, so they need
+                    the menu's column held open or their titles would run 26px
+                    wider than every chapter's and the list would lose its right
+                    edge. Same reason the handle's column is reserved above. */}
+                {!isChapter && p.type !== 'toc' && <div style={{ width: 26, flexShrink: 0 }} />}
               </div>
               {showDropAfter && <div style={{ height: 2, background: BLUE, borderRadius: 1, margin: '0 6px' }} />}
             </div>
@@ -17782,17 +21025,45 @@ function ChaptersPanel({ pages, wordTotal, wordCounts, titleWordCounts, onJump, 
 
 /* Reports what the local snapshot is actually doing. "Unsaved" is deliberately
    quiet rather than alarming — it's the normal state between a keystroke and the
-   debounce firing; only a failed write is worth colour. */
-function SaveIndicator({ state }: { state: SaveState }) {
+   debounce firing; only a failed write is worth colour.
+
+   The healthy states carry no timestamp on purpose. The debounce is 700ms, so
+   "Saved" is never more than a second or two stale while you're working — a time
+   there would read "just now" almost always, and it would be a ticking number
+   sitting between two static facts (chapter count, word count). When a time is
+   the point you're in Version history, which states it per checkpoint. The error
+   state is the exception: "storage full" says something is wrong but not how much
+   is at risk, and that's the whole decision — keep typing, or stop and export. */
+function SaveIndicator({ state, lastSavedAt }: { state: SaveState; lastSavedAt: number }) {
+  /* The error state is reached by a change and then sits there, so without this
+     the age would freeze at whatever it was when the write failed — the one
+     reading that has to stay true is the one that would go stalest. Only runs
+     while it's on screen and failing. */
+  const [, tick] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (state !== 'error') return;
+    const t = setInterval(tick, 30000);
+    return () => clearInterval(t);
+  }, [state]);
+
+  /* relativeTimeLabel's output is capitalised and can carry its own proper nouns
+     ("Sep 27 at 3:04 PM"), so it's dropped in after a separator rather than
+     lowercased into a sentence — lowercasing would give "sep 27 at 3:04 pm". */
+  const errorLabel = lastSavedAt
+    ? `Not saved — storage full · Last saved ${relativeTimeLabel(lastSavedAt)}`
+    : 'Not saved — storage full';
   const look = state === 'saved'
     ? { color: '#29A341', label: 'Saved' }
     : state === 'saving'
       ? { color: SLATE, label: 'Saving…' }
       : state === 'error'
-        ? { color: '#B91C1C', label: 'Not saved — storage full' }
+        ? { color: '#B91C1C', label: errorLabel }
         : { color: SLATE, label: 'Unsaved changes' };
   return (
-    <div className="flex items-center" style={{ gap: 5 }} title={state === 'error' ? 'This book is kept in your browser. Clearing site data or a full quota will lose it.' : undefined}>
+    /* nowrap + no shrink because the error label is several times longer than the
+       other three — left to wrap it would grow the top bar's height at the exact
+       moment the editor should look unchanged apart from the warning. */
+    <div className="flex items-center" style={{ gap: 5, whiteSpace: 'nowrap', flexShrink: 0 }} title={state === 'error' ? 'This book is kept in your browser. Clearing site data or a full quota will lose it.' : undefined}>
       {state === 'saved' ? (
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={look.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
       ) : state === 'error' ? (
@@ -18213,22 +21484,21 @@ function FindPanel({ registry, pages, onJump, inputRef, activeChapterId }: {
         {checkOption('Whole words only', wholeWord, () => setWholeWord((v) => !v))}
       </div>
 
-      {/* appearance:none + SelectChevron, the same construction as every other select
-          in this file. Left native, the OS draws its own arrow at its own inset, which
-          sat noticeably further from the edge than the custom chevrons stacked directly
-          above it. paddingRight: 28 keeps a long option label clear of the mark. */}
-      <div style={{ position: 'relative', marginTop: 10 }}>
-        <select
-          value={effectiveScope}
-          onChange={(e) => setScope(e.target.value as 'book' | 'chapter')}
-          aria-label="Where to search"
-          style={{ ...ns, width: '100%', fontSize: 12.5, padding: '7px 28px 7px 10px', appearance: 'none', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, background: '#fff', color: INK, cursor: 'pointer' }}
-        >
-          <option value="book">In the whole book</option>
-          <option value="chapter" disabled={!activeChapterId}>In this chapter only</option>
-        </select>
-        <SelectChevron />
-      </div>
+      {/* Left native, the OS draws its own arrow at its own inset, which sat
+          noticeably further from the edge than the custom chevrons stacked
+          directly above it — see SelectField, which owns that construction now.
+          This used to set its own 12.5px where the other form selects were 13;
+          the component settles it at 13. */}
+      <NativeSelect
+        value={effectiveScope}
+        onChange={(v) => setScope(v as 'book' | 'chapter')}
+        ariaLabel="Where to search"
+        style={{ marginTop: 10 }}
+        options={[
+          { value: 'book', label: 'In the whole book' },
+          { value: 'chapter', label: 'In this chapter only', disabled: !activeChapterId },
+        ]}
+      />
 
       {/* Replace all is the irreversible, unreviewable one, so it is NOT the button the
           eye lands on — Mural weights the pair this way round, Craft and Evernote weight
@@ -18346,6 +21616,12 @@ export function BookEditorView() {
      whenever the real canvas selection moves to a different page, so Pages mode
      re-syncs the next time it's opened instead of a stale click lingering. */
   const [pagesActiveId, setPagesActiveId] = useState<string | null>(null);
+  /* Which sheet OF that section, when the panel itself is what picked it. The
+     canvas can't supply this — nothing downstream of the paginator reports
+     which sheet of a chapter the caret sits on — so it is null for every
+     selection made out there, and PagesPanel falls back to marking the whole
+     section. Cleared with pagesActiveId for the same reason. */
+  const [pagesActiveSheet, setPagesActiveSheet] = useState<number | null>(null);
   // Wordgenie panel — same mocked pattern as Presentation's in-editor chat
   // (canned reply, no real model call): a slide-in panel between the left
   // rail's content panel and the canvas, not a route-level flow like the
@@ -18406,7 +21682,11 @@ export function BookEditorView() {
   // Which chapter's Editor a handle-drag started from, so the chapter it's
   // dropped on (possibly a different one) can read the node back off it.
   const moveDragRef = useRef<{ chapterId: string; editor: Editor } | null>(null);
-  const [movingBlock, setMovingBlock] = useState(false);
+  /* Nothing reads this any more — the page outline it used to drive is gone
+     (see the sheet border above). The setter stays because the block-move handle
+     still reports through it, and a future affordance that needs to know a drag
+     is live can read it again without re-plumbing the chain. */
+  const [, setMovingBlock] = useState(false);
   const [activeTheme, setActiveTheme] = useState<ThemeId>('statement-lettering');
   // Defaults to the cover rather than nothing, so the inspector opens already
   // showing something relevant instead of an empty "select something" placeholder.
@@ -18515,6 +21795,11 @@ export function BookEditorView() {
   const [marginY, setMarginY] = useState(DEFAULT_MARGIN_Y);
   const geometry = useMemo(() => pageGeometry(pageSizeId, marginX, marginY), [pageSizeId, marginX, marginY]);
   const [saveState, setSaveState] = useState<SaveState>('saved');
+  /* Only ever read by the error label. A failed write tells you something is
+     wrong but not how much is at stake — losing 30 seconds and losing 40 minutes
+     are different decisions — so the last good write's time is kept to answer
+     that. 0 means nothing has been written this session and none was restored. */
+  const [lastSavedAt, setLastSavedAt] = useState(0);
   const [hydrated, setHydrated] = useState(false);
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   // Which checkpoint the canvas is currently rendering read-only — null means
@@ -18529,6 +21814,10 @@ export function BookEditorView() {
   const findInputRef = useRef<HTMLInputElement | null>(null);
 
   const pageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  /* Stable, because the Pages panel's thumbnails re-clone whenever this changes
+     identity — an inline arrow here would rebuild every thumbnail on every
+     render of the editor, which is every keystroke. */
+  const getPageEl = useCallback((id: string) => pageRefs.current[id] ?? null, []);
   /* Every mounted editor, by key — chapter bodies under their chapter id, every
      other field under its own "pageId::field" key. Find & replace needs to reach
      all of them at once, and a structural undo needs to push content back into
@@ -18591,6 +21880,9 @@ export function BookEditorView() {
      panel shows is the text formatting for the caret, not the chapter as an object. */
   const selectionLabel =
     selection.kind === 'image' ? 'Photo'
+    /* Not "Photo caption". The label names what the panel is editing, and the
+       photo it belongs to is directly under the caret on the page. */
+    : selection.kind === 'caption' ? 'Caption'
     : selection.kind === 'shape' ? 'Shape'
     : selection.kind === 'embed' ? 'Embed'
     : selection.kind === 'qr' ? 'QR code'
@@ -18647,7 +21939,7 @@ export function BookEditorView() {
       if (narrowViewport) setPanelForcedOpen(true);
     }
   }, [selectionKey, selectionGen]);
-  useEffect(() => { setPagesActiveId(null); }, [activePageId]);
+  useEffect(() => { setPagesActiveId(null); setPagesActiveSheet(null); }, [activePageId]);
   const pagesPanelActiveId = pagesActiveId ?? activePageId;
   const coverPageId = pages.find((p) => p.type === 'cover')?.id ?? 'p-cover';
   const backMatterPageId = pages.find((p) => p.type === 'backmatter')?.id ?? 'p-back';
@@ -18685,6 +21977,7 @@ export function BookEditorView() {
         setParagraphIndent(stored.paragraphIndentPct ?? (stored.paragraphIndent != null ? stored.paragraphIndent * 100 : PARAGRAPH_INDENT_PCT));
         setParagraphSpace(stored.paragraphSpacePct ?? (stored.paragraphSpace != null ? stored.paragraphSpace * 100 : PARAGRAPH_SPACE_PCT));
         setSelection({ kind: 'page', pageId: stored.pages.find((p) => p.type === 'cover')?.id ?? 'p-cover' });
+        setLastSavedAt(stored.savedAt ?? 0);
       }
       // Re-pruned on load, not just on write, so a downgrade takes effect the
       // moment the editor opens rather than waiting for the next autosave.
@@ -18726,6 +22019,7 @@ export function BookEditorView() {
           savedAt: Date.now(),
         };
         window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        setLastSavedAt(payload.savedAt);
         setSaveState('saved');
       } catch {
         // Almost always the 5MB quota, which uploaded images reach quickly.
@@ -18988,9 +22282,6 @@ export function BookEditorView() {
     return () => observer.disconnect();
   }, [hydrated]);
 
-  const setTocExcluded = useCallback((chapterId: string, excluded: boolean) => {
-    setPages((prev) => prev.map((p) => (p.id === chapterId && p.type === 'chapter' ? { ...p, excludeFromToc: excluded } : p)));
-  }, []);
   const setOpenerImage = useCallback((chapterId: string, src: string) => {
     setPages((prev) => prev.map((p) => (p.id === chapterId && p.type === 'chapter' ? { ...p, openerImage: src } : p)));
   }, []);
@@ -19075,6 +22366,21 @@ export function BookEditorView() {
       return { ...p, coverElements: dir === 'front' ? [...rest, el] : [el, ...rest] };
     }));
   }, []);
+  /* Adds an element the cover didn't have — today only a photo dragged in from
+     the Photos panel (see CoverCanvasEditable's stage drop). Every other way an
+     element reaches the cover replaces or copies one that is already there, which
+     is why this is the first add path.
+     Selecting the new element is the point: a photo that lands somewhere you have
+     to hunt for and click before you can size it is a drop that only half
+     arrived. */
+  const addCoverElement = useCallback((pageId: string, el: CoverElement) => {
+    setPages((prev) => prev.map((p) => (
+      p.id === pageId && p.type === 'cover'
+        ? { ...p, coverElements: [...(p.coverElements ?? []), el] }
+        : p
+    )));
+    setSelection({ kind: 'coverElement', pageId, elementId: el.id });
+  }, []);
   // Nudged a few percent down-right so the copy doesn't sit exactly on top of the
   // original — otherwise a duplicated element would be indistinguishable from the
   // original until dragged, the same reason most design tools offset a paste/clone.
@@ -19111,8 +22417,20 @@ export function BookEditorView() {
     offerUndo(`${tpl.name} applied`, snapshot);
   }, [takeSnapshot, offerUndo]);
 
-  const jumpTo = useCallback((id: string) => {
-    pageRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  /* `sheetIndex` is which page WITHIN the section, because a chapter is a single
+     element containing all of its sheets. Scrolling to that element lands on
+     sheet 1 whatever row you clicked — so "page 5" in the Pages panel took you
+     to the top of the chapter page 5 happens to be part of, which on a long
+     chapter is several screens away from the page you asked for. The sheets are
+     real elements in the stack (see data-page-sheet), so the one that was asked
+     for can be scrolled to directly. */
+  const jumpTo = useCallback((id: string, sheetIndex = 0) => {
+    const el = pageRefs.current[id];
+    if (!el) return;
+    const sheet = sheetIndex > 0
+      ? (el.querySelectorAll('[data-page-sheet]')[sheetIndex] as HTMLElement | undefined)
+      : undefined;
+    (sheet ?? el).scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
   // Mocked exactly like Presentation's own in-editor chat (setTimeout + a
@@ -19276,9 +22594,10 @@ export function BookEditorView() {
     editor.commands.setContent({ type: 'doc', content: before });
     const htmlBefore = editor.getHTML();
 
-    // The new second half has no title of its own yet — deriving one from body
-    // content isn't meaningful now that title is a separate field, so it opens on
-    // the "Chapter title" placeholder instead, same as any other new chapter.
+    /* The new second half has no title, and under the heading-derives-structure
+       rule that is exactly what makes it a continuation PAGE rather than a second
+       chapter: the text carries on, the contents page gains nothing, and the user
+       promotes it by typing a heading if that is what they meant. */
     const newId = `ch-${Date.now()}`;
     setChapterContent((prev) => ({ ...prev, [chapterId]: htmlBefore, [newId]: htmlAfter }));
     setPages((prev) => {
@@ -19287,25 +22606,33 @@ export function BookEditorView() {
       const source = prev[idx] as ChapterPage;
       const updated: ChapterPage = { ...source, initialHtml: htmlBefore };
       const created: ChapterPage = {
-        id: newId, type: 'chapter', title: 'Untitled chapter', layout: 'standard',
+        id: newId, type: 'chapter', title: '', layout: 'standard',
         overrides: {}, titleHtml: '', initialHtml: htmlAfter,
       };
       return [...prev.slice(0, idx), updated, created, ...prev.slice(idx + 1)];
     });
-    offerUndo('Chapter split in two', snapshot);
+    offerUndo('New page started here', snapshot);
   }, [takeSnapshot, offerUndo]);
 
-  const addChapterAfter = useCallback((afterId: string) => {
+  /* Adds a page, not a chapter. Untitled by default — see isChapterStart: the
+     new sheet reads as a continuation of the chapter above until the user gives
+     it a heading, which is the only thing that should ever decide whether the
+     reader sees a new entry in the contents. `titled` is for the two entry
+     points that mean "chapter" outright (Chapters panel, the Chapter insert
+     tile); they seed a heading so the page counts from the moment it appears. */
+  const addPageAfter = useCallback((afterId: string, titled = false) => {
     const newId = `ch-${Date.now()}`;
     setPages((prev) => {
       const idx = prev.findIndex((p) => p.id === afterId);
       const next: ChapterPage = {
-        id: newId, type: 'chapter', title: 'New Chapter', layout: 'standard', overrides: {},
-        titleHtml: '<h2>New Chapter</h2>', initialHtml: '<p>Start writing…</p>',
+        id: newId, type: 'chapter', title: titled ? 'New chapter' : '',
+        layout: titled ? chapterLayoutOf(theme) : 'standard', overrides: {},
+        titleHtml: titled ? '<h2>New chapter</h2>' : '', initialHtml: '<p></p>',
       };
       return [...prev.slice(0, idx + 1), next, ...prev.slice(idx + 1)];
     });
-  }, []);
+    setActiveChapterId(newId);
+  }, [theme]);
 
   /* Shared by every click-to-insert path below: lands at the cursor when one is
      in a chapter, otherwise at the end of the last chapter that was worked in —
@@ -19322,16 +22649,29 @@ export function BookEditorView() {
     return { editor: entry.editor, pos };
   }, [pages, activeChapterId, activeEditor, jumpTo]);
 
+  /* Adding something IS asking to work on it, so the panel swaps to its
+     properties without waiting for a click on the canvas. The selection effect
+     can't reach this case on its own: a tile click is not a canvas gesture, so
+     it bumps no selectionGen, and inserting into the chapter the caret was
+     already in leaves selectionKey unchanged too — between them, clicking a
+     tile could leave the panel sitting on the rail tab it was inserted from. */
+  const revealProperties = useCallback(() => {
+    setPanelOverlay('properties');
+    setLeftOpen(true);
+    if (narrowViewport) setPanelForcedOpen(true);
+  }, [narrowViewport]);
+
   const insertTileAtCursor = useCallback((tile: InsertTile) => {
     if (tile.html === '__CHAPTER__') {
       const lastChapter = [...pages].reverse().find((p) => p.type === 'chapter');
-      addChapterAfter(lastChapter?.id ?? coverPageId);
+      addPageAfter(lastChapter?.id ?? coverPageId, true);
       return;
     }
     const target = resolveInsertTarget();
     if (!target) return;
     insertTileContent(target.editor, target.pos, tile.html);
-  }, [pages, addChapterAfter, coverPageId, resolveInsertTarget]);
+    revealProperties();
+  }, [pages, addPageAfter, coverPageId, resolveInsertTarget, revealProperties]);
 
   // Image/Video/Audio tiles no longer insert directly — they open the media
   // picker on the left instead (see the 'media' rail tab below), and only the
@@ -19523,7 +22863,8 @@ export function BookEditorView() {
     if (!target) return;
     insertMediaAt(target.editor, target.pos, kind, src, meta);
     setMediaPicker(null);
-  }, [resolveInsertTarget]);
+    revealProperties();
+  }, [resolveInsertTarget, revealProperties]);
 
   // A TOC page is optional, not a retailer requirement — the EPUB nav document
   // buildEpub always generates (epub.ts) is a separate, invisible file built from
@@ -19690,6 +23031,19 @@ export function BookEditorView() {
         @media (prefers-reduced-motion: reduce) {
           .book-edge-toggle__icon { transition-duration: 0ms; }
         }
+        /* Pages and Chapters are different widths (see PAGES_PANEL_W), so
+           switching tabs moves the canvas's left edge by 60px. Eased, or the
+           jump reads as the page itself having moved rather than the panel
+           beside it resizing. Only the width is in flight — the thumbnails keep
+           their own fixed size — so nothing inside reflows mid-animation. */
+        .book-navigator-panel {
+          transition-property: width;
+          transition-duration: 180ms;
+          transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .book-navigator-panel { transition-duration: 0ms; }
+        }
         .book-insert-tile .book-insert-well {
           background: ${TILE_SLOT};
           border: none;
@@ -19755,6 +23109,84 @@ export function BookEditorView() {
           .book-seg__thumb, .book-seg__option { transition-duration: 0ms; }
           .book-seg__option:active { scale: 1; }
         }
+        /* ── Stock photo grid ─────────────────────────────────────────────
+           Photos keep their own proportions here, so the treatment has to work on
+           a tile of any shape: everything below is either on the frame or on the
+           image inside it, nothing depends on the tile being square. */
+        .book-photo-grid { transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1); }
+        /* Each image fades when its own bytes land — see PhotoTileButton for why
+           this isn't a staggered entrance. */
+        .book-photo-tile__img {
+          transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1), transform 200ms cubic-bezier(0.2, 0, 0, 1);
+        }
+        .book-photo-tile { transition: scale 150ms cubic-bezier(0.2, 0, 0, 1); }
+        /* The panel's hover idiom everywhere else is a fill change, which a tile
+           covered by a photograph has no room for. The image itself takes the
+           hover instead, and the frame clips it — the one move available that
+           isn't a border appearing. */
+        .book-photo-tile:hover .book-photo-tile__img { transform: scale(1.04); }
+        /* Same press as the insert tiles, moved onto the frame so the whole
+           photo dips rather than the image sliding inside a frame that stays. */
+        .book-photo-tile:has(.book-photo-tile__hit:active) { scale: 0.97; }
+        /* Inset, because the frame clips anything drawn outside it. */
+        .book-photo-tile__hit:focus-visible { outline: ${RING}; outline-offset: -3px; }
+        /* The photographer's name, over a scrim dark enough to hold white type on
+           any photograph. Hover and focus-within both, so reaching the credit
+           link by keyboard doesn't require it to already be visible. */
+        .book-photo-tile__credit {
+          position: absolute; left: 0; right: 0; bottom: 0;
+          padding: 16px 7px 5px;
+          background: linear-gradient(to top, rgba(6, 10, 16, 0.78), rgba(6, 10, 16, 0));
+          opacity: 0; pointer-events: none;
+          transition: opacity 150ms cubic-bezier(0.2, 0, 0, 1);
+        }
+        .book-photo-tile:hover .book-photo-tile__credit,
+        .book-photo-tile:focus-within .book-photo-tile__credit { opacity: 1; }
+        /* The LINK takes pointer events, never the scrim around it. The credit is
+           a sibling of the tile's button rather than a child (an <a> can't nest in
+           a <button>), so it sits ON TOP of the whole hit target — and it turns
+           visible exactly when the pointer is over the tile. Made interactive as a
+           block, its gradient strip swallowed the bottom ~32px of every tile: that
+           strip is not the link, so a press there started no drag (the draggable
+           attribute is on the button underneath) and picked no photo. On a
+           landscape tile in this narrow column — around 78px tall once the real
+           Unsplash aspect ratio is applied — 32px reaches past the centre, which
+           is to say the whole tile. pointer-events:none lets the hit test fall
+           through to the button, and the anchor opts itself back in. */
+        .book-photo-tile__credit a { pointer-events: none; }
+        .book-photo-tile:hover .book-photo-tile__credit a,
+        .book-photo-tile:focus-within .book-photo-tile__credit a { pointer-events: auto; }
+        .book-photo-tile__credit a:hover { text-decoration: underline; }
+        /* The selected photo says so on the photo. A blue frame alone is easy to
+           lose against a picture that happens to contain blue. */
+        .book-photo-tile__check {
+          position: absolute; top: 5px; right: 5px;
+          width: 17px; height: 17px; border-radius: 999px; background: ${BLUE};
+          display: flex; align-items: center; justify-content: center;
+          box-shadow: 0 1px 3px rgba(6, 10, 16, 0.35);
+        }
+        /* One sweep across the placeholder rather than a pulse: a pulse reads as
+           something blinking for attention, a sweep reads as work in progress. */
+        .book-photo-skeleton { background: ${TILE_WELL}; position: relative; overflow: hidden; }
+        .book-photo-skeleton::after {
+          content: ''; position: absolute; inset: 0;
+          background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+          transform: translateX(-100%);
+          animation: bookPhotoSweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+        @keyframes bookPhotoSweep { to { transform: translateX(100%); } }
+        .book-photo-spin { animation: bookPhotoSpin 700ms linear infinite; }
+        @keyframes bookPhotoSpin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) {
+          .book-photo-grid, .book-photo-tile, .book-photo-tile__img, .book-photo-tile__credit { transition-duration: 0ms; }
+          .book-photo-tile:hover .book-photo-tile__img { transform: none; }
+          .book-photo-tile:has(.book-photo-tile__hit:active) { scale: 1; }
+          .book-photo-skeleton::after { animation: none; }
+          /* Slowed, not removed. These two report that something is happening;
+             with nothing moving, a stalled search looks identical to a finished
+             one. */
+          .book-photo-spin { animation-duration: 2.4s; }
+        }
         .book-insert-tile:focus-visible { outline: none; }
         .book-insert-tile:focus-visible .book-insert-well { outline: ${RING}; outline-offset: 2px; }
         @media (prefers-reduced-motion: reduce) {
@@ -19795,13 +23227,13 @@ export function BookEditorView() {
               this stays a plain glanceable label rather than a second entry point
               to the same list. */}
           <span style={{ ...ns, fontSize: 13, color: SLATE, padding: '0 8px' }}>
-            {pages.filter((p) => p.type === 'chapter').length} chapter{pages.filter((p) => p.type === 'chapter').length === 1 ? '' : 's'} · {Object.values(wordCounts).reduce((s, n) => s + n, 0) + Object.values(titleWordCounts).reduce((s, n) => s + n, 0)} words
+            {chapterStarts(pages, fieldContent).length} chapter{chapterStarts(pages, fieldContent).length === 1 ? '' : 's'} · {Object.values(wordCounts).reduce((s, n) => s + n, 0) + Object.values(titleWordCounts).reduce((s, n) => s + n, 0)} words
           </span>
           <div style={{ width: 1, height: 18, background: BORDER, margin: '0 12px', flexShrink: 0 }} />
           {/* Was a hardcoded green tick that said "Saved" over a book held only in
               component state — a refresh discarded everything. It reports the real
               state of the local snapshot now, including when saving fails. */}
-          <SaveIndicator state={saveState} />
+          <SaveIndicator state={saveState} lastSavedAt={lastSavedAt} />
         </div>
 
         <div className="flex items-center" style={{ gap: 2 }}>
@@ -20022,7 +23454,7 @@ export function BookEditorView() {
                 background: active ? '#EEF3FF' : 'transparent', color: active ? BLUE : SLATE,
               }}
             >
-              <Icon d={item.icon} size={19} />
+              <Icon d={item.icon} size={20} />
               <span style={{ ...ns, fontSize: 11, fontWeight: 700 }}>{item.label}</span>
             </button>
             );
@@ -20105,6 +23537,8 @@ export function BookEditorView() {
                     onStartCrop={startCrop}
                     onTransform={applyTransform}
                   />
+                ) : selection.kind === 'caption' ? (
+                  <CaptionInspector editor={selection.editor} pos={selection.pos} />
                 ) : selection.kind === 'imageGrid' ? (
                   <ImageGridInspector editor={selection.editor} />
                 ) : selection.kind === 'shape' ? (
@@ -20189,15 +23623,19 @@ export function BookEditorView() {
               <InsertPanel
                 currentPlan={currentPlan}
                 groups={['Text']}
+                /* Three groups, one tab: the 'Text' group renders the templates
+                   and styles galleries inside itself (see the group === 'Text'
+                   branches), so all three are on screen under this one search
+                   field and all three have to be searchable from it. */
+                searchScope={['Text', 'TextTemplates', 'TextStyles']}
+                searchLabel="text"
                 onDragTile={setDraggedTile}
                 onLockedClick={(tile) => setUpgradeCtx({ message: 'Unlock this block', feature: tile.label })}
                 onLockedTextStyle={(tile) => setUpgradeCtx({ message: 'Unlock this text style', feature: tile.label })}
                 // handleMediaInsertTile, not insertTileAtCursor, on every insert
-                // panel — not just the one holding Video/Audio. Search spans all
-                // tiles, so a media tile can now be clicked from any tab, and
-                // insertTileAtCursor would drop the literal __EMBED_VIDEO__
-                // sentinel on the page. It passes everything else through
-                // untouched, so it's a safe superset.
+                // panel — not just the one holding Video/Audio. It passes
+                // everything a plain insert does straight through, so it's a
+                // safe superset and one insert path serves every panel.
                 onInsertTile={handleMediaInsertTile}
                 textExtras={<TextToolsPanel editor={activeEditor} />}
               />
@@ -20209,24 +23647,24 @@ export function BookEditorView() {
                   {selection.kind === 'image' && (() => {
                     const ed = selection.editor;
                     const src = (ed.getAttributes('image') as { src: string }).src;
-                    return <PhotoSourcePanel currentPlan={currentPlan} currentSrc={src} onPick={(picked) => ed.chain().focus().updateAttributes('image', { src: picked }).run()} />;
+                    return <PhotoSourcePanel currentPlan={currentPlan} currentSrc={src} onDragTile={setDraggedTile} onPick={(picked) => ed.chain().focus().updateAttributes('image', { src: picked }).run()} />;
                   })()}
                   {selection.kind === 'coverElement' && (() => {
                     const coverPage = pages.find((p) => p.id === selection.pageId) as SimplePage | undefined;
                     const el = coverPage?.coverElements?.find((e) => e.id === selection.elementId);
                     if (el?.type !== 'image') return null;
                     const { pageId, elementId } = selection;
-                    return <PhotoSourcePanel currentPlan={currentPlan} currentSrc={el.src} onPick={(picked) => updateCoverElement(pageId, elementId, { src: picked })} />;
+                    return <PhotoSourcePanel currentPlan={currentPlan} currentSrc={el.src} onDragTile={setDraggedTile} onPick={(picked) => updateCoverElement(pageId, elementId, { src: picked })} />;
                   })()}
                   {selection.kind === 'openerImage' && (() => {
                     const chapter = pages.find((p) => p.id === selection.chapterId) as ChapterPage | undefined;
                     if (!chapter) return null;
-                    return <PhotoSourcePanel currentPlan={currentPlan} currentSrc={chapter.openerImage ?? ''} onPick={(picked) => setOpenerImage(chapter.id, picked)} />;
+                    return <PhotoSourcePanel currentPlan={currentPlan} currentSrc={chapter.openerImage ?? ''} onDragTile={setDraggedTile} onPick={(picked) => setOpenerImage(chapter.id, picked)} />;
                   })()}
                   {selection.kind === 'backmatterAvatar' && (() => {
                     const bmPage = pages.find((p) => p.id === selection.pageId) as SimplePage | undefined;
                     if (!bmPage) return null;
-                    return <PhotoSourcePanel currentPlan={currentPlan} currentSrc={bmPage.authorPhoto ?? ''} onPick={(picked) => setBackmatterPhoto(bmPage.id, picked)} />;
+                    return <PhotoSourcePanel currentPlan={currentPlan} currentSrc={bmPage.authorPhoto ?? ''} onDragTile={setDraggedTile} onPick={(picked) => setBackmatterPhoto(bmPage.id, picked)} />;
                   })()}
                   {/* With nothing image-ish selected, the tab IS the photo browser —
                       no "Image" tile to click through first. That removes the
@@ -20239,7 +23677,6 @@ export function BookEditorView() {
                     <PhotoSourcePanel
                       currentPlan={currentPlan}
                       currentSrc=""
-                      draggableToPlace
                       onDragTile={setDraggedTile}
                       onPick={(src) => insertMediaAtCursor('image', src)}
                     />
@@ -20266,6 +23703,15 @@ export function BookEditorView() {
               <InsertPanel
                 currentPlan={currentPlan}
                 groups={elementsCat ? [elementsCat] : []}
+                /* Inside a category, that category. On the index, all of
+                   Elements — the one level where "which category is a QR code
+                   under" is a real question, and the level whose answer is a
+                   row you'd otherwise have to open five of to find. Media is in
+                   the index scope but not in any category: Video and Audio are
+                   index rows that open a picker rather than grids of tiles, so
+                   the only way to reach them by name is from here. */
+                searchScope={elementsCat ? [elementsCat] : ['Shapes', 'Icons', 'Charts', 'Worksheets', 'Interactive', 'Media']}
+                searchLabel={elementsCat ? ELEMENTS_SEARCH_LABELS[elementsCat] : 'elements'}
                 index={elementsCat ? undefined : ELEMENTS_CATEGORIES.map((c) => ({
                   id: c.id,
                   label: c.label,
@@ -20287,9 +23733,9 @@ export function BookEditorView() {
                 onDragTile={setDraggedTile}
                 onLockedClick={(tile) => setUpgradeCtx({ message: 'Unlock this block', feature: tile.label })}
                 onLockedTextStyle={(tile) => setUpgradeCtx({ message: 'Unlock this text style', feature: tile.label })}
-                // handleMediaInsertTile, not insertTileAtCursor: a search hit can be
-                // a video or audio tile from any tab, and insertTileAtCursor would
-                // drop the literal __EMBED_VIDEO__ sentinel on the page.
+                // handleMediaInsertTile, not insertTileAtCursor: a search hit here
+                // can be a video or audio tile, and insertTileAtCursor would drop
+                // the literal __EMBED_VIDEO__ sentinel on the page.
                 onInsertTile={handleMediaInsertTile}
               />
               )}
@@ -20300,6 +23746,8 @@ export function BookEditorView() {
               <InsertPanel
                 currentPlan={currentPlan}
                 groups={['Layout']}
+                searchScope={['Layout']}
+                searchLabel="layouts"
                 // No "Layouts" header over the grid: the rail tab you just
                 // clicked says Layouts, and the two sub-headings under it say
                 // what each half holds. The group header only repeated the tab.
@@ -20308,11 +23756,9 @@ export function BookEditorView() {
                 onLockedClick={(tile) => setUpgradeCtx({ message: 'Unlock this block', feature: tile.label })}
                 onLockedTextStyle={(tile) => setUpgradeCtx({ message: 'Unlock this text style', feature: tile.label })}
                 // handleMediaInsertTile, not insertTileAtCursor, on every insert
-                // panel — not just the one holding Video/Audio. Search spans all
-                // tiles, so a media tile can now be clicked from any tab, and
-                // insertTileAtCursor would drop the literal __EMBED_VIDEO__
-                // sentinel on the page. It passes everything else through
-                // untouched, so it's a safe superset.
+                // panel — not just the one holding Video/Audio. It passes
+                // everything a plain insert does straight through, so it's a
+                // safe superset and one insert path serves every panel.
                 onInsertTile={handleMediaInsertTile}
               />
             </div>
@@ -20531,7 +23977,7 @@ export function BookEditorView() {
               null
             ) : (
             pages.map((p) => (
-              <div key={p.id} ref={(el) => { pageRefs.current[p.id] = el; }} style={{ marginBottom: 40 }}>
+              <div key={p.id} ref={(el) => { pageRefs.current[p.id] = el; }} style={{ marginBottom: 40, position: 'relative' }}>
                 {p.type === 'chapter' ? (
                   <ChapterEditor
                     page={p}
@@ -20539,9 +23985,8 @@ export function BookEditorView() {
                     zoom={zoom}
                     pageNumbers={pageNumbers}
                     pageNumberIndex={chapterCountForNumbering(p.id)}
-                    chapterNumber={pages.filter((pg) => pg.type === 'chapter').findIndex((pg) => pg.id === p.id) + 1}
+                    chapterNumber={chapterNumberOf(pages, fieldContent, p.id)}
                     isSelected={selection.kind === 'chapter' && selection.chapterId.split('::')[0] === p.id}
-                    isDragActive={!!draggedTile || movingBlock}
                     onMediaDropped={() => setMediaPicker(null)}
                     onSetOpenerImage={setOpenerImage}
                     getFieldEditor={(key) => editorRegistry.current.get(key)?.editor}
@@ -20549,7 +23994,7 @@ export function BookEditorView() {
                     onMoveDragActiveChange={setMovingBlock}
                     currentSelection={selection}
                     onSelection={handleSelection}
-                    onAddChapterAfter={addChapterAfter}
+                    onAddChapterAfter={(id) => addPageAfter(id, true)}
                     onSplitChapter={splitChapter}
                     onBeginChapterEdit={beginChapterEdit}
                     onWordCountChange={(id, words) => setWordCounts((prev) => ({ ...prev, [id]: words }))}
@@ -20566,9 +24011,24 @@ export function BookEditorView() {
                       // as-is for fieldContent, and strip the suffix only for pages.
                       setFieldContent((prev) => ({ ...prev, [fieldKey]: html }));
                       const chapterId = fieldKey.split('::')[0];
-                      const plain = stripTags(html);
-                      const title = plain || 'Untitled chapter';
-                      setPages((prev) => prev.map((pg) => (pg.id === chapterId && pg.type === 'chapter' && pg.title !== title ? { ...pg, title } : pg)));
+                      /* Was `plain || 'Untitled chapter'`, which quietly refilled
+                         the mirror the moment you emptied the field — so a page
+                         you had just demoted still reported a name to the Pages
+                         row and the exporter. Empty means empty. */
+                      const plain = stripTags(html).trim();
+                      setPages((prev) => prev.map((pg) => {
+                        if (pg.id !== chapterId || pg.type !== 'chapter') return pg;
+                        if (pg.title === plain) return pg;
+                        /* The keystroke that turns a page into a chapter also hands
+                           it the template's chapter design. `pg.title` is this same
+                           handler's own mirror, kept current on every keystroke, so
+                           an empty one here means the page was not a chapter until
+                           now — and a page that was never a chapter has no layout
+                           choice of its own to overwrite. */
+                        const becomingAChapter = plain !== '' && pg.title.trim() === '';
+                        const next: ChapterPage = { ...pg, title: plain };
+                        return becomingAChapter ? { ...next, layout: chapterLayoutOf(theme) } : next;
+                      }));
                       setTitleWordCounts((prev) => ({ ...prev, [chapterId]: plain ? plain.split(/\s+/).filter(Boolean).length : 0 }));
                     }}
                   />
@@ -20586,6 +24046,7 @@ export function BookEditorView() {
                     onEditorFocus={(ed) => { setActiveEditor(ed); setActiveChapterId(null); }}
                     onContentChange={(key, html) => setFieldContent((prev) => ({ ...prev, [key]: html }))}
                     onSelectPage={(pageId) => setSelection({ kind: 'page', pageId, viaCanvas: true })}
+                    onAddElement={addCoverElement}
                     onUpdateElement={updateCoverElement}
                     onReorderElement={reorderCoverElement}
                     onDuplicateElement={duplicateCoverElement}
@@ -20595,6 +24056,11 @@ export function BookEditorView() {
                     onSetBackmatterPhoto={setBackmatterPhoto}
                   />
                 )}
+                {/* The gutter after this page, filling its own bottom margin.
+                    A chapter draws the gutters BETWEEN its sheets itself (see
+                    PageGapInsert in ChapterEditor); this is the one after the
+                    section ends, so the two never overlap. */}
+                <PageGapInsert top="100%" height={40} onAdd={() => addPageAfter(p.id)} />
               </div>
             ))
             )}
@@ -20624,7 +24090,16 @@ export function BookEditorView() {
           onToggle={() => setRightOpen((v) => !v)}
         />
         {rightOpen && (
-        <div className="flex-shrink-0 h-full bg-white" style={{ width: INSPECTOR_W, borderLeft: `1px solid ${BORDER}`, overflow: 'hidden' }}>
+        <div
+          className="flex-shrink-0 h-full bg-white book-navigator-panel"
+          style={{
+            /* History and Find take the full width whichever tab is behind
+               them — they're text panels, not the thumbnail strip. */
+            width: !rightOverlay && rightTab === 'pages' ? PAGES_PANEL_W : INSPECTOR_W,
+            borderLeft: `1px solid ${BORDER}`,
+            overflow: 'hidden',
+          }}
+        >
           {rightOverlay ? (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
               <div className="flex items-center flex-shrink-0" style={{ gap: 6, padding: '10px 10px 8px', borderBottom: `1px solid ${BORDER}` }}>
@@ -20658,10 +24133,12 @@ export function BookEditorView() {
                 chapterContent={chapterContent}
                 fieldContent={fieldContent}
                 activePageId={pagesPanelActiveId}
-                onJump={(id) => { jumpTo(id); setPagesActiveId(id); }}
+                activeSheetIndex={pagesActiveId ? pagesActiveSheet : null}
+                onJump={(id, sheetIndex) => { jumpTo(id, sheetIndex); setPagesActiveId(id); setPagesActiveSheet(sheetIndex); }}
                 bookPages={bookPages}
                 metadata={metadata}
-                onAddPageAt={addChapterAfter}
+                getPageEl={getPageEl}
+                onAddPageAt={addPageAfter}
                 onDuplicatePage={duplicatePage}
                 onDeletePage={deletePage}
                 onReorder={reorderChapter}
@@ -20671,6 +24148,7 @@ export function BookEditorView() {
             <div className="h-full" style={{ minHeight: 0 }}>
               <ChaptersPanel
                 pages={pages}
+                fieldContent={fieldContent}
                 wordCounts={wordCounts}
                 titleWordCounts={titleWordCounts}
                 wordTotal={Object.values(wordCounts).reduce((sum, n) => sum + n, 0) + Object.values(titleWordCounts).reduce((sum, n) => sum + n, 0)}
@@ -20680,10 +24158,9 @@ export function BookEditorView() {
                 onDelete={deletePage}
                 onAddChapter={() => {
                   const lastChapter = [...pages].reverse().find((pg) => pg.type === 'chapter');
-                  addChapterAfter(lastChapter?.id ?? coverPageId);
+                  addPageAfter(lastChapter?.id ?? coverPageId, true);
                 }}
                 onAddToc={addTocPage}
-                onSetTocExcluded={setTocExcluded}
               />
             </div>
           )}
@@ -20719,7 +24196,7 @@ export function BookEditorView() {
                   background: active ? '#EEF3FF' : 'transparent', color: active ? BLUE : SLATE,
                 }}
               >
-                <Icon d={item.icon} size={19} />
+                <Icon d={item.icon} size={20} />
                 <span style={{ ...ns, fontSize: 11, fontWeight: 700 }}>{item.label}</span>
               </button>
             );
@@ -20751,8 +24228,37 @@ export function BookEditorView() {
           paragraphIndentPct={paragraphIndent}
           paragraphSpacePct={paragraphSpace}
           metadata={metadata}
-          chapters={pages.filter((p): p is ChapterPage => p.type === 'chapter').map((c) => {
+          /* One entry per CHAPTER, not per container. A continuation page has no
+             heading of its own, so emitting it as its own file would put a
+             phantom entry in the reader's navigation for something the author
+             never named — it folds into the chapter above instead, behind a page
+             break. This is the single place chapter HTML leaves the editor, so
+             it is also the only place the merge has to happen. */
+          chapters={pages.filter((p): p is ChapterPage => p.type === 'chapter').reduce<{ id: string; title: string; html: string; layout?: string }[]>((out, c) => {
             const titleField = fieldContent[`${c.id}::title`] ?? c.titleHtml;
+            /* Merge tokens on a continuation page resolve against the chapter it
+               belongs to — [Chapter number] on page 4 of chapter 2 means 2, not a
+               number this page does not have. */
+            const ownerId = owningChapterId(pages, fieldContent, c.id);
+            const owner = pages.find((p) => p.id === ownerId) as ChapterPage | undefined;
+            const ownerTitleField = owner ? (fieldContent[`${owner.id}::title`] ?? owner.titleHtml) : '';
+            /* The live marker gets its number from a NodeView counting siblings;
+               nothing counts anything in an exported file, so the numbers and the
+               noteref/footnote pairing that makes them pop up on Kindle get baked
+               in here. */
+            const fieldVals = {
+              author: metadata.author,
+              bookTitle: metadata.title,
+              chapterTitle: stripTags(ownerTitleField) || owner?.title || '',
+              chapterNumber: ownerId ? chapterNumberOf(pages, fieldContent, ownerId) : 0,
+            };
+            const body = resolveFieldTokens(applyFootnoteNumbering(chapterContent[c.id] ?? c.initialHtml, c.id), fieldVals);
+
+            const prev = out[out.length - 1];
+            if (ownerId !== c.id && prev) {
+              prev.html += CONTINUATION_BREAK_HTML + body;
+              return out;
+            }
             // The title lives in its own field in the editor now, but the exported
             // chapter still needs a real visible heading — reassemble it here rather
             // than inside the editing data model. Swapping the field's own <p> tag
@@ -20760,16 +24266,13 @@ export function BookEditorView() {
             // and preserves any inline marks (bold, a link) the user applied.
             const titleHeadingHtml = titleField.trim()
               ? titleField.replace(/^<p[^>]*>/, '<h2>').replace(/<\/p>\s*$/, '</h2>')
-              : `<h2>${c.title}</h2>`;
-            /* The live marker gets its number from a NodeView counting siblings;
-               nothing counts anything in an exported file, so the numbers and the
-               noteref/footnote pairing that makes them pop up on Kindle get baked
-               in here, at the one place chapter HTML leaves the editor. */
-            const chapterNumber = pages.filter((pg) => pg.type === 'chapter').findIndex((pg) => pg.id === c.id) + 1;
-            const fieldVals = { author: metadata.author, bookTitle: metadata.title, chapterTitle: stripTags(titleField) || c.title, chapterNumber };
-            const body = resolveFieldTokens(applyFootnoteNumbering(chapterContent[c.id] ?? c.initialHtml, c.id), fieldVals);
-            return { id: c.id, title: c.title, layout: c.layout, html: titleHeadingHtml + body };
-          })}
+              : c.title ? `<h2>${c.title}</h2>` : '';
+            /* Reached only by an untitled page sitting before the book's first
+               chapter, which has nothing above it to merge into. It becomes a
+               headless section of its own rather than being silently dropped. */
+            out.push({ id: c.id, title: stripTags(titleField) || c.title || 'Untitled', layout: c.layout, html: titleHeadingHtml + body });
+            return out;
+          }, [])}
           theme={theme}
           // The visible contents page used to be dropped at the door: the user edited
           // it and it never reached the file. It's generated in the package from the

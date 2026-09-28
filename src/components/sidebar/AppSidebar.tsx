@@ -110,7 +110,11 @@ function ProjectsPopup({ anchorTop, sidebarRight }: { anchorTop: number; sidebar
    Sub-popup: Media
 ───────────────────────────────────────── */
 function MediaPopup({ anchorTop, sidebarRight }: { anchorTop: number; sidebarRight: number }) {
-  const ITEMS = ['Search', 'My Uploads', 'Collections', 'Favorites'];
+  /* Sentence case, like every other label in this product — and the same string
+     the book and presentation editors use for the same shelf. It was the one
+     Title Case item in the pair, which made the editor's list look like a
+     different thing from this one. */
+  const ITEMS = ['Search', 'My uploads', 'Collections', 'Favorites'];
   return (
     <div
       style={{

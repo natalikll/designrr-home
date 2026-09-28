@@ -426,7 +426,6 @@ blockquote {
 .book-img-wrap--inline { display: block; max-width: 100%; margin: 1.1em auto; }
 .book-img-wrap--left { float: left; max-width: 46%; margin: .25em 1.2em .7em 0; }
 .book-img-wrap--right { float: right; max-width: 46%; margin: .25em 0 .7em 1.2em; }
-.book-img-wrap--full-bleed { display: block; width: 100%; margin: 1.3em 0; max-width: none; }
 
 /* Tint plus a left bar, no surround — see the callout note in BookEditorView's
    injected styles. */

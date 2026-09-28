@@ -12,6 +12,7 @@ import { SideMenuIcon } from '@/components/sidebar/AppSidebar';
 // shared variants instead of inventing studio-specific timing keeps every Wordgenie surface
 // in the app moving the same way.
 import { messageVariants } from '@/lib/animations';
+import { MenuTick, MENU_TICK_PATH } from '@/components/ui/MenuTick';
 
 // Figma's "AI dark mode" color style — a lighter, cooler blue-to-violet than the light-mode
 // brand gradient (#006EFE→#5326BD), tuned to read correctly against a near-black canvas instead
@@ -3140,7 +3141,8 @@ function ChangeSourceMenu({ current, onSwitch }: { current: SourceKind; onSwitch
                 onMouseEnter={e => { if (s !== current) e.currentTarget.style.background = '#F4F6F9'; }}
                 onMouseLeave={e => { e.currentTarget.style.background = s === current ? '#F4F6F9' : 'transparent'; }}>
                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: SOURCE_COLORS[s], flexShrink: 0 }} />
-                <span style={{ ...ns, fontSize: 12, fontWeight: s === current ? 700 : 500, color: '#15191F' }}>{labels[s]}</span>
+                <span style={{ ...ns, fontSize: 12, fontWeight: s === current ? 700 : 500, color: '#15191F', flex: 1, textAlign: 'left' }}>{labels[s]}</span>
+                <span style={{ color: '#15191F' }} className="flex items-center"><MenuTick on={s === current} /></span>
               </button>
             ))}
           </motion.div>
@@ -4247,7 +4249,7 @@ function ScriptModeMenu({ mode, onChange, hideTeleprompter = false }: {
                   </span>
                   {opt.id === mode && (
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#006EFE" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: 'auto' }}>
-                      <path d="M20 6L9 17l-5-5"/>
+                      <path d={MENU_TICK_PATH}/>
                     </svg>
                   )}
                 </button>

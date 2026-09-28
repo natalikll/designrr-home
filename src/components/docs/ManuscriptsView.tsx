@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { useFlowStore } from '@/stores/flowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
+import { MenuTick } from '@/components/ui/MenuTick';
 
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 
@@ -488,12 +489,13 @@ function SortDropdown() {
             <button
               key={opt}
               onClick={() => { setSelected(opt); setOpen(false); }}
-              className="text-left cursor-pointer rounded-md"
-              style={{ ...ns, fontSize: 13.5, color: '#15191F', padding: '7px 10px', fontWeight: opt === selected ? 600 : 400, background: opt === selected ? '#F4F6F9' : 'transparent', border: 'none' }}
+              className="text-left cursor-pointer rounded-md flex items-center justify-between"
+              style={{ ...ns, fontSize: 13.5, color: '#15191F', padding: '7px 10px', gap: 10, fontWeight: opt === selected ? 600 : 400, background: opt === selected ? '#F4F6F9' : 'transparent', border: 'none' }}
               onMouseEnter={(e) => (e.currentTarget.style.background = '#F4F6F9')}
               onMouseLeave={(e) => (e.currentTarget.style.background = opt === selected ? '#F4F6F9' : 'transparent')}
             >
-              {opt}
+              <span>{opt}</span>
+              <MenuTick on={opt === selected} />
             </button>
           ))}
         </div>

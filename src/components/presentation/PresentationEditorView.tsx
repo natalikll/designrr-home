@@ -17,6 +17,7 @@ import { Tooltip } from '../ui/Tooltip';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { FilmstripItem } from './FilmstripItem';
 import { ns, DuplicateIcon, TrashIcon, AISparkleIcon } from './presentationIcons';
+import { MenuTick } from '@/components/ui/MenuTick';
 
 // Vertical gap between bullet points (not line-height, which only affects wrapping within one
 // bullet). '2.5%' was the old hardcoded value — kept as 'standard' so existing slides look
@@ -1569,12 +1570,13 @@ function FontDropdown({ value, onChange }: { value: string; onChange: (v: string
             ) : filtered.map(f => (
               <button key={f.value}
                 onMouseDown={e => { e.preventDefault(); onChange(f.value); setOpen(false); setQuery(''); }}
-                className="w-full flex items-center cursor-pointer"
-                style={{ height: 32, padding: '0 8px', borderRadius: 6, border: 'none', background: f.value === value ? '#EFF6FF' : 'none', ...ns, fontSize: 13, fontFamily: f.value, fontWeight: 500, color: f.value === value ? '#006EFE' : '#15191F', textAlign: 'left' }}
+                className="w-full flex items-center justify-between cursor-pointer"
+                style={{ height: 32, padding: '0 8px', gap: 10, borderRadius: 6, border: 'none', background: f.value === value ? '#EFF6FF' : 'none', ...ns, fontSize: 13, fontFamily: f.value, fontWeight: 500, color: f.value === value ? '#006EFE' : '#15191F', textAlign: 'left' }}
                 onMouseEnter={e => { if (f.value !== value) e.currentTarget.style.background = '#F5F7FA'; }}
                 onMouseLeave={e => { if (f.value !== value) e.currentTarget.style.background = 'none'; }}
               >
-                {f.label}
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.label}</span>
+                <MenuTick on={f.value === value} />
               </button>
             ))}
           </div>
@@ -1644,12 +1646,13 @@ function FontSizeDropdown({ value, onChange }: { value: number; onChange: (v: nu
           {FONT_SIZE_PRESETS.map(p => (
             <button key={p}
               onMouseDown={e => { e.preventDefault(); onChange(p); setOpen(false); }}
-              className="w-full flex items-center cursor-pointer"
-              style={{ height: 30, padding: '0 14px', border: 'none', background: p === value ? '#EFF6FF' : 'none', ...ns, fontSize: 13, fontWeight: p === value ? 600 : 400, color: p === value ? '#006EFE' : '#15191F', textAlign: 'left' }}
+              className="w-full flex items-center justify-between cursor-pointer"
+              style={{ height: 30, padding: '0 14px', gap: 10, border: 'none', background: p === value ? '#EFF6FF' : 'none', ...ns, fontSize: 13, fontWeight: p === value ? 600 : 400, color: p === value ? '#006EFE' : '#15191F', textAlign: 'left' }}
               onMouseEnter={e => { if (p !== value) e.currentTarget.style.background = '#F5F7FA'; }}
               onMouseLeave={e => { if (p !== value) e.currentTarget.style.background = 'none'; }}
             >
-              {p}
+              <span>{p}</span>
+              <MenuTick on={p === value} />
             </button>
           ))}
         </div>
@@ -1694,12 +1697,13 @@ function TransitionTypeSelect({ value, onChange }: { value: string; onChange: (v
           {TRANSITION_OPTIONS.map(t => (
             <button key={t.value}
               onMouseDown={e => { e.preventDefault(); onChange(t.value); setOpen(false); }}
-              className="w-full flex items-center cursor-pointer text-left"
-              style={{ height: 30, padding: '0 10px', border: 'none', background: t.value === value ? '#EFF6FF' : 'none', ...ns, fontSize: 12.5, fontWeight: t.value === value ? 600 : 500, color: t.value === value ? '#006EFE' : '#15191F' }}
+              className="w-full flex items-center justify-between cursor-pointer text-left"
+              style={{ height: 30, padding: '0 10px', gap: 10, border: 'none', background: t.value === value ? '#EFF6FF' : 'none', ...ns, fontSize: 12.5, fontWeight: t.value === value ? 600 : 500, color: t.value === value ? '#006EFE' : '#15191F' }}
               onMouseEnter={e => { if (t.value !== value) e.currentTarget.style.background = '#F5F7FA'; }}
               onMouseLeave={e => { if (t.value !== value) e.currentTarget.style.background = 'none'; }}
             >
-              {t.label}
+              <span>{t.label}</span>
+              <MenuTick on={t.value === value} />
             </button>
           ))}
         </div>
@@ -1849,7 +1853,8 @@ function BarListPicker({ value, onChange }: { value: 'none' | 'bullet' | 'number
             <button key={o.value} onMouseDown={e => { e.preventDefault(); onChange(o.value); setOpen(false); }} className="w-full flex items-center cursor-pointer"
               style={{ height: 30, padding: '0 10px', gap: 8, borderRadius: 5, border: 'none', background: o.value === value ? '#EFF6FF' : 'none', color: o.value === value ? '#006EFE' : '#52637A' }}>
               {o.icon}
-              <span style={{ ...ns, fontSize: 12.5, fontWeight: o.value === value ? 600 : 400, color: 'inherit' }}>{o.label}</span>
+              <span style={{ ...ns, fontSize: 12.5, fontWeight: o.value === value ? 600 : 400, color: 'inherit', flex: 1, textAlign: 'left' }}>{o.label}</span>
+              <MenuTick on={o.value === value} />
             </button>
           ))}
         </div>
