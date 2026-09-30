@@ -49,17 +49,26 @@ import { MenuTick, MENU_TICK_PATH } from '@/components/ui/MenuTick';
 
 /* ── shared tokens, matching the rest of the app ─────────────────────────────── */
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
-const INK = '#15191F';
+const INK = 'var(--color-black-10)';
 /* The system's two off-white fills (DESIGN.md "Surface" / "Surface hover"). A
    hover here is always a fill change — never a second border, and never a
    near-miss grey mixed for one control. */
-const SURFACE = '#F6F7F9';
-const SLATE = '#52637A';
-const BORDER = '#E0E5EB';
-const BLUE = '#006EFE';
+const SURFACE = 'var(--color-surface)';
+/* SLATE_HEX is the same colour as a literal, for the one place a token cannot go:
+   chart colours are serialized into SVG that ships inside the document and gets
+   exported, where there is no :root to resolve a var() against. */
+const SLATE = 'var(--color-black-40)';
+const SLATE_HEX = '#52637A';
+const BORDER = 'var(--color-black-90)';
+const BLUE = 'var(--color-primary-blue-50)';
 // Floating panels (dropdowns/menus) get their own lighter border instead of reusing the
 // flat divider color — matches PresentationEditorView/NarrationViewV4's convention.
 const PANEL_BORDER = '#E8EBF2';
+/* Black/20 and Blue/97 from the Figma library. Blue/97 is the platform's one
+   selected-tint; the #EEF3FF this file used in the rail is a near-miss of it that
+   exists nowhere in the design system (globals.css carried a third, #E8F1FF). */
+const INK_20 = 'var(--color-black-20)';
+const BLUE_97 = 'var(--color-primary-blue-97)';
 // Quiet uppercase section-eyebrow color — distinct from SLATE, which stays for real
 // body/secondary text. Matches PresentationEditorView's label convention. Darkened
 // from the original #A8B3C4 (2.1:1 on white, failed WCAG AA) to ~5:1 — still visibly
@@ -125,11 +134,34 @@ const RADIUS_SM = 6;
 const RADIUS_MD = 8;
 const RADIUS_LG = 12;
 const RADIUS_PILL = 999;
-const RAIL_W = 76;
-/* Left panel: insert tools plus Properties. A little wider than the 240 it carried
-   when it held insert tiles alone, because Properties moved in and its option grids
-   and swatch rows were laid out against the old 296 inspector. */
-const PANEL_W = 264;
+/* 96, from the design system's "Editor pages" rail. Print Book and Presentations
+   both ship the same one, so it's a platform pattern rather than this feature's
+   choice. The number falls out of the item: 16px padding either side of a 64px
+   square. It was 76, which squeezed the square to 58 and the label to 10px of
+   usable width — hence the bold 11px type this used to need to stay readable. */
+const RAIL_W = 96;
+/* One rail item, shared by the tool rail and the navigator rail — they're the same
+   control at two anchors. 64x64 with a 6px radius, an 18px glyph over a 10px label.
+   The 10 is below the type scale's smallest step (12) and is deliberate: the design
+   system's rail draws it that way, and it's the only place that does. */
+const RAIL_ITEM: React.CSSProperties = {
+  width: 64, height: 64, borderRadius: RADIUS_SM, border: 'none', cursor: 'pointer',
+  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+  gap: 4, padding: '10px 14px',
+  /* The 14px is a minimum, not a gutter: our longest labels (Templates, Elements,
+     Chapters, Settings) run 37-48px against a 36px content box, so they spill into
+     it and stop at the 64px edge. That's what the design system's own rail does with
+     the same words at the same size — it clips at the item, not at the padding. Both
+     properties are set rather than inherited by luck: nowrap keeps a long label on
+     one line (a second line would push the item past 64 tall), and hidden is the
+     backstop if a longer label than any of today's ever lands here. */
+  whiteSpace: 'nowrap', overflow: 'hidden',
+};
+/* Left panel: insert tools plus Properties. 282 is the design system's own properties
+   panel — Kindle Book draws it on the right and we draw it on the left, but it's the
+   same panel — and the width is what makes its 40px fields and 14/12 type fit as
+   drawn. It was 264, itself widened from 240 when Properties moved in here. */
+const PANEL_W = 282;
 /* Right panel: the navigator — Pages, Chapters — plus History and Find when the top
    bar opens them. Narrow on purpose: it's reference, not a work surface, so it gives
    its width back to the canvas. Page thumbnails scale off this (see thumbW). */
@@ -2518,7 +2550,7 @@ function pieChartGeometry(points: ChartPoint[]): SvgPrim[] {
   const shown = points.length > cap ? points.slice(0, cap - 1) : points;
   const overflow = points.length > cap ? points.slice(cap - 1).reduce((s, p) => s + p.value, 0) : 0;
   const rows = overflow > 0 ? [...shown, { label: 'Other', value: overflow }] : shown;
-  const colors = rows.map((_, i) => (overflow > 0 && i === rows.length - 1 ? SLATE : CHART_PALETTE[i]));
+  const colors = rows.map((_, i) => (overflow > 0 && i === rows.length - 1 ? SLATE_HEX : CHART_PALETTE[i]));
   const total = rows.reduce((s, p) => s + p.value, 0) || 1;
   const cx = 118, cy = 120, r = 86;
   const prims: SvgPrim[] = [];
@@ -4396,6 +4428,21 @@ const ActiveBlockRing = Extension.create({
     return [
       new Plugin({
         key: activeBlockKey,
+        /* Whether a floated photo currently overlaps the active paragraph. It
+           lives in plugin state rather than being written straight onto the DOM:
+           the decoration owns that element's className, so a class set behind
+           ProseMirror's back is wiped on the next re-render and re-added by the
+           next measurement, and the two spin against each other forever (the
+           MutationObserver turns each write into another update). Routing it
+           through state means the class is applied by the decoration itself,
+           which is the only thing allowed to set it. */
+        state: {
+          init: () => false,
+          apply(tr, value: boolean) {
+            const meta = tr.getMeta(activeBlockKey);
+            return typeof meta === 'boolean' ? meta : value;
+          },
+        },
         props: {
           decorations(state) {
             // A NodeSelection is the atom case, already ringed — a second box
@@ -4419,8 +4466,11 @@ const ActiveBlockRing = Extension.create({
             // browser's own selection highlight; ringing just the block the
             // range starts in would claim the wrong extent.
             if (!state.selection.empty || !$from.depth || !$from.parent.isTextblock) return DecorationSet.empty;
+            const besideFloat = activeBlockKey.getState(state) === true;
             return DecorationSet.create(state.doc, [
-              Decoration.node($from.before($from.depth), $from.after($from.depth), { class: 'book-text-active' }),
+              Decoration.node($from.before($from.depth), $from.after($from.depth), {
+                class: besideFloat ? 'book-text-active book-text-beside-float' : 'book-text-active',
+              }),
             ]);
           },
         },
@@ -4429,31 +4479,50 @@ const ActiveBlockRing = Extension.create({
            full-column block box, so its ring runs behind the photo and claims
            territory the text never occupies. Whether a float intrudes is a
            layout fact, not a document one, so it can't be decided in
-           `decorations` — this measures after each DOM update and lets the CSS
-           drop the ring.
+           `decorations` — this measures after each DOM update and feeds the
+           answer back in as plugin state.
 
            The test is the float's own geometry, not the line boxes': a centred
            or right-aligned paragraph also has lines inset from its block box,
            and comparing those would suppress the ring on every one of them. A
            float that overlaps this paragraph's vertical span is the only thing
-           that eats into its width. */
+           that eats into its width.
+
+           This terminates because an outline is not in the flow: dropping it
+           cannot move the paragraph or the float, so the measurement can't flip
+           back. The dispatch is still guarded on a real change, so the steady
+           state is one measurement per update and no transaction at all. */
         view: (editorView) => {
-          const sync = () => {
+          let frame = 0;
+          const measure = () => {
+            frame = 0;
             const el = editorView.dom.querySelector('.book-text-active');
-            if (!el) return;
-            const floats = editorView.dom.querySelectorAll('.book-img-wrap--left, .book-img-wrap--right');
-            const box = el.getBoundingClientRect();
             let beside = false;
-            for (const f of Array.from(floats)) {
-              const fr = f.getBoundingClientRect();
-              // 1px of slack so a float that merely abuts the paragraph -- ends
-              // exactly where it starts -- doesn't count as intruding.
-              if (fr.bottom > box.top + 1 && fr.top < box.bottom - 1) { beside = true; break; }
+            if (el) {
+              const box = el.getBoundingClientRect();
+              const floats = editorView.dom.querySelectorAll('.book-img-wrap--left, .book-img-wrap--right');
+              for (const f of Array.from(floats)) {
+                const fr = f.getBoundingClientRect();
+                // 1px of slack so a float that merely abuts the paragraph --
+                // ends exactly where it starts -- doesn't count as intruding.
+                if (fr.bottom > box.top + 1 && fr.top < box.bottom - 1) { beside = true; break; }
+              }
             }
-            el.classList.toggle('book-text-beside-float', beside);
+            if (beside === activeBlockKey.getState(editorView.state)) return;
+            // Out of the history: this is a rendering fact about the paragraph,
+            // and undo should never step through it.
+            editorView.dispatch(editorView.state.tr.setMeta(activeBlockKey, beside).setMeta('addToHistory', false));
           };
-          sync();
-          return { update: sync };
+          /* Deferred to a frame rather than run inside update(): dispatching
+             synchronously from a view update re-enters ProseMirror's own
+             dispatch, and the rects are only trustworthy once layout has
+             settled after the update that prompted the measurement. */
+          const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
+          schedule();
+          return {
+            update: schedule,
+            destroy() { if (frame) cancelAnimationFrame(frame); },
+          };
         },
       }),
     ];
@@ -4583,7 +4652,19 @@ function deriveSubheadings(html: string): string[] {
    of the cover stage (0-100), so the same element list renders correctly at any scale
    — full-size in the live editor, or shrunk via a plain CSS transform for a Preview
    device frame or a Templates-tab card thumbnail. ─────────────────────────────────── */
-interface CoverElementBase { id: string; x: number; y: number; w: number; h: number; opacity?: number; locked?: boolean; }
+/* Who put this element on the cover. Absent means the template did — which is
+   what every element in THEMES and every cover saved before this flag existed
+   is, so no migration is needed. 'author' means the user added it by hand (a
+   dropped photo, a duplicated element), and that is the whole difference that
+   decides whether applying a template may delete it.
+
+   The distinction exists because a cover is a free canvas, unlike the flowing
+   theme-driven pages: a template owns the arrangement it shipped with, but it
+   cannot own a shape the user drew on top of it. Squarespace, Shopify and
+   WordPress all lose exactly the work that lives inside the theme's namespace,
+   and the fix in all three is the same one taken here — move the user's work
+   out of that namespace rather than warn about losing it. */
+interface CoverElementBase { id: string; x: number; y: number; w: number; h: number; opacity?: number; locked?: boolean; origin?: 'author'; }
 interface CoverTextElement extends CoverElementBase {
   type: 'text';
   // Content itself lives in fieldContent (see fieldKeyForCoverText below), not here —
@@ -4760,6 +4841,21 @@ function owningChapterId(pages: PageMeta[], fieldContent: Record<string, string>
 
 let coverElId = 0;
 const nextCoverElId = () => `cel-${++coverElId}`;
+/* The counter is module state, so it restarts at 0 on every page load while the
+   book being restored still holds the ids a previous session handed out. Left
+   alone, the next template applied would mint cel-1 again and collide with a
+   restored cel-1 — harmless while a template swap replaced the whole element
+   list, and a real duplicate-key bug now that authored elements survive one.
+   Cover text keys off the element id too (see fieldKeyForCoverText), so a
+   collision would cross-wire two boxes onto one piece of text. */
+function reserveCoverElIds(pages: PageMeta[]): void {
+  for (const p of pages) {
+    for (const el of (p.type === 'cover' ? p.coverElements ?? [] : [])) {
+      const n = /^cel-(\d+)$/.exec(el.id);
+      if (n) coverElId = Math.max(coverElId, Number(n[1]));
+    }
+  }
+}
 
 /* Books saved before the cover had a real background: a full-bleed rectangle
    SHAPE sitting at the bottom of the element list, which is what made clicking a
@@ -4783,6 +4879,123 @@ function cloneCoverElements(elements: CoverElement[]): CoverElement[] {
   return elements.map((el) => ({ ...el, id: nextCoverElId() }));
 }
 
+/* ── cover overrides — freeze on touch ────────────────────────────────────────
+   A cover text slot's styling normally belongs to the template: pick a new one
+   and the type is restyled to match the layout it was drawn for. The moment the
+   author sets a property BY HAND, that single property stops tracking the
+   template and travels with them instead. Untouched properties keep re-styling.
+
+   This is not a new idea in this file — it is exactly the relationship
+   ChapterOverrides has with the theme on the chapter side, and the cover was the
+   half that lacked it. It is also how InDesign, Word and Visual Studio all model
+   a style and a local override: the style is the base, the override is a layer,
+   and a property is in one or the other, never half of both.
+
+   SCOPE, and the two boundaries that matter:
+
+   · Keyed by ROLE, not element id, and only the four singleton roles. Those are
+     the slots every template has a counterpart for, which is what makes
+     "carry it across" meaningful. A template's decorative shapes have no
+     counterpart — Growth's stepped blocks are not Academic Clean's hairlines —
+     so there is nothing to carry them onto. Author-added elements need none of
+     this: they already survive whole (see mergeCoverElements).
+
+   · Position and size are NOT here, deliberately. A colour is portable — red is
+     red on any cover — but x/y/w/h are coordinates in the layout being
+     replaced. Freeze those and the title stays exactly where the old template
+     put it, which on the next template is usually on top of something.
+
+   The override is only safe because it is visible: every frozen property is
+   marked in the inspector with one click to release it (see OverrideDot and
+   resetCoverSlot). Without that, a colour set once silently overrides every
+   template tried afterwards, and the symptom — "this template looks broken" —
+   points nowhere near the cause. */
+type CoverSlotRole = 'category' | 'title' | 'subtitle' | 'author';
+const COVER_SLOT_ROLES: CoverSlotRole[] = ['category', 'title', 'subtitle', 'author'];
+/* Listed in the order they read down a cover, not alphabetically — the panel is
+   describing a layout, so it should be walkable against the thing it describes. */
+const COVER_SLOT_LABELS: Record<CoverSlotRole, string> = {
+  category: 'Category', title: 'Title', subtitle: 'Subtitle', author: 'Author',
+};
+function isCoverSlotRole(r: CoverTextElement['role']): r is CoverSlotRole {
+  return r !== 'custom';
+}
+/* Every styling property a cover text element has, and nothing else. Spelled as
+   a list rather than "the element minus geometry" so that adding a new geometry
+   field can't silently make it freezable. */
+const COVER_STYLE_KEYS = [
+  'fontFamily', 'fontSize', 'color', 'fontWeight', 'fontStyle', 'textAlign',
+  'letterSpacing', 'textTransform', 'lineHeight', 'stylePreset',
+] as const;
+type CoverTextStyle = Partial<Pick<CoverTextElement, typeof COVER_STYLE_KEYS[number]>>;
+/* What each frozen property is called when the inspector names it back to you.
+   The words the controls themselves use, so "Colour" in the notice and "Colour"
+   on the field are the same thing said twice, not two things. */
+const COVER_STYLE_LABELS: Record<typeof COVER_STYLE_KEYS[number], string> = {
+  fontFamily: 'Font', fontSize: 'Size', color: 'Colour', fontWeight: 'Weight',
+  fontStyle: 'Italic', textAlign: 'Alignment', letterSpacing: 'Letter spacing',
+  textTransform: 'Caps', lineHeight: 'Line height', stylePreset: 'Style',
+};
+interface CoverOverrides {
+  text: Partial<Record<CoverSlotRole, CoverTextStyle>>;
+  /* The cover's own background. Same rule, one property: unset means the
+     template decides, set means the author picked it and it travels. */
+  bg?: string;
+  /* Slots the author deleted on purpose. A template that ships one is told not
+     to put it back — "this book has no subtitle" is a fact about the book, so it
+     outlives the layout that happened to offer the box. */
+  removed?: CoverSlotRole[];
+}
+const EMPTY_COVER_OVERRIDES: CoverOverrides = { text: {} };
+
+/** "Colour", "Colour and size", "Font, colour and size" — a plain English list. */
+function listOf(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/* The styling half of a patch, or null when the patch was pure geometry. Takes
+   Partial<CoverTextElement> rather than CoverElementPatch so it reads a whole
+   template element too — resetCoverSlot uses it to pull the values back out. */
+function pickCoverStyle(patch: Partial<CoverTextElement>): CoverTextStyle | null {
+  let found: CoverTextStyle | null = null;
+  for (const k of COVER_STYLE_KEYS) {
+    if (!(k in patch)) continue;
+    (found ??= {})[k] = patch[k] as never;
+  }
+  return found;
+}
+
+/** Lays the author's frozen properties back over a template's own slots, and
+    drops the slots they deleted on purpose. */
+function applyCoverOverrides(els: CoverElement[], ov: CoverOverrides): CoverElement[] {
+  const removed = ov.removed ?? [];
+  if (!Object.keys(ov.text).length && !removed.length) return els;
+  return els.flatMap((el) => {
+    if (el.type !== 'text' || el.origin === 'author' || !isCoverSlotRole(el.role)) return [el];
+    if (removed.includes(el.role)) return [];
+    const frozen = ov.text[el.role];
+    return [frozen ? { ...el, ...frozen } : el];
+  });
+}
+
+/* Where a slot goes when the author adds one the template never drew. Derived
+   from the title rather than fixed, so it lands inside whatever grid the
+   template uses: same left edge, same width, stacked under it. Every one of the
+   nine templates has a title, so there is always something to hang this on, and
+   under the title is where all four of these sit on essentially every cover.
+   It will not be as good as a slot the designer placed — but it is reachable,
+   and the moment it is dragged that position becomes the author's own anyway. */
+function derivedSlotBox(title: CoverTextElement | undefined, role: CoverSlotRole): Pick<CoverElementBase, 'x' | 'y' | 'w' | 'h'> {
+  if (!title) return { x: 10, y: role === 'category' ? 12 : 70, w: 80, h: 6 };
+  // Category is the one that belongs ABOVE the title — it is a kicker, and
+  // putting it under would read as a second subtitle.
+  const y = role === 'category'
+    ? clampPct(title.y - 8, 0, 94)
+    : clampPct(title.y + title.h + (role === 'author' ? 12 : 3), 0, 94);
+  return { x: title.x, y, w: title.w, h: 6 };
+}
+
 /* Applying a template used to replace the cover wholesale, so a chosen photo
    went with it. A template IS a layout — and a look, coordinated font/colour
    choices that go with that specific arrangement — so both the arrangement
@@ -4793,20 +5006,55 @@ function cloneCoverElements(elements: CoverElement[]): CoverElement[] {
      comes from the new template, matching whatever look it was designed for.
    · Text — the words already survive, because they live in fieldContent
      keyed by role rather than by element id (see fieldKeyForCoverText). Font,
-     colour, size and alignment always come from the new template — a toggle
-     to keep the old template's type choices used to exist here, but kept
-     styling from a layout the type was never designed for, which is exactly
-     what picking a different template is meant to change.
-   · Position and size — never carry. They're coordinates in the layout being
-     replaced; keeping them is what produces a title floating in dead space. */
-function mergeCoverElements(current: CoverElement[], incoming: CoverElement[]): CoverElement[] {
-  const currentPhoto = current.find((el): el is CoverImageElement => el.type === 'image');
-  return cloneCoverElements(incoming).map((el) => {
-    if (el.type === 'image' && currentPhoto) {
-      return { ...el, src: currentPhoto.src };
+     colour, size and alignment come from the new template UNLESS the author
+     set that one property by hand, in which case it is frozen and travels —
+     see CoverOverrides. A blanket "keep the old template's type choices"
+     toggle used to live here and was rightly removed: it kept styling from a
+     layout the type was never designed for. Freezing only the properties
+     actually touched is the opposite trade, and it is the relationship
+     ChapterOverrides has always had with the theme on the chapter side.
+   · Position and size — never carry, for TEMPLATE-OWNED elements. They're
+     coordinates in the layout being replaced; keeping them is what produces a
+     title floating in dead space.
+
+   · Anything the author added themselves — a dropped photo, a duplicated
+     element, a second text box — carries across WHOLE, position and styling
+     included, and lands on top of the new layout. The reasoning is the mirror
+     image of the line above: a sticker placed at 70/20 is a decision about
+     this cover, not a coordinate in a layout that no longer exists, so there
+     is nothing for the new template to have an opinion about. This used to be
+     dropped on the floor, which made picking a template a silent way to delete
+     your own work. */
+function mergeCoverElements(current: CoverElement[], incoming: CoverElement[], outgoing: CoverElement[]): CoverElement[] {
+  const authored = current.filter((el) => el.origin === 'author');
+  /* The photo of record, and only if the AUTHOR chose it: an image still
+     carrying the outgoing template's own stock src is that template's artwork,
+     not a picture anyone picked, and carrying it forward would spread one
+     theme's stock photo across every other theme you try. */
+  const stockSrcs = new Set(outgoing.filter((el) => el.type === 'image').map((el) => (el as CoverImageElement).src));
+  const chosenPhoto = current.find((el): el is CoverImageElement => (
+    el.type === 'image' && el.origin !== 'author' && !stockSrcs.has(el.src)
+  ));
+  const slots = cloneCoverElements(incoming).map((el) => {
+    /* originalSrc/crop travel with src, not just src: src is the already-baked
+       cut, so carrying it alone would hand the new cover a photo whose crop can
+       never be widened or undone. */
+    if (el.type === 'image' && chosenPhoto) {
+      return { ...el, src: chosenPhoto.src, originalSrc: chosenPhoto.originalSrc, crop: chosenPhoto.crop };
     }
     return el;
   });
+  /* A template with no image slot at all (Growth) used to destroy the author's
+     photo outright — the one case where switching template deleted content
+     that could not be typed back. It survives as an authored element instead:
+     it keeps its old box, so it may well sit oddly on the new layout, but a
+     photo you can see and move beats a photo that silently stopped existing. */
+  const orphanPhoto = chosenPhoto && !slots.some((el) => el.type === 'image')
+    ? [{ ...chosenPhoto, origin: 'author' as const }]
+    : [];
+  // Authored elements last = drawn in front (see reorderCoverElement, where
+  // 'front' pushes to the end), which is where something added on top belongs.
+  return [...slots, ...orphanPhoto, ...authored];
 }
 
 /* ── templates — one bundled thing, not two: a template is a cover layout AND the
@@ -10036,6 +10284,69 @@ function CoverCanvasEditable({
     return null;
   });
 
+  /* ── Keyboard access for image and shape elements ──────────────────────────
+     WCAG 2.1.1 Keyboard is Level A: every function has to have a keyboard path,
+     though not the same gesture. Text elements already had one by accident — they
+     hold a contenteditable, which is focusable, and its selectionOnFocus selects
+     the element, so tabbing into one opens Properties and every attribute is
+     reachable from there. Images and shapes are bare divs with a pointerdown and
+     nothing else: no tab stop, no focusable descendant, so there was no way to
+     select one, which meant no way to reach ANY of its properties.
+
+     So the fix is to give them the same thing text gets — focus selects — rather
+     than to build a parallel keyboard editing mode. Once selected, the panel's
+     own X/Y/W/H, opacity and style fields are ordinary inputs and already work.
+     Arrow-nudge is here because direct manipulation deserves a direct equivalent,
+     not because 2.1.1 requires it; the panel would satisfy the criterion alone. */
+  const NUDGE = 0.5;
+  const NUDGE_BIG = 5;
+  const describeCoverEl = (el: CoverElement) =>
+    el.type === 'image' ? 'Cover image'
+      : el.type === 'shape' ? `${el.shape ?? 'Shape'} shape`
+        : 'Cover text';
+
+  /* role="button" is a pragmatic choice, not a settled one — treat it as open.
+     It buys operability, which is the whole point, but it announces a movable,
+     resizable object carrying a dozen properties as if it were an action. The
+     alternatives are each wrong in their own way: role="group" doesn't imply the
+     thing is operable at all, and role="option" inside a listbox — which is the
+     honest description of "pick one object from a set", and would carry selection
+     properly — brings listbox key semantics, where arrows move BETWEEN options.
+     Arrows here move the object itself, so that role would actively mislead.
+     aria-pressed carries the selection state in the meantime; it's meant for
+     toggles, so it's a stretch, but an announced selection beats a silent one.
+     Revisit if the design system ever specifies canvas semantics. */
+  const coverElKeyProps = (el: CoverElement) => ({
+    tabIndex: 0,
+    role: 'button',
+    'aria-pressed': el.id === selectedId,
+    'aria-label': `${describeCoverEl(el)}${el.locked ? ', locked' : ''}`,
+    /* Matches the click path and what text already does, so focus and selection
+       never disagree about what Properties is describing. */
+    onFocus: () => onSelection({ kind: 'coverElement', pageId: page.id, elementId: el.id }),
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === 'Escape') { (e.currentTarget as HTMLElement).blur(); return; }
+      if (el.locked) return;
+      const by = e.shiftKey ? NUDGE_BIG : NUDGE;
+      const move: Record<string, [number, number]> = {
+        ArrowLeft: [-by, 0], ArrowRight: [by, 0], ArrowUp: [0, -by], ArrowDown: [0, by],
+      };
+      const d = move[e.key];
+      if (d) {
+        e.preventDefault();
+        onUpdateElement(page.id, el.id, {
+          x: Math.min(100, Math.max(-50, el.x + d[0])),
+          y: Math.min(100, Math.max(-50, el.y + d[1])),
+        });
+        return;
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        onDeleteElement(page.id, el.id);
+      }
+    },
+  });
+
   const beginDrag = (el: CoverElement, e: React.PointerEvent) => {
     e.stopPropagation();
     // Selection always happens, even when locked — Select is the one thing a
@@ -10175,6 +10486,7 @@ function CoverCanvasEditable({
           return (
             <div
               key={el.id} data-cover-el={el.id} data-cover-selected={selected ? "true" : undefined}
+              {...coverElKeyProps(el)}
               style={{ ...boxStyle, cursor: el.locked ? 'default' : 'grab', outline: isDragOver ? `2px dashed ${BLUE}` : boxStyle.outline }}
               onPointerDown={(e) => beginDrag(el, e)}
               onDragEnter={(e) => { e.preventDefault(); setImageDragOverId(el.id); }}
@@ -10207,7 +10519,7 @@ function CoverCanvasEditable({
         }
         if (el.type === 'shape') {
           return (
-            <div key={el.id} data-cover-el={el.id} data-cover-selected={selected ? "true" : undefined} style={{ ...boxStyle, cursor: el.locked ? 'default' : 'grab' }} onPointerDown={(e) => beginDrag(el, e)}>
+            <div key={el.id} data-cover-el={el.id} data-cover-selected={selected ? "true" : undefined} {...coverElKeyProps(el)} style={{ ...boxStyle, cursor: el.locked ? 'default' : 'grab' }} onPointerDown={(e) => beginDrag(el, e)}>
               <ShapeFill el={el} />
               {selected && !el.locked && <ResizeHandles onResizeStart={(corner, e) => beginResize(el, corner, e)} />}
             </div>
@@ -11384,7 +11696,7 @@ function InsertSearchField({ value, onChange, placeholder }: { value: string; on
 function PanelSectionBreak({ label, hint }: { label: string; hint?: string }) {
   return (
     <div style={{ marginTop: 26, paddingTop: 18, borderTop: `1px solid ${PANEL_BORDER}` }}>
-      <div style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: INK }}>{label}</div>
+      <div style={{ ...ns, fontSize: 14, lineHeight: '18px', fontWeight: 600, color: INK }}>{label}</div>
       {hint && <div style={{ ...ns, fontSize: 11.5, color: SLATE, lineHeight: 1.5, marginTop: 4 }}>{hint}</div>}
     </div>
   );
@@ -12310,10 +12622,12 @@ function InsertPanel({ currentPlan, groups, searchScope, searchLabel, index, hea
 
 /* ── Templates panel — the whole-book gallery old Designrr's Templates rail item
    covers, split out from Design so Design can stay focused on the chapter you have
-   selected. Applying one is non-destructive by construction: it only ever touches
-   chapters (and properties) that haven't been manually overridden — the backup/
-   confirm step old Designrr needs before a template swap doesn't apply here because
-   there's nothing a template swap can silently clobber. ─────────────────────────── */
+   selected. Applying one only ever restyles chapters (and properties) that haven't
+   been manually overridden, and on the cover it replaces the template's own layout
+   while carrying the author's photo, text and hand-added elements — see
+   mergeCoverElements. That is what makes the backup/confirm step old Designrr needs
+   before a template swap unnecessary here: not that a swap is harmless, but that
+   the only things it replaces are things the template put there. ───────────────── */
 // One template per row, at the full row width available in this fixed-width
 // (PANEL_W) side panel — matching the presentation editor's own template list
 // (PresentationEditorView.tsx's Templates panel: one row per template, a
@@ -12340,17 +12654,31 @@ const TEMPLATE_ROW_H = Math.round(PAGE_MIN_H * TEMPLATE_ROW_SCALE);
    was showing the same thing twice. applyTemplate takes its own snapshot and
    offers an undo toast, the same safety net used for chapter delete/reorder/
    split elsewhere in this file. */
-function TemplatesPanel({ currentPlan, activeTheme, pages, fieldContent, onApplyTemplate }: {
+function TemplatesPanel({ currentPlan, activeTheme, pages, fieldContent, coverOverrides, onApplyTemplate }: {
   currentPlan: string;
   activeTheme: ThemeId;
   pages: PageMeta[];
   fieldContent: Record<string, string>;
+  coverOverrides: CoverOverrides;
   onApplyTemplate: (templateId: string) => void;
 }) {
   const [search, setSearch] = useState('');
   const q = search.toLowerCase();
   const visibleTemplates = THEMES.filter((t) => t.name.toLowerCase().includes(q));
   const coverPage = pages.find((p) => p.type === 'cover') as SimplePage | undefined;
+  /* What each card will actually produce, run through the same merge the apply
+     does — so a carried photo and any hand-added element appear in the preview
+     rather than the card promising a clean template and delivering your cover.
+     Memoised because mergeCoverElements mints ids: recomputing it inside the map
+     would burn a fresh batch on every keystroke in the search field. */
+  const previewElements = useMemo(() => {
+    const outgoing = THEMES.find((t) => t.id === activeTheme) ?? THEMES[0];
+    const current = coverPage?.coverElements ?? [];
+    return new Map(THEMES.map((t) => [
+      t.id,
+      applyCoverOverrides(mergeCoverElements(current, t.coverElements, outgoing.coverElements), coverOverrides),
+    ]));
+  }, [coverPage?.coverElements, activeTheme, coverOverrides]);
   return (
     <div style={{ padding: '16px 14px', overflowY: 'auto', height: '100%' }}>
       <input
@@ -12371,7 +12699,7 @@ function TemplatesPanel({ currentPlan, activeTheme, pages, fieldContent, onApply
              card has to show the same thing applyTemplate produces: the template's
              own coverBg, falling back to its theme bg exactly as CoverCanvas does
              when coverBg is unset (8 of 9 templates). */
-          const previewPage: SimplePage | undefined = coverPage ? { ...coverPage, bg: t.coverBg, coverElements: t.coverElements } : undefined;
+          const previewPage: SimplePage | undefined = coverPage ? { ...coverPage, bg: coverOverrides.bg ?? t.coverBg, coverElements: previewElements.get(t.id) ?? t.coverElements } : undefined;
           return (
             <button
               key={t.id}
@@ -12919,7 +13247,6 @@ function PageSetupSection({ sizeId, marginX, marginY, bookPageCount, pageNumbers
   const [draftSize, setDraftSize] = useState(sizeId);
   const [draftX, setDraftX] = useState(marginX);
   const [draftY, setDraftY] = useState(marginY);
-  const [confirming, setConfirming] = useState(false);
   const dirty = draftSize !== sizeId || draftX !== marginX || draftY !== marginY;
 
   return (
@@ -12959,11 +13286,16 @@ function PageSetupSection({ sizeId, marginX, marginY, bookPageCount, pageNumbers
       <MarginRow label="Top and bottom" value={draftY} onChange={setDraftY} />
 
       <div style={{ marginTop: 14 }}>
-        <FullButton label="Apply page setup" tone={dirty ? 'active' : 'default'} disabled={!dirty} onClick={() => setConfirming(true)} />
+        <FullButton label="Apply page setup" tone={dirty ? 'active' : 'default'} disabled={!dirty} onClick={() => onApply({ sizeId: draftSize, marginX: draftX, marginY: draftY })} />
       </div>
-      {/* The page count reads here rather than only inside the confirm dialog —
-          it is what tells you whether re-breaking the book is a big deal, and
-          that is worth knowing before you commit, not after. */}
+      {/* The consequence, stated before you press rather than in a dialog after.
+          There used to be a confirm here, and its own body said "Nothing you have
+          written is affected" — a dialog that reassures you it is harmless is a
+          dialog that should not exist. Nothing about this needs guarding: it is a
+          draft-then-Apply form, so the old size is still sitting in the control
+          you just changed, and pressing Apply again is the way back. NN/g's rule
+          is to spend a confirm on the serious cases, because one asked for a
+          reversible setting is one nobody reads by the time it matters. */}
       <div style={{ ...ns, fontSize: 11.5, color: SLATE, lineHeight: 1.5, marginTop: 10 }}>
         Applies to every page in the book. Chapters re-break to fit, so the page count changes — your book is {bookPageCount} {bookPageCount === 1 ? 'page' : 'pages'} at the current size.
       </div>
@@ -12980,61 +13312,7 @@ function PageSetupSection({ sizeId, marginX, marginY, bookPageCount, pageNumbers
         Click any page number on the page itself to set its numbering, position, style, font and colour.
       </div>
 
-      {confirming && (
-        <ConfirmDialog
-          title="Apply new page setup?"
-          body={`Your book is ${bookPageCount} ${bookPageCount === 1 ? 'page' : 'pages'} at the current size. Changing it re-breaks every chapter, so both the page count and where each page ends will change. Nothing you have written is affected.`}
-          confirmLabel="Apply"
-          onCancel={() => setConfirming(false)}
-          onConfirm={() => { setConfirming(false); onApply({ sizeId: draftSize, marginX: draftX, marginY: draftY }); }}
-        />
-      )}
     </div>
-  );
-}
-
-/* The one modal in this panel. Rendered into the body so it clears the left
-   rail's own stacking context, which would otherwise crop it to a 260px
-   column. */
-function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm }: {
-  title: string; body: string; confirmLabel: string; onCancel: () => void; onConfirm: () => void;
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onCancel]);
-  return createPortal(
-    <div
-      className="fixed inset-0 flex items-center justify-center"
-      style={{ background: 'rgba(15,23,51,0.32)', zIndex: 200 }}
-      onClick={onCancel}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ ...ns, width: 400, background: '#fff', borderRadius: RADIUS_LG, padding: '22px 22px 18px', boxShadow: '0 18px 50px rgba(15,23,51,0.22)' }}
-      >
-        <div style={{ fontSize: 15.5, fontWeight: 700, color: INK, marginBottom: 8 }}>{title}</div>
-        <div style={{ fontSize: 13, color: SLATE, lineHeight: 1.55 }}>{body}</div>
-        <div className="flex justify-end" style={{ gap: 8, marginTop: 20 }}>
-          <button
-            onClick={onCancel}
-            className="cursor-pointer hover:bg-[#F0F2F5]"
-            style={{ ...ns, height: 34, padding: '0 16px', borderRadius: RADIUS_SM, border: `1px solid ${BORDER}`, background: '#fff', fontSize: 13, fontWeight: 600, color: INK }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            className="cursor-pointer"
-            style={{ ...ns, height: 34, padding: '0 16px', borderRadius: RADIUS_SM, border: 'none', background: BLUE, fontSize: 13, fontWeight: 600, color: '#fff' }}
-          >
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
   );
 }
 
@@ -13168,6 +13446,47 @@ function InspectorShell({ children }: { children: React.ReactNode }) {
    structure at all. Figma's panel has exactly two levels: a bold dark section
    title over hairline dividers, and quiet grey field labels inside. This is the
    first; InspectorSection stays the second. */
+/* The design system's CTA — its name for a button that is only a label, no box.
+   Small is 14/18/600 in Blue/50, darkening to Blue/40 on hover and Blue/90 when
+   disabled; Default is the same thing at 16/20 and is for page-level actions, not
+   panels, so only Small is modelled here.
+
+   Every one of these in the panel was hand-rolled at a different size — 11, 11.5,
+   12, 12.5, at weight 600 or 700 — and none of those is on the type scale. None
+   carried a hover either, so the one state the library DOES specify for this
+   control was the one missing. Both facts are why it's a component now.
+
+   Only for a standalone action: a Reset in a group header, a "Show all". A link
+   inside a running sentence ("drag and drop your photo or browse") is NOT this —
+   it takes its sentence's size, or it sets the word in a different type from the
+   line it belongs to. */
+function PanelCta({ children, onClick, disabled, style }: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  style?: React.CSSProperties;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      className={disabled ? '' : 'cursor-pointer'}
+      style={{
+        ...ns, fontSize: 14, lineHeight: '18px', fontWeight: 600,
+        color: disabled ? '#CCE2FF' : hover ? '#0058CC' : BLUE,
+        background: 'none', border: 'none', padding: 0,
+        ...style,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function PanelGroup({ label, first, hint, action, children }: { label: string; first?: boolean; hint?: string; action?: React.ReactNode; children?: React.ReactNode }) {
   return (
     /* The rule sits BETWEEN two groups, so it gets the same air on both faces:
@@ -13176,7 +13495,7 @@ function PanelGroup({ label, first, hint, action, children }: { label: string; f
        and read as that group's underline rather than as a divider. */
     <div style={{ paddingTop: first ? 0 : 14, marginTop: first ? 0 : 14, borderTop: first ? 'none' : `1px solid ${BORDER}` }}>
       <div className="flex items-center justify-between" style={{ marginBottom: children ? 12 : 0 }}>
-        <div style={{ ...ns, fontSize: 12.5, fontWeight: 700, color: INK }}>{label}</div>
+        <div style={{ ...ns, fontSize: 14, lineHeight: '18px', fontWeight: 600, color: INK }}>{label}</div>
         {action}
       </div>
       {/* book-panel-body drops the LAST child's bottom margin, which is what
@@ -13188,7 +13507,7 @@ function PanelGroup({ label, first, hint, action, children }: { label: string; f
           middle of it. Nothing else changes: the margin still spaces siblings
           inside the group, it just stops leaking out of the bottom. */}
       <div className="book-panel-body">{children}</div>
-      {hint && <div style={{ ...ns, fontSize: 11.5, color: SLATE, lineHeight: 1.5, marginTop: 8 }}>{hint}</div>}
+      {hint && <div style={{ ...ns, fontSize: 12, color: SLATE, lineHeight: 1.45, marginTop: 8 }}>{hint}</div>}
     </div>
   );
 }
@@ -13196,7 +13515,7 @@ function PanelGroup({ label, first, hint, action, children }: { label: string; f
 /* A quiet field label — the level below PanelGroup. Sentence case and grey, so a
    field never competes with the section it sits in. */
 function FieldLabel({ children }: { children: React.ReactNode }) {
-  return <div style={{ ...ns, fontSize: 11, color: SLATE, marginBottom: 5 }}>{children}</div>;
+  return <div style={{ ...ns, fontSize: 12, lineHeight: '16px', color: SLATE, marginBottom: 5 }}>{children}</div>;
 }
 
 function InspectorSection({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -13219,10 +13538,10 @@ function InspectorSection({ label, hint, children }: { label: string; hint?: str
           block that opens both text panels) should sit flush under the one
           above, not behind an invisible heading. */}
       {label ? (
-        <div style={{ ...ns, fontSize: 11, color: SLATE, marginBottom: 6 }}>{label}</div>
+        <div style={{ ...ns, fontSize: 12, lineHeight: '16px', color: SLATE, marginBottom: 6 }}>{label}</div>
       ) : null}
       {children}
-      {hint && <div style={{ ...ns, fontSize: 11.5, color: SLATE, lineHeight: 1.5, marginTop: 8 }}>{hint}</div>}
+      {hint && <div style={{ ...ns, fontSize: 12, color: SLATE, lineHeight: 1.45, marginTop: 8 }}>{hint}</div>}
     </div>
   );
 }
@@ -13246,7 +13565,12 @@ function InspectorSection({ label, hint, children }: { label: string; hint?: str
    One height too. A panel that ran a 32px dropdown over a 27px dimension field
    over a 25px number field had three of them within one scroll, which is most of
    what "no structure" was: nothing lined up because nothing was the same size. */
-const FIELD_H = 32;
+/* 40, the design system's field height — every dropdown and text field in the
+   platform's own properties panels is 40 with a 12px inset and 14px text. It was
+   32, which was the right call while the panel was 264 wide and its type ran at
+   12.5; at 282 with 14px text the shorter box crowds its own label. Square buttons
+   that sit in a field row take this too, so they keep lining up with it. */
+const FIELD_H = 40;
 const FIELD_RING = '0 0 0 3px rgba(0, 110, 254, 0.12)';
 function fieldChrome(focused?: boolean, disabled?: boolean): React.CSSProperties {
   return {
@@ -13687,7 +14011,7 @@ function SelectField<T extends string>({ value, options, onChange, width = '100%
                  open is transient chrome, active is a filter still narrowing the
                  grid after the menu has gone. Active takes the fill, open takes
                  the border only. */
-              background: active ? '#EEF3FF' : '#fff',
+              background: active ? BLUE_97 : '#fff',
               border: `1px solid ${active ? '#C3D8FF' : open ? BLUE : BORDER}`,
               color: active ? BLUE : SLATE,
             }
@@ -13715,7 +14039,7 @@ function SelectField<T extends string>({ value, options, onChange, width = '100%
               onClick={() => { onChange(o.id); setOpen(false); }}
               className="flex items-center justify-between text-left cursor-pointer"
               style={{ gap: 10, ...ns, fontSize: 12.5, padding: '6px 8px', borderRadius: RADIUS_SM, border: 'none', whiteSpace: 'nowrap',
-                background: o.id === value ? '#EEF3FF' : 'none', color: o.id === value ? BLUE : INK }}
+                background: o.id === value ? BLUE_97 : 'none', color: o.id === value ? BLUE : INK }}
             >
               {/* Tick right, which is where every other menu in this editor puts
                   it — SizeFields' auto/fixed list and RowMenu both do, and
@@ -13909,7 +14233,7 @@ function OptionGrid<T extends string>({ options, value, onChange, columns = 2, f
                  the 1px of box metrics, so selecting something doesn't shift the
                  grid by a pixel. */
               border: active ? `1.5px solid ${BLUE}` : '1px solid transparent',
-              borderRadius: RADIUS_MD, background: active ? '#EEF3FF' : TILE_WELL,
+              borderRadius: RADIUS_MD, background: active ? BLUE_97 : TILE_WELL,
               color: active ? BLUE : INK, ...ns, fontSize: 12, fontWeight: 600,
               cursor: o.draggable ? 'grab' : 'pointer',
             }}
@@ -14127,7 +14451,7 @@ function TextSelectionBubbleMenu({ editor }: { editor: Editor }) {
   };
   const btnStyle = (active: boolean): React.CSSProperties => ({
     ...ns, width: 28, height: 28, borderRadius: RADIUS_SM, border: 'none', fontSize: 14,
-    background: active ? '#EEF3FF' : 'none', color: active ? BLUE : INK,
+    background: active ? BLUE_97 : 'none', color: active ? BLUE : INK,
     display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer',
   });
   const divider = <div style={{ width: 1, height: 18, background: BORDER, margin: '0 2px', flexShrink: 0 }} />;
@@ -15097,14 +15421,9 @@ function PhotoSourcePanel({ currentPlan, currentSrc, onPick, onDragTile }: {
             {grid(showAllUploads ? uploads : uploads.slice(0, UPLOADS_PREVIEW))}
           </div>
           {uploads.length > UPLOADS_PREVIEW && (
-            <button
-              type="button"
-              onClick={() => setShowAllUploads((v) => !v)}
-              className="cursor-pointer"
-              style={{ ...ns, fontSize: 12, fontWeight: 600, color: BLUE, background: 'none', border: 'none', padding: '8px 0 0', cursor: 'pointer' }}
-            >
+            <PanelCta onClick={() => setShowAllUploads((v) => !v)} style={{ padding: '8px 0 0' }}>
               {showAllUploads ? 'Show fewer' : `Show all ${uploads.length}`}
-            </button>
+            </PanelCta>
           )}
         </>
       )}
@@ -15702,12 +16021,19 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
   return (
     <button
       onClick={() => onChange(!checked)}
+      role="switch"
+      aria-checked={checked}
       className="flex items-center justify-between cursor-pointer"
-      style={{ width: '100%', ...ns, fontSize: 12.5, fontWeight: 600, color: INK, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: '9px 10px' }}
+      style={{ width: '100%', ...ns, fontSize: 14, lineHeight: '18px', fontWeight: 600, color: INK, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: '9px 10px' }}
     >
       {label}
-      <span style={{ position: 'relative', width: 30, height: 17, borderRadius: RADIUS_PILL, background: checked ? BLUE : '#D7DCE3', transition: 'background .12s ease', flexShrink: 0 }}>
-        <span style={{ position: 'absolute', top: 2, left: checked ? 15 : 2, width: 13, height: 13, borderRadius: '50%', background: '#fff', transition: 'left .12s ease' }} />
+      {/* 36x18 with a 14px knob, the design system's switch. It was 30x17/13, which
+          is the only size of it in the product — every other surface that draws one
+          is drawing this component. The off-track grey is unchanged: #D7DCE3 is in no
+          Figma ramp (Black/80 #C2CBD6 is the nearest), but the library doesn't
+          specify an off state, so snapping it would be a guess rather than a fix. */}
+      <span style={{ position: 'relative', width: 36, height: 18, borderRadius: RADIUS_PILL, background: checked ? BLUE : '#D7DCE3', transition: 'background .12s ease', flexShrink: 0 }}>
+        <span style={{ position: 'absolute', top: 2, left: checked ? 20 : 2, width: 14, height: 14, borderRadius: '50%', background: '#fff', transition: 'left .12s ease' }} />
       </span>
     </button>
   );
@@ -15722,7 +16048,7 @@ function FullButton({ label, onClick, tone = 'default', disabled = false }: { la
       style={{
         ...ns, width: '100%', height: 34, borderRadius: RADIUS_SM, gap: 6, fontSize: 13, fontWeight: 600,
         border: tone === 'active' ? `1.5px solid ${BLUE}` : `1px solid ${BORDER}`,
-        ...(tone === 'active' ? { background: '#EEF3FF' } : null), color: tone === 'active' ? BLUE : INK,
+        ...(tone === 'active' ? { background: BLUE_97 } : null), color: tone === 'active' ? BLUE : INK,
         opacity: disabled ? 0.55 : 1, cursor: disabled ? 'default' : undefined,
       }}
     >
@@ -15930,7 +16256,7 @@ function DimensionField({ label, px, dim, onChangePct, mode, onMode }: {
               onClick={() => { onMode(id); setOpen(false); }}
               className="flex items-center justify-between text-left cursor-pointer"
               style={{ gap: 10, ...ns, fontSize: 12.5, padding: '6px 8px', borderRadius: RADIUS_SM, border: 'none', whiteSpace: 'nowrap',
-                background: mode === id ? '#EEF3FF' : 'none', color: mode === id ? BLUE : INK }}
+                background: mode === id ? BLUE_97 : 'none', color: mode === id ? BLUE : INK }}
             >
               <span>{lbl}</span>
               <MenuTick on={mode === id} />
@@ -16065,7 +16391,7 @@ function ImageGridInspector({ editor }: { editor: Editor }) {
               onClick={() => editor.chain().focus().updateAttributes('imageGridBlock', { lockAspect: !gridLock }).run()}
               className="flex items-center justify-center cursor-pointer flex-shrink-0"
               style={{ width: FIELD_H, height: FIELD_H, borderRadius: RADIUS_SM, border: 'none',
-                background: gridLock ? '#EEF3FF' : '#F4F6F9', color: gridLock ? BLUE : SLATE }}
+                background: gridLock ? BLUE_97 : '#F4F6F9', color: gridLock ? BLUE : SLATE }}
               aria-label={gridLock ? 'Unlock proportions' : 'Lock proportions'}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -16079,13 +16405,12 @@ function ImageGridInspector({ editor }: { editor: Editor }) {
             value={attrs.boxH || 0} min={0} max={4000} onChange={(v) => setGridSize('h', v)} />
         </div>
         {(attrs.boxW || attrs.boxH) ? (
-          <button
+          <PanelCta
             onClick={() => editor.chain().focus().updateAttributes('imageGridBlock', { boxW: 0, boxH: 0 }).run()}
-            className="cursor-pointer"
-            style={{ ...ns, fontSize: 11.5, fontWeight: 600, color: BLUE, background: 'none', border: 'none', padding: '6px 0 0' }}
+            style={{ padding: '6px 0 0' }}
           >
             Reset to column width
-          </button>
+          </PanelCta>
         ) : null}
       </InspectorSection>
 
@@ -16334,7 +16659,7 @@ function ImageInspector({ editor, onGoToMedia, onStartCrop, onTransform }: { edi
                     onClick={() => editor.chain().focus().updateAttributes('image', { lockAspect: !lockAspect }).run()}
                     className="flex items-center justify-center cursor-pointer flex-shrink-0"
                     style={{ width: FIELD_H, height: FIELD_H, borderRadius: RADIUS_SM, border: 'none',
-                      background: lockAspect ? '#EEF3FF' : '#F4F6F9', color: lockAspect ? BLUE : SLATE }}
+                      background: lockAspect ? BLUE_97 : '#F4F6F9', color: lockAspect ? BLUE : SLATE }}
                     aria-label={lockAspect ? 'Unlock proportions' : 'Lock proportions'}
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -16400,7 +16725,7 @@ function ImageInspector({ editor, onGoToMedia, onStartCrop, onTransform }: { edi
             <button
               onClick={() => setPerCorner((v) => !v)}
               className="flex items-center justify-center cursor-pointer flex-shrink-0"
-              style={{ width: FIELD_H, height: FIELD_H, borderRadius: RADIUS_SM, border: 'none', background: perCorner ? '#EEF3FF' : '#F4F6F9', color: perCorner ? BLUE : SLATE }}
+              style={{ width: FIELD_H, height: FIELD_H, borderRadius: RADIUS_SM, border: 'none', background: perCorner ? BLUE_97 : '#F4F6F9', color: perCorner ? BLUE : SLATE }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
             </button>
@@ -16832,7 +17157,7 @@ function StyledDropdown({ value, options, onChange, searchable = false }: {
                 // Two states, two channels: blue text is "this is the one you have",
                 // the tinted row is "this is what Enter would take" — so keyboard
                 // walking never looks like it already changed the font.
-                background: r.index === cursor ? '#EEF3FF' : 'none',
+                background: r.index === cursor ? BLUE_97 : 'none',
                 ...ns, fontSize: 13, fontWeight: 500, textAlign: 'left',
                 ...r.option.style,
                 // After the option's own styling, so a specimen can never
@@ -16930,7 +17255,7 @@ function FontSizeField({ value, onChange, min, max }: {
               type="button"
               onMouseDown={(e) => { e.preventDefault(); onChange(p); setOpen(false); }}
               className="w-full flex items-center cursor-pointer"
-              style={{ height: 30, padding: '0 14px', border: 'none', background: p === Math.round(value) ? '#EEF3FF' : 'none', ...ns, fontSize: 13, fontWeight: p === Math.round(value) ? 600 : 400, color: p === Math.round(value) ? BLUE : INK, textAlign: 'left' }}
+              style={{ height: 30, padding: '0 14px', border: 'none', background: p === Math.round(value) ? BLUE_97 : 'none', ...ns, fontSize: 13, fontWeight: p === Math.round(value) ? 600 : 400, color: p === Math.round(value) ? BLUE : INK, textAlign: 'left' }}
               onMouseEnter={(e) => { if (p !== Math.round(value)) e.currentTarget.style.background = '#F7F8FA'; }}
               onMouseLeave={(e) => { if (p !== Math.round(value)) e.currentTarget.style.background = 'none'; }}
             >
@@ -17735,7 +18060,7 @@ function SizeFields({ w, h, lockAspect, onW, onH, onToggleLock }: {
             className="flex items-center justify-center cursor-pointer flex-shrink-0"
             style={{
               width: FIELD_H, height: FIELD_H, borderRadius: RADIUS_SM, border: 'none',
-              background: lockAspect ? '#EEF3FF' : '#F4F6F9', color: lockAspect ? BLUE : SLATE,
+              background: lockAspect ? BLUE_97 : '#F4F6F9', color: lockAspect ? BLUE : SLATE,
             }}
             aria-label={lockAspect ? 'Unlock proportions' : 'Lock proportions'}
           >
@@ -17775,13 +18100,9 @@ function BlockSizeSection({ editor, nodeName }: { editor: Editor; nodeName: stri
         onH={widthOnly ? undefined : (v) => set({ boxH: v })}
       />
       {(attrs.boxW || attrs.boxH) ? (
-        <button
-          onClick={() => set({ boxW: 0, boxH: 0 })}
-          className="cursor-pointer"
-          style={{ ...ns, fontSize: 11.5, fontWeight: 600, color: BLUE, background: 'none', border: 'none', padding: '6px 0 0' }}
-        >
+        <PanelCta onClick={() => set({ boxW: 0, boxH: 0 })} style={{ padding: '6px 0 0' }}>
           Reset to auto
-        </button>
+        </PanelCta>
       ) : null}
     </InspectorSection>
   );
@@ -18980,14 +19301,18 @@ function TableInspector({ editor }: { editor: Editor }) {
 
 /* Cover inspector — reached both when an element is selected (kind:'coverElement')
    and when just the cover page itself is (kind:'page'). */
-function CoverInspector({ page, theme, selectedElementId, onUpdateElement, onChangeTextRole, onStartCrop, onSetPageBg }: {
+function CoverInspector({ page, theme, selectedElementId, coverOverrides, fieldContent, onUpdateElement, onChangeTextRole, onStartCrop, onSetPageBg, onResetSlot, onAddSlot }: {
   page: SimplePage;
   theme: ThemeDef;
   selectedElementId: string | null;
+  coverOverrides: CoverOverrides;
+  fieldContent: Record<string, string>;
   onUpdateElement: (pageId: string, elementId: string, patch: CoverElementPatch) => void;
   onChangeTextRole: (pageId: string, elementId: string, role: CoverTextElement['role']) => void;
   onStartCrop: (elementId: string) => void;
   onSetPageBg: (pageId: string, bg: string | undefined) => void;
+  onResetSlot: (pageId: string, role: CoverSlotRole) => void;
+  onAddSlot: (pageId: string, role: CoverSlotRole) => void;
 }) {
   // The cover fills the whole page, so the canvas the percentages are relative
   // to IS the page geometry — which is configurable (Letter/A4/…), so the px the
@@ -19012,6 +19337,17 @@ function CoverInspector({ page, theme, selectedElementId, onUpdateElement, onCha
   // triangle's are cut by a clip/polygon we'd have to re-describe to round — so
   // the field is absent for both rather than present and inert.
   const canRound = !!shape && shape.shape !== 'circle' && shape.shape !== 'triangle';
+
+  /* Which of this slot's type properties have stopped tracking the template —
+     see CoverOverrides. Named rather than counted: "Colour and size" tells you
+     what to look at, where "2 changes" makes you hunt for them. This is the
+     visible half of freeze-on-touch, and the half that makes it safe to have. */
+  const slotRole = selected?.type === 'text' && selected.origin !== 'author' && isCoverSlotRole(selected.role)
+    ? selected.role : null;
+  const frozen = slotRole ? coverOverrides.text[slotRole] : undefined;
+  const frozenNames = frozen
+    ? COVER_STYLE_KEYS.filter((k) => k !== 'stylePreset' && k in frozen).map((k) => COVER_STYLE_LABELS[k])
+    : [];
 
   return (
     <InspectorShell>
@@ -19114,7 +19450,18 @@ function CoverInspector({ page, theme, selectedElementId, onUpdateElement, onCha
       )}
 
       {selected?.type === 'text' && (
-        <PanelGroup label="Text">
+        <PanelGroup
+          label="Text"
+          /* Offered only once there is something to undo, exactly like
+             PageBackgroundGroup's own Reset — a control that sits there
+             permanently stops reading as "you changed this". */
+          action={frozenNames.length && slotRole ? (
+            <PanelCta onClick={() => onResetSlot(page.id, slotRole)}>Reset</PanelCta>
+          ) : undefined}
+          hint={frozenNames.length
+            ? `${listOf(frozenNames)} ${frozenNames.length === 1 ? 'is' : 'are'} yours now, and will carry to the next template. Everything else here follows the template.`
+            : undefined}
+        >
           {/* Four fields, two rows, one band, no labels at all — the typeface,
               its size and its two spacings are one decision, and every value in
               here names itself. "Nunito Sans" is visibly a font, 56 beside it can
@@ -19373,6 +19720,11 @@ function CoverInspector({ page, theme, selectedElementId, onUpdateElement, onCha
       {!selected && (
         <>
           <PageBackgroundGroup page={page} theme={theme} onChange={(bg) => onSetPageBg(page.id, bg)} first />
+          <CoverTextSlotsGroup
+            page={page}
+            fieldContent={fieldContent}
+            onAdd={(role) => onAddSlot(page.id, role)}
+          />
           <div style={{ ...ns, fontSize: 11.5, color: SLATE, lineHeight: 1.55, marginTop: 16 }}>
             Click an element on the cover to edit it, or apply a different layout from the Templates tab.
           </div>
@@ -19392,6 +19744,65 @@ function CoverInspector({ page, theme, selectedElementId, onUpdateElement, onCha
    Unset tracks the template's own bg (the same "auto until you touch it"
    relationship ChapterOverrides uses for chapter type), so Reset is offered only
    once there's an override to undo rather than sitting there permanently. */
+/* ── the cover's four text slots, and where each one currently is ────────────
+   Templates do not all draw the same slots — Forgotten Memories has no category
+   and no subtitle, Gradient Tech has no subtitle, Growth has no category. The
+   words are stored by role rather than by element (see fieldKeyForCoverText), so
+   switching to one of those never deleted anything: the text simply stopped
+   being drawn, silently, with nothing anywhere saying so. You could export a
+   book missing its subtitle and never learn that you had one.
+
+   So this lists all four and says where each stands. Two different absences land
+   in the same place because they are the same state — a role that holds text and
+   is not on the cover — one because the template does not offer it, one because
+   the author removed it. One list, one Add, both answered. */
+function CoverTextSlotsGroup({ page, fieldContent, onAdd }: {
+  page: SimplePage;
+  fieldContent: Record<string, string>;
+  onAdd: (role: CoverSlotRole) => void;
+}) {
+  const els = page.coverElements ?? [];
+  const missing = COVER_SLOT_ROLES
+    .filter((role) => !els.some((e) => e.type === 'text' && e.origin !== 'author' && e.role === role))
+    .map((role) => ({ role, text: stripTags(fieldContent[`${page.id}::${role}`] ?? '').trim() }))
+    // The ones holding words first: those are the only rows carrying news
+    // rather than an offer.
+    .sort((a, b) => Number(!!b.text) - Number(!!a.text));
+  // Nothing absent, nothing to say. A roster of four rows reading "On cover"
+  // was three quarters noise and made the one row that mattered look like the
+  // rest of them.
+  if (!missing.length) return null;
+  return (
+    <PanelGroup label="Not on this cover">
+      {missing.map(({ role, text }) => (
+        <div key={role} style={{ marginBottom: 10 }}>
+          <div className="flex items-center justify-between" style={{ gap: 8 }}>
+            <span style={{ ...ns, fontSize: 12, color: INK, fontWeight: text ? 600 : 400 }}>
+              {COVER_SLOT_LABELS[role]}
+            </span>
+            <PanelCta onClick={() => onAdd(role)}>Add</PanelCta>
+          </div>
+          {/* The words themselves, not a note saying words exist. "has text"
+              made you take it on trust and go looking; the sentence you wrote is
+              both the evidence and the reason to press Add, and it is the thing
+              that makes this read as content rather than as a status table. */}
+          {text && (
+            <div
+              style={{
+                ...ns, fontSize: 12, color: SLATE, lineHeight: 1.4, marginTop: 2,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}
+              title={text}
+            >
+              &ldquo;{text}&rdquo;
+            </div>
+          )}
+        </div>
+      ))}
+    </PanelGroup>
+  );
+}
+
 function PageBackgroundGroup({ page, theme, onChange, first }: {
   page: PageMeta;
   theme: ThemeDef;
@@ -19404,13 +19815,7 @@ function PageBackgroundGroup({ page, theme, onChange, first }: {
       label="Background"
       first={first}
       action={overridden ? (
-        <button
-          onClick={() => onChange(undefined)}
-          className="cursor-pointer"
-          style={{ ...ns, fontSize: 11.5, fontWeight: 600, color: BLUE, background: 'none', border: 'none', padding: 0 }}
-        >
-          Reset
-        </button>
+        <PanelCta onClick={() => onChange(undefined)}>Reset</PanelCta>
       ) : undefined}
     >
       <SwatchRow value={page.bg ?? theme.bg} onChange={(c) => onChange(c)} />
@@ -20074,7 +20479,7 @@ function HistoryPanel({
       <button
         onClick={() => onSelectVersion(null)}
         className="w-full text-left cursor-pointer"
-        style={{ display: 'block', padding: '10px', borderRadius: RADIUS_MD, border: 'none', background: !viewingVersionId ? '#EEF3FF' : 'transparent', marginBottom: 2 }}
+        style={{ display: 'block', padding: '10px', borderRadius: RADIUS_MD, border: 'none', background: !viewingVersionId ? BLUE_97 : 'transparent', marginBottom: 2 }}
       >
         <div style={{ ...ns, fontSize: 13, fontWeight: 600, color: !viewingVersionId ? BLUE : INK }}>Current version</div>
         <div style={{ ...ns, fontSize: 11.5, color: SLATE }}>What you&apos;re editing now</div>
@@ -20086,7 +20491,7 @@ function HistoryPanel({
             key={v.id}
             onClick={() => onSelectVersion(v.id)}
             className="w-full text-left cursor-pointer"
-            style={{ display: 'block', padding: '10px', borderRadius: RADIUS_MD, border: 'none', background: active ? '#EEF3FF' : 'transparent', marginBottom: 2 }}
+            style={{ display: 'block', padding: '10px', borderRadius: RADIUS_MD, border: 'none', background: active ? BLUE_97 : 'transparent', marginBottom: 2 }}
           >
             <div style={{ ...ns, fontSize: 13, fontWeight: 600, color: active ? BLUE : INK }}>{relativeTimeLabel(v.savedAt)}</div>
             <div style={{ ...ns, fontSize: 11.5, color: SLATE }}>{new Date(v.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
@@ -21131,6 +21536,9 @@ interface PersistedBook {
   activeTheme: ThemeId;
   chapterContent: Record<string, string>;
   fieldContent: Record<string, string>;
+  /* Absent on books saved before freeze-on-touch existed, which reads correctly
+     as "nothing frozen" — those covers took every property from the template. */
+  coverOverrides?: CoverOverrides;
   paragraphStyle?: ParagraphStyle;
   /* Percent-suffixed since the values are percentages, matching EpubInput in
      src/lib/epub.ts. The bare names are kept so books saved before the rename
@@ -21413,11 +21821,15 @@ function FindPanel({ registry, pages, onJump, inputRef, activeChapterId }: {
       role="checkbox"
       aria-checked={active}
       className="flex items-center cursor-pointer"
-      style={{ ...ns, gap: 8, fontSize: 12.5, color: active ? INK : '#3C4859', background: 'none', border: 'none', padding: 0, textAlign: 'left' }}
+      style={{ ...ns, gap: 8, fontSize: 12, lineHeight: '16px', color: active ? INK : '#3C4859', background: 'none', border: 'none', padding: 0, textAlign: 'left' }}
     >
+      {/* 16px at radius 4 with a Black/40 rule — the design system's checkbox. It was
+          15px with a #C6CFDC border, which is in no ramp. The label colour (#3C4859,
+          a hair off Black/30 #3D4A5C) is left alone: the library doesn't specify a
+          colour for an unselected checkbox's label, so that one needs a decision. */}
       <span
         className="flex items-center justify-center"
-        style={{ width: 15, height: 15, borderRadius: 4, flexShrink: 0, border: `1.5px solid ${active ? BLUE : '#C6CFDC'}`, background: active ? BLUE : '#fff' }}
+        style={{ width: 16, height: 16, borderRadius: 4, flexShrink: 0, border: `1.5px solid ${active ? BLUE : SLATE}`, background: active ? BLUE : '#fff' }}
       >
         {active && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>}
       </span>
@@ -21543,7 +21955,7 @@ function FindPanel({ registry, pages, onJump, inputRef, activeChapterId }: {
                     style={{
                       ...ns, fontSize: 12, lineHeight: 1.45, color: SLATE, padding: '6px 8px',
                       borderRadius: RADIUS_SM, border: 'none',
-                      background: active ? '#EEF3FF' : 'transparent',
+                      background: active ? BLUE_97 : 'transparent',
                     }}
                     onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = '#F7F8FA'; }}
                     onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
@@ -21688,6 +22100,8 @@ export function BookEditorView() {
      is live can read it again without re-plumbing the chain. */
   const [, setMovingBlock] = useState(false);
   const [activeTheme, setActiveTheme] = useState<ThemeId>('statement-lettering');
+  // Cover styling the author has frozen by hand — see CoverOverrides.
+  const [coverOverrides, setCoverOverrides] = useState<CoverOverrides>(EMPTY_COVER_OVERRIDES);
   // Defaults to the cover rather than nothing, so the inspector opens already
   // showing something relevant instead of an empty "select something" placeholder.
   const [selection, setSelection] = useState<Selection>({ kind: 'page', pageId: 'p-cover' });
@@ -21960,6 +22374,8 @@ export function BookEditorView() {
       if (cancelled) return;
       const stored = loadBook();
       if (stored) {
+        // Before anything can mint a new one — see reserveCoverElIds.
+        reserveCoverElIds(stored.pages);
         setPages(stored.pages.map((p) => (
           p.type === 'chapter' ? { ...p, initialHtml: stored.chapterContent[p.id] ?? p.initialHtml } : migrateCoverBg(p)
         )));
@@ -21968,6 +22384,7 @@ export function BookEditorView() {
         setActiveTheme(stored.activeTheme);
         setChapterContent(stored.chapterContent);
         setFieldContent(stored.fieldContent);
+        setCoverOverrides(stored.coverOverrides ?? EMPTY_COVER_OVERRIDES);
         // Books saved before this setting existed were all set spaced, so that's
         // what an absent value has to mean — anything else silently reflows them.
         setParagraphStyle(stored.paragraphStyle ?? 'spaced');
@@ -22014,7 +22431,7 @@ export function BookEditorView() {
           chapterContent: Object.fromEntries(
             Object.entries(chapterContent).map(([id, html]) => [id, stripSessionUrls(html)]),
           ),
-          fieldContent, paragraphStyle,
+          fieldContent, coverOverrides, paragraphStyle,
           paragraphIndentPct: paragraphIndent, paragraphSpacePct: paragraphSpace,
           savedAt: Date.now(),
         };
@@ -22027,7 +22444,7 @@ export function BookEditorView() {
       }
     }, 700);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [hydrated, pages, metadata, pageNumbers, activeTheme, chapterContent, fieldContent, paragraphStyle, paragraphIndent]);
+  }, [hydrated, pages, metadata, pageNumbers, activeTheme, chapterContent, fieldContent, coverOverrides, paragraphStyle, paragraphIndent]);
 
   // Version checkpoints, on their own idle-boundary timer rather than piggy-
   // backing on the primary save's 700ms debounce above — see the comment on
@@ -22119,6 +22536,9 @@ export function BookEditorView() {
     });
     lastVersionSavedAtRef.current = current.savedAt;
 
+    // A version read back from localStorage after a reload carries ids this
+    // session's counter has never issued — same reason as hydrate above.
+    reserveCoverElIds(entry.pages);
     setPages(entry.pages);
     setChapterContent(entry.chapterContent);
     setFieldContent(entry.fieldContent);
@@ -22296,12 +22716,103 @@ export function BookEditorView() {
      bg, which is why this can't just be a string — see PageBackgroundGroup. */
   const setPageBg = useCallback((pageId: string, bg: string | undefined) => {
     setPages((prev) => prev.map((p) => (p.id === pageId ? { ...p, bg } : p)));
-  }, []);
+    // Picking a cover background by hand freezes it the same way a text property
+    // freezes; clearing it hands the cover back to the template. Only the cover
+    // — an interior page's bg has no template slot to travel to.
+    if (pages.find((p) => p.id === pageId)?.type === 'cover') setCoverOverrides((ov) => ({ ...ov, bg }));
+  }, [pages]);
+  /* The one funnel every cover element edit goes through — a drag, a resize, a
+     colour picked in the inspector. That makes it the one place that can tell a
+     property was set BY HAND, which is the whole basis of freeze-on-touch: the
+     element itself keeps holding the effective value (so nothing in rendering
+     has to learn a second lookup), and the fact that this value was the
+     author's rather than the template's is recorded alongside. */
   const updateCoverElement = useCallback((pageId: string, elementId: string, patch: CoverElementPatch) => {
+    const page = pages.find((p) => p.id === pageId) as SimplePage | undefined;
+    const el = page?.coverElements?.find((e) => e.id === elementId);
+    if (el?.type === 'text' && el.origin !== 'author' && isCoverSlotRole(el.role)) {
+      const styled = pickCoverStyle(patch);
+      // Geometry-only patches (every drag, every resize) fall through untouched:
+      // position is the one thing deliberately NOT freezable — see CoverOverrides.
+      if (styled) {
+        const role = el.role;
+        setCoverOverrides((ov) => ({ ...ov, text: { ...ov.text, [role]: { ...ov.text[role], ...styled } } }));
+      }
+    }
     setPages((prev) => prev.map((p) => (p.id === pageId && p.type === 'cover'
-      ? { ...p, coverElements: (p.coverElements ?? []).map((el) => (el.id === elementId ? ({ ...el, ...patch } as CoverElement) : el)) }
+      ? { ...p, coverElements: (p.coverElements ?? []).map((e) => (e.id === elementId ? ({ ...e, ...patch } as CoverElement) : e)) }
       : p)));
-  }, []);
+  }, [pages]);
+  /* Puts a slot back on the cover — the one way out of both states the slots
+     list can show. If the active template ships this slot, its own element is
+     what returns, styling and position intact; if it never had one, the box is
+     derived from the title. Either way the words come back with it, because they
+     were never deleted: they sat in fieldContent under the role the whole time. */
+  const addCoverSlot = useCallback((pageId: string, role: CoverSlotRole) => {
+    const tpl = THEMES.find((t) => t.id === activeTheme) ?? THEMES[0];
+    const fromTpl = tpl.coverElements.find((e): e is CoverTextElement => e.type === 'text' && e.role === role);
+    const title = tpl.coverElements.find((e): e is CoverTextElement => e.type === 'text' && e.role === 'title');
+    const id = nextCoverElId();
+    const base: CoverTextElement = fromTpl
+      ? { ...fromTpl, id }
+      : {
+        /* No slot in this template to copy, so the type comes from the title
+           and is stepped down — a derived subtitle at the title's own 56px
+           would outshout the thing it sits under. */
+        ...(title ?? { fontFamily: tpl.bodyFont, color: tpl.headingColor, textAlign: 'center' as const }),
+        id,
+        type: 'text',
+        role,
+        fontSize: role === 'subtitle' ? 15 : 12,
+        fontWeight: undefined,
+        stylePreset: null,
+        heightAuto: true,
+        ...derivedSlotBox(title, role),
+      };
+    // Anything the author had already frozen for this role still applies — a
+    // slot coming back should not quietly lose a colour they set on it before.
+    const frozen = coverOverrides.text[role];
+    const el: CoverTextElement = frozen ? { ...base, ...frozen } : base;
+    setCoverOverrides((ov) => ({ ...ov, removed: (ov.removed ?? []).filter((r) => r !== role) }));
+    setPages((prev) => prev.map((p) => {
+      if (p.id !== pageId || p.type !== 'cover') return p;
+      const els = p.coverElements ?? [];
+      // Guard against a double-add racing the panel's own re-render.
+      if (els.some((e) => e.type === 'text' && e.origin !== 'author' && e.role === role)) return p;
+      return { ...p, coverElements: [...els, el] };
+    }));
+    // Selected on arrival, for the same reason a dropped photo is: a box you
+    // have to find and click before you can move it only half arrived.
+    setSelection({ kind: 'coverElement', pageId, elementId: id });
+  }, [activeTheme, coverOverrides]);
+  /* Hands one slot back to the template: drop the frozen properties, then put
+     the template's own values back on the element so the release is visible
+     immediately rather than at the next template switch. PowerPoint's Reset
+     Slide is the same promise — restore what the layout says, touch no content. */
+  const resetCoverSlot = useCallback((pageId: string, role: CoverSlotRole) => {
+    const tplEl = (THEMES.find((t) => t.id === activeTheme) ?? THEMES[0])
+      .coverElements.find((e): e is CoverTextElement => e.type === 'text' && e.role === role);
+    setCoverOverrides((ov) => {
+      const next = { ...ov.text };
+      delete next[role];
+      return { ...ov, text: next };
+    });
+    if (!tplEl) return;
+    const restore = pickCoverStyle(tplEl) ?? {};
+    setPages((prev) => prev.map((p) => (p.id === pageId && p.type === 'cover'
+      ? {
+        ...p,
+        coverElements: (p.coverElements ?? []).map((e) => (
+          e.type === 'text' && e.origin !== 'author' && e.role === role
+            // stylePreset is cleared rather than restored when the template never
+            // set one, or the picker would keep a tile lit for a preset the slot
+            // no longer matches.
+            ? { ...e, stylePreset: null, ...restore }
+            : e
+        )),
+      }
+      : p)));
+  }, [activeTheme]);
   /* A cover text element's words don't live on the element — they live in
      fieldContent under a key derived from its ROLE (see fieldKeyForCoverText),
      so that a template swap can't orphan a typed title. That makes changing the
@@ -22326,11 +22837,27 @@ export function BookEditorView() {
     updateCoverElement(pageId, elementId, { role });
   }, [pages, updateCoverElement]);
   const deleteCoverElement = useCallback((pageId: string, elementId: string) => {
+    /* Removing a template's own slot is a decision about the BOOK — "this book
+       has no subtitle" — not about the layout, so it outlives the template the
+       way the title text does. Without this the slot came back at the next
+       template switch carrying the words that were deleted with it, because the
+       copy lives in fieldContent under the role (see fieldKeyForCoverText) and
+       only the box was ever removed. Getting your own rejected sentence handed
+       back to you on a new cover is the worst of the available behaviours.
+       Reversible from the cover's own panel — see CoverTextSlotsGroup. */
+    const page = pages.find((p) => p.id === pageId) as SimplePage | undefined;
+    const el = page?.coverElements?.find((e) => e.id === elementId);
+    if (el?.type === 'text' && el.origin !== 'author' && isCoverSlotRole(el.role)) {
+      const role = el.role;
+      setCoverOverrides((ov) => (ov.removed?.includes(role)
+        ? ov
+        : { ...ov, removed: [...(ov.removed ?? []), role] }));
+    }
     setPages((prev) => prev.map((p) => (p.id === pageId && p.type === 'cover'
-      ? { ...p, coverElements: (p.coverElements ?? []).filter((el) => el.id !== elementId) }
+      ? { ...p, coverElements: (p.coverElements ?? []).filter((e) => e.id !== elementId) }
       : p)));
     setSelection((prev) => (prev.kind === 'coverElement' && prev.elementId === elementId ? { kind: 'page', pageId } : prev));
-  }, []);
+  }, [pages]);
   /* Keyboard delete for cover elements. TipTap already answers Backspace and
      Delete on a NodeSelection (see the atom keymap), so every shape, image and
      embed in a CHAPTER could be removed from the keyboard — but a cover element
@@ -22376,7 +22903,10 @@ export function BookEditorView() {
   const addCoverElement = useCallback((pageId: string, el: CoverElement) => {
     setPages((prev) => prev.map((p) => (
       p.id === pageId && p.type === 'cover'
-        ? { ...p, coverElements: [...(p.coverElements ?? []), el] }
+        // Stamped here rather than at the call site so every future add path is
+        // author-owned by construction — this function IS "an element the cover
+        // didn't have", which is the same sentence as "the user put it there".
+        ? { ...p, coverElements: [...(p.coverElements ?? []), { ...el, origin: 'author' as const }] }
         : p
     )));
     setSelection({ kind: 'coverElement', pageId, elementId: el.id });
@@ -22391,31 +22921,49 @@ export function BookEditorView() {
       const els = p.coverElements ?? [];
       const el = els.find((e) => e.id === elementId);
       if (!el) return p;
-      const copy: CoverElement = { ...el, id: newId, x: clampPct(el.x + 3, 0, 100 - el.w), y: clampPct(el.y + 3, 0, 100 - el.h) };
+      // A copy is author-owned even when the original was the template's: the
+      // template shipped one of these, the second one is the user's decision.
+      const copy: CoverElement = { ...el, id: newId, origin: 'author', x: clampPct(el.x + 3, 0, 100 - el.w), y: clampPct(el.y + 3, 0, 100 - el.h) };
       return { ...p, coverElements: [...els, copy] };
     }));
     setSelection({ kind: 'coverElement', pageId, elementId: newId });
   }, []);
   // Applying a template swaps the cover's layout AND the matching chapter/TOC/
   // back-matter theme — one action, since a template is the two of those bundled
-  // together, not two separate systems. The user's photo and text carry across;
-  // font/colour/size always come from the new template (see mergeCoverElements).
-  // No confirm(): the preview is the look-before-you-leap step, and the undo
-  // toast afterwards is the way back.
+  // together, not two separate systems. The user's photo, text and anything they
+  // added by hand carry across; font/colour/size always come from the new
+  // template (see mergeCoverElements).
+  // No confirm(): every tool that does this applies on click — Vellum applies a
+  // Style "instantly to your entire book", Atticus expects you to flip back and
+  // forth between themes — and an undo is the better way back than a dialog
+  // asked every time. What made that unsafe here was the deleting, not the
+  // missing prompt, so the fix is in mergeCoverElements rather than here.
   const applyTemplate = useCallback((pageId: string, templateId: string) => {
     const tpl = THEMES.find((t) => t.id === templateId as ThemeId);
     if (!tpl) return;
+    // The template being replaced, needed to tell the author's own photo from
+    // the stock one it shipped with — see mergeCoverElements.
+    const outgoing = THEMES.find((t) => t.id === activeTheme) ?? THEMES[0];
     const snapshot = takeSnapshot();
     setPages((prev) => prev.map((p) => {
       if (p.id !== pageId || p.type !== 'cover') return p;
       // bg travels with the template for the same reason the elements do: it's
       // part of the look being applied, not content the author typed.
-      return { ...p, bg: tpl.coverBg, coverElements: mergeCoverElements(p.coverElements ?? [], tpl.coverElements) };
+      return {
+        ...p,
+        // A hand-picked cover background outranks the template's, the same way a
+        // hand-set colour does — see CoverOverrides.
+        bg: coverOverrides.bg ?? tpl.coverBg,
+        coverElements: applyCoverOverrides(
+          mergeCoverElements(p.coverElements ?? [], tpl.coverElements, outgoing.coverElements),
+          coverOverrides,
+        ),
+      };
     }));
     setActiveTheme(tpl.id);
     setSelection({ kind: 'page', pageId });
     offerUndo(`${tpl.name} applied`, snapshot);
-  }, [takeSnapshot, offerUndo]);
+  }, [takeSnapshot, offerUndo, activeTheme, coverOverrides]);
 
   /* `sheetIndex` is which page WITHIN the section, because a chapter is a single
      element containing all of its sheets. Scrolling to that element lands on
@@ -23227,7 +23775,16 @@ export function BookEditorView() {
               this stays a plain glanceable label rather than a second entry point
               to the same list. */}
           <span style={{ ...ns, fontSize: 13, color: SLATE, padding: '0 8px' }}>
-            {chapterStarts(pages, fieldContent).length} chapter{chapterStarts(pages, fieldContent).length === 1 ? '' : 's'} · {Object.values(wordCounts).reduce((s, n) => s + n, 0) + Object.values(titleWordCounts).reduce((s, n) => s + n, 0)} words
+            {/* Pages sits between chapters and words because that's the order of
+                the thing: how the book is divided, how long it runs, how much is
+                in it. It reads continuously rather than being announced, which is
+                the whole point — a template swap, a margin change or an edited
+                paragraph all move this number, and none of them is worth a toast.
+                Vellum does exactly this, keeping a live page count in the corner
+                of the window so the impact of a setting is observed rather than
+                reported. It also matters beyond the canvas: KDP derives spine
+                width from page count and steps its gutter at 300/500/700. */}
+            {chapterStarts(pages, fieldContent).length} chapter{chapterStarts(pages, fieldContent).length === 1 ? '' : 's'} · {bookPages.length} page{bookPages.length === 1 ? '' : 's'} · {Object.values(wordCounts).reduce((s, n) => s + n, 0) + Object.values(titleWordCounts).reduce((s, n) => s + n, 0)} words
           </span>
           <div style={{ width: 1, height: 18, background: BORDER, margin: '0 12px', flexShrink: 0 }} />
           {/* Was a hardcoded green tick that said "Saved" over a book held only in
@@ -23292,7 +23849,7 @@ export function BookEditorView() {
               className="flex items-center justify-center cursor-pointer"
               style={{
                 width: 30, height: 30, borderRadius: RADIUS_MD, border: 'none',
-                background: rightOverlay === 'find' ? '#EEF3FF' : 'none',
+                background: rightOverlay === 'find' ? BLUE_97 : 'none',
                 color: rightOverlay === 'find' ? BLUE : undefined,
               }}
               onMouseEnter={(e) => { if (rightOverlay !== 'find') e.currentTarget.style.background = '#F4F6F9'; }}
@@ -23317,7 +23874,7 @@ export function BookEditorView() {
               className="flex items-center justify-center cursor-pointer"
               style={{
                 width: 30, height: 30, borderRadius: RADIUS_MD, border: 'none',
-                background: rightOverlay === 'history' ? '#EEF3FF' : 'none',
+                background: rightOverlay === 'history' ? BLUE_97 : 'none',
                 color: rightOverlay === 'history' ? BLUE : undefined,
               }}
               onMouseEnter={(e) => { if (rightOverlay !== 'history') e.currentTarget.style.background = '#F4F6F9'; }}
@@ -23369,7 +23926,7 @@ export function BookEditorView() {
             outer border — so it stays put whether the panel is 296px or zero. */}
         <div className="flex-shrink-0 h-full flex" style={{ position: 'relative' }}>
         {/* icon rail */}
-        <div className="flex-shrink-0 h-full flex flex-col items-center bg-white" style={{ width: RAIL_W, borderRight: `1px solid ${BORDER}`, paddingTop: 12, gap: 4 }}>
+        <div className="flex-shrink-0 h-full flex flex-col items-center bg-white" style={{ width: RAIL_W, borderRight: `1px solid ${BORDER}`, paddingTop: 16, gap: 8 }}>
           {([
             // Templates leads — choosing a look comes before the day-to-day insert
             // tools, which is how Flipsnack and Canva order it too, and it's this
@@ -23449,13 +24006,12 @@ export function BookEditorView() {
               }}
               className={`transition-colors duration-150${active ? '' : ' hover:bg-[#F6F7F9]'}`}
               style={{
-                width: '90%', height: 58, borderRadius: RADIUS_LG, border: 'none', cursor: 'pointer',
-                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
-                background: active ? '#EEF3FF' : 'transparent', color: active ? BLUE : SLATE,
+                ...RAIL_ITEM,
+                background: active ? BLUE_97 : 'transparent', color: active ? BLUE : INK_20,
               }}
             >
-              <Icon d={item.icon} size={20} />
-              <span style={{ ...ns, fontSize: 11, fontWeight: 700 }}>{item.label}</span>
+              <Icon d={item.icon} size={18} />
+              <span style={{ ...ns, fontSize: 10, lineHeight: '16px', fontWeight: active ? 600 : 400 }}>{item.label}</span>
             </button>
             );
           })}
@@ -23575,20 +24131,28 @@ export function BookEditorView() {
                     page={pages.find((p) => p.id === selection.pageId) as SimplePage}
                     theme={theme}
                     selectedElementId={selection.elementId}
+                    coverOverrides={coverOverrides}
+                    fieldContent={fieldContent}
                     onUpdateElement={updateCoverElement}
                     onChangeTextRole={changeCoverTextRole}
                     onStartCrop={(elementId) => beginCrop({ kind: 'cover', pageId: selection.pageId, elementId })}
                     onSetPageBg={setPageBg}
+                    onResetSlot={resetCoverSlot}
+                    onAddSlot={addCoverSlot}
                   />
                 ) : selection.kind === 'page' && pages.find((p) => p.id === selection.pageId)?.type === 'cover' ? (
                   <CoverInspector
                     page={pages.find((p) => p.id === selection.pageId) as SimplePage}
                     theme={theme}
                     selectedElementId={null}
+                    coverOverrides={coverOverrides}
+                    fieldContent={fieldContent}
                     onUpdateElement={updateCoverElement}
                     onChangeTextRole={changeCoverTextRole}
                     onStartCrop={() => {}}
                     onSetPageBg={setPageBg}
+                    onResetSlot={resetCoverSlot}
+                    onAddSlot={addCoverSlot}
                   />
                 ) : selection.kind === 'page' ? (
                   <PageInfoInspector
@@ -23769,6 +24333,7 @@ export function BookEditorView() {
               activeTheme={activeTheme}
               pages={pages}
               fieldContent={fieldContent}
+              coverOverrides={coverOverrides}
               onApplyTemplate={(id) => {
                 const tpl = THEMES.find((t) => t.id === id as ThemeId);
                 if (!tpl) return;
@@ -24171,7 +24736,7 @@ export function BookEditorView() {
             width back to the canvas — the left rail has no equivalent because its
             tabs are where you go to DO something, while this side is reference you
             may well want out of the way while writing. */}
-        <div className="flex-shrink-0 h-full flex flex-col items-center bg-white" style={{ width: RAIL_W, borderLeft: `1px solid ${BORDER}`, paddingTop: 12, gap: 4 }}>
+        <div className="flex-shrink-0 h-full flex flex-col items-center bg-white" style={{ width: RAIL_W, borderLeft: `1px solid ${BORDER}`, paddingTop: 16, gap: 8 }}>
           {([
             { id: 'pages', label: 'Pages', icon: ICONS.pagesTab },
             // ICONS.chapterBreak reads as a blank box at 19px; ICONS.list already
@@ -24191,13 +24756,12 @@ export function BookEditorView() {
                 }}
                 className={`transition-colors duration-150${active ? '' : ' hover:bg-[#F6F7F9]'}`}
                 style={{
-                  width: '90%', height: 58, borderRadius: RADIUS_LG, border: 'none', cursor: 'pointer',
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
-                  background: active ? '#EEF3FF' : 'transparent', color: active ? BLUE : SLATE,
+                  ...RAIL_ITEM,
+                  background: active ? BLUE_97 : 'transparent', color: active ? BLUE : INK_20,
                 }}
               >
-                <Icon d={item.icon} size={20} />
-                <span style={{ ...ns, fontSize: 11, fontWeight: 700 }}>{item.label}</span>
+                <Icon d={item.icon} size={18} />
+                <span style={{ ...ns, fontSize: 10, lineHeight: '16px', fontWeight: active ? 600 : 400 }}>{item.label}</span>
               </button>
             );
           })}
