@@ -1,28 +1,101 @@
 @import "tailwindcss";
 
-@theme inline {
-  --color-background: #ffffff;
-  --color-foreground: #15191F;
-  --color-surface: #F6F7F9;
-  --color-surface-hover: #EEF0F3;
-  --color-border: #E0E5EB;
-  --color-border-light: #F6F7F9;
-  --color-text-primary: #15191F;
-  --color-text-secondary: #29323D;
-  --color-text-tertiary: #8596AD;
-  --color-text-muted: #52637A;
-  --color-text-placeholder: #8596AD;
-  --color-accent: #006EFE;
-  --color-accent-hover: #0058CB;
-  --color-accent-purple: #5326BD;
-  --color-accent-light: #E8F1FF;
-  --color-accent-lighter: #F0F4FF;
+/* ── Designrr palette ────────────────────────────────────────────────────────
+   Ramp names mirror the Figma library one-for-one (Black/10 -> --color-black-10),
+   so a value in a comp can be found here under the name the designer used. The
+   Kindle Book, Print Book and Audiobook files all publish this same set, which is
+   what makes it the platform palette rather than one feature's.
+
+   Plain `@theme`, not `@theme inline`: inline mode folds the values straight into
+   the utilities and never emits the custom properties, so `var(--color-black-10)`
+   resolved to nothing outside a utility class. Components style a lot of this
+   editor with inline `style` objects, which need the real property. Values stay
+   literal hex here rather than var() chains; the ramp name in each comment is the
+   link back to Figma. */
+@theme {
+  /* Black — text and borders, dark to light */
+  --color-black-10: #15191F;
+  --color-black-20: #29323D;
+  --color-black-30: #3D4A5C;
+  --color-black-40: #52637A;
   --color-black-50: #667C98;
+  --color-black-60: #8596AD;
+  --color-black-70: #A3B0C2;
+  --color-black-80: #C2CBD6;
+  --color-black-90: #E0E5EB;
+
+  /* Primary blue. Named `primary-blue`, not `blue`, and the status ramps below take
+     Figma's semantic names (Color/Alert/*, Color/Success/*) rather than Red/Green —
+     both spellings exist in the library, and these are the ones that don't collide.
+     A bare --color-blue-50 would REDEFINE Tailwind's own blue-50 rather than sit
+     beside it, so `bg-blue-50` (a pale icon well in ChatInput and HeroInput) would
+     have started painting #006EFE behind a blue glyph. Same for red-50, a pale error
+     chip that carries text-red-500. Prefixing keeps both palettes usable. */
+  --color-primary-blue-10: #001633;
+  --color-primary-blue-40: #0058CC;
+  --color-primary-blue-50: #006EFE;
+  --color-primary-blue-60: #338BFF;
+  --color-primary-blue-70: #66A8FF;
+  --color-primary-blue-80: #99C5FF;
+  --color-primary-blue-90: #CCE2FF;
+  --color-primary-blue-97: #F0F6FF;
+
+  /* Status — Figma's Alert / Success, plus Orange as warning */
+  --color-alert-50: #D62929;
+  --color-alert-60: #DE5454;
+  --color-alert-90: #F7D4D4;
+  --color-alert-97: #FDF2F2;
+  --color-success-30: #1F7A31;
+  --color-success-40: #29A341;
+  --color-success-70: #85E097;
+  --color-success-97: #F3FCF4;
+  --color-warning-50: #FCA004;
+  --color-warning-95: #FFF5E6;
+  --color-warning-97: #FFF9F0;
+
+  /* ── Semantic aliases ─────────────────────────────────────────────────────
+     What components actually import. Each carries the ramp token it mirrors. */
+  --color-background: #ffffff;
+  --color-foreground: #15191F;        /* Black/10 */
+  --color-surface: #F6F7F9;           /* White gray */
+  --color-border: #E0E5EB;            /* Black/90 */
+  --color-border-light: #F6F7F9;      /* White gray */
+  --color-text-primary: #15191F;      /* Black/10 */
+  --color-text-secondary: #29323D;    /* Black/20 */
+  --color-text-tertiary: #8596AD;     /* Black/60 */
+  --color-text-muted: #52637A;        /* Black/40 */
+  --color-text-placeholder: #8596AD;  /* Black/60 */
+  --color-accent: #006EFE;            /* Blue/50 */
+  --color-accent-hover: #0058CC;      /* Blue/40 — was #0058CB, which is in no Figma file */
+  --color-accent-light: #F0F6FF;      /* Blue/97 — was #E8F1FF, likewise */
+  --color-accent-purple: #5326BD;     /* AI gradient's violet stop */
+
+  /* Plan / upgrade surfaces.
+     --color-text-display is the rule this page was applying by accident: Primary Blue/10 is the
+     ink for display type (page headline, price) and Black/10 stays the ink for body. Two
+     different blacks 6px apart is only defensible as a stated rule, which is what this is.
+     The rest exist because no ramp step fits the role, not because a value looked right:
+     the "not included" glyph has to clear 3:1 on white AND on the accent-tinted column while
+     staying visibly under the check — Black/60 fails the tint at 2.79 and Black/50 is too
+     present at 4.25 — and the row hover is a veil rather than a colour so it composites
+     correctly over both the plain ground and the tinted column instead of needing two values. */
+  --color-text-display: #001633;      /* Blue/10 — display ink */
+  --color-border-strong: #C2CBD6;     /* Black/80 — control border, hover */
+  --color-fill-disabled: #F0F2F5;     /* inert control ground */
+  --color-accent-disabled: #CCE2FF;   /* Blue/90 — inert primary control */
+  --color-icon-absent: #7A8AA3;       /* "not included" */
+  --color-row-hover-veil: rgba(0, 110, 254, 0.045);
+
+  /* No ramp equivalent. Left as-is rather than snapped to a neighbour, since
+     that would change pixels on surfaces nobody has reviewed:
+       surface-hover   a hover grey between White gray and Black/90
+       accent-lighter  a third pale blue, distinct from Blue/97
+       helper-*        the amber advice note from DESIGN.md */
+  --color-surface-hover: #EEF0F3;
+  --color-accent-lighter: #F0F4FF;
   --color-helper-bg: #fafaf5;
   --color-helper-icon: #e5b94e;
-  --color-sidebar-bg: #1e1b4b;
-  --color-sidebar-text: #c7c5e0;
-  --color-sidebar-active: #3730a3;
+
   --font-sans: var(--font-nunito-sans);
 }
 
@@ -77,12 +150,16 @@ body {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+/* Black/80 resting, Black/70 on hover. Was #d1d5db / #9ca3af — Tailwind's gray-300
+   and gray-400, which are the only two Tailwind greys that were left anywhere in the
+   app's own chrome. The 3px radius is half the 5px track, i.e. the geometry that
+   makes the thumb a pill; it isn't a design-system shape and doesn't want a token. */
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db;
+  background: #C2CBD6;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
+  background: #A3B0C2;
 }
 
 html {
@@ -234,3 +311,48 @@ html {
   animation: sparkleFloat var(--duration, 2s) ease-out var(--delay, 0s) forwards,
              sparkleGlow 0.8s ease-in-out var(--delay, 0s) infinite;
 }
+
+/* Plan buttons — Button/Medium from the design system.
+   Geometry and palette stay with the card that owns them, but :hover, :focus-visible, :disabled
+   and prefers-reduced-motion can't be written in a style object, so they live here. Each button
+   passes its own colours in through the custom properties below, which is why one rule can serve
+   primary, secondary and tertiary without a class per variant. */
+.dr-btn {
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-bd, transparent);
+  color: var(--btn-fg);
+  transition: background-color .14s ease, border-color .14s ease, color .14s ease, transform .12s ease;
+}
+.dr-btn:hover:not(:disabled) {
+  background: var(--btn-bg-h, var(--btn-bg));
+  border-color: var(--btn-bd-h, var(--btn-bd, transparent));
+}
+.dr-btn:active:not(:disabled) { transform: scale(.97); }
+/* Offset so the ring sits outside the fill — a blue ring drawn inside a blue button is invisible. */
+.dr-btn:focus-visible { outline: 2px solid #006EFE; outline-offset: 2px; }
+.dr-btn:disabled {
+  background: var(--btn-bg-d, var(--btn-bg));
+  border-color: var(--btn-bd-d, transparent);
+  color: var(--btn-fg-d, var(--btn-fg));
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dr-btn { transition: none; }
+  .dr-btn:active:not(:disabled) { transform: none; }
+}
+
+/* Plan comparison table.
+   The recommended column's tint and the row hover are both grounds on the same cell, so they
+   have to live in one cascade — as an inline style the tint simply won and the hover band broke
+   across that column. Hover is gated on a real pointer so the band doesn't stick after a tap. */
+.dr-cmp-hl { background: var(--color-accent-light); }
+@media (hover: hover) {
+  .dr-cmp-row > td { transition: background-image .12s ease; }
+  /* A veil, not a colour. Painted as a gradient layer so the cell's own ground shows through:
+     one value lands correctly on white and on the tinted column, where two hard-coded blues
+     used to be needed and drifted apart. */
+  .dr-cmp-row:hover > td {
+    background-image: linear-gradient(var(--color-row-hover-veil), var(--color-row-hover-veil));
+  }
+}
+@media (prefers-reduced-motion: reduce) { .dr-cmp-row > td { transition: none; } }
