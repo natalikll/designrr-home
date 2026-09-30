@@ -43,12 +43,10 @@ export default function UpgradePlanPage() {
         </div>
 
         <div className="flex-1 min-w-0 overflow-y-auto">
-          {/* Wider than UpgradePlanModal's own modal width (980, still what the compare-table math
-              and the actual modal path use) — nothing here needs to line up with a Back button any
-              more, and the grid inside `content` has no width of its own, so it simply fills
-              whatever this wrapper gives it. 1120 over 980 is "slightly wider" cards, not a
-              redesign. */}
-          <div style={{ maxWidth: 1120, margin: '0 auto', padding: '32px 32px 0' }}>
+          {/* No column cap here any more. The comparison uses the full page width inside the
+              32px margins, and the header and card row cap themselves at 1060 and centre — so
+              the table is as wide as the page allows and the cards stay a readable size. */}
+          <div style={{ padding: '32px 32px 56px' }}>
             <UpgradePlanModal presentation="page" onClose={() => {}} />
           </div>
         </div>

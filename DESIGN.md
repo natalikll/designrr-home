@@ -2,6 +2,48 @@
 name: Designrr
 description: One source, many formats — write once, publish as an ebook, a deck, and a narrated video.
 colors:
+  # Ramps, transcribed from the Figma library. The Kindle Book, Print Book and
+  # Audiobook files all publish this same set, which is what makes it the platform
+  # palette rather than one feature's. Names mirror Figma's (Black/40 -> black-40)
+  # so a value in a comp is findable here under the name the designer used.
+  black-10: "#15191F"
+  black-20: "#29323D"
+  black-30: "#3D4A5C"
+  black-40: "#52637A"
+  black-50: "#667C98"
+  black-60: "#8596AD"
+  black-70: "#A3B0C2"
+  black-80: "#C2CBD6"
+  black-90: "#E0E5EB"
+  primary-blue-10: "#001633"
+  primary-blue-40: "#0058CC"
+  primary-blue-50: "#006EFE"
+  primary-blue-60: "#338BFF"
+  primary-blue-70: "#66A8FF"
+  primary-blue-80: "#99C5FF"
+  primary-blue-90: "#CCE2FF"
+  primary-blue-97: "#F0F6FF"
+  alert-50: "#D62929"
+  alert-60: "#DE5454"
+  alert-90: "#F7D4D4"
+  alert-97: "#FDF2F2"
+  success-30: "#1F7A31"
+  success-40: "#29A341"
+  success-70: "#85E097"
+  success-97: "#F3FCF4"
+  warning-50: "#FCA004"
+  warning-95: "#FFF5E6"
+  warning-97: "#FFF9F0"
+  white-gray: "#F6F7F9"
+  # The ambient background wash — two blurred ellipses behind the app shell, traced
+  # from the Figma comp (see .app-gradient-bg). Deliberately NOT the AI gradient's
+  # #006EFE/#5326BD: these are a cooler cyan and a hotter violet, carried at 14% under
+  # a 150px blur, so they read as tinted paper rather than as the AI marker. Recorded
+  # here because they were undocumented, not because they are new — they predate
+  # everything else in this file and were the only unexplained colours left in it.
+  ambient-cyan: "rgba(57, 169, 229, 0.14)"
+  ambient-violet: "rgba(131, 23, 255, 0.14)"
+  # Semantic aliases. These are the older names, kept because components import them.
   paper: "#FFFFFF"
   ink: "#15191F"
   ink-secondary: "#29323D"
@@ -11,8 +53,11 @@ colors:
   surface-hover: "#EEF0F3"
   border: "#E0E5EB"
   interface-blue: "#006EFE"
-  interface-blue-hover: "#0058CB"
-  interface-blue-light: "#E8F1FF"
+  # Was #0058CB and #E8F1FF. Neither appears in any Figma file; the library's values
+  # are Primary Blue/40 and Primary Blue/97. This file was the source of that drift —
+  # globals.css carried the same two wrong values until they were corrected here.
+  interface-blue-hover: "#0058CC"
+  interface-blue-light: "#F0F6FF"
   genie-violet: "#5326BD"
   badge-tint-bg: "#DCE9FF"
   badge-tint-fg: "#0053C7"
@@ -21,6 +66,67 @@ colors:
   danger: "#D62929"
   danger-bg: "#FEF2F2"
 typography:
+  # The Figma library's scale, one entry per named style. Seven steps, all Nunito
+  # Sans, all weight 400 or 600 — there is no 700 in it, and no half-pixel step.
+  # Same provenance as the colour ramps: Kindle Book, Print Book and Audiobook all
+  # publish this set, so it is the platform's, not one feature's.
+  h1:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "60px"
+    fontWeight: 600
+    lineHeight: "68px"
+  h2:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "34px"
+    fontWeight: 600
+    lineHeight: "42px"
+  h3:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "24px"
+    fontWeight: 600
+    lineHeight: "32px"
+  subtitle:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "20px"
+    fontWeight: 600
+    lineHeight: "24px"
+  text-body:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "16px"
+    fontWeight: 400
+    lineHeight: "20px"
+  text-body-accented:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "16px"
+    fontWeight: 600
+    lineHeight: "20px"
+  small-text:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "14px"
+    fontWeight: 400
+    lineHeight: "18px"
+  small-text-demi-bold:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "14px"
+    fontWeight: 600
+    lineHeight: "18px"
+  tiny-text:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: "16px"
+  # The one documented step below the scale. The editor's rail draws its tab labels
+  # at 10px and nothing else in the product does; it is an exception on purpose, not
+  # a step, so don't reach for it elsewhere.
+  rail-label:
+    fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
+    fontSize: "10px"
+    fontWeight: 400
+    lineHeight: "16px"
+  # Legacy aliases. Marketing display has no library equivalent — it predates the
+  # scale and is kept because the hero still uses it. `label` at 11/700 is NOT on
+  # the scale: panel labels are tiny-text (12/400) and section headings are
+  # small-text-demi-bold (14/600). Treat it as deprecated rather than a choice.
   display:
     fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif"
     fontSize: "clamp(2.5rem, 5vw, 3.75rem)"
