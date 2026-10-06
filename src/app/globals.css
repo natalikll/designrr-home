@@ -356,3 +356,19 @@ html {
   }
 }
 @media (prefers-reduced-motion: reduce) { .dr-cmp-row > td { transition: none; } }
+
+/* Entrance, reduced motion. The plan cards and their feature rows are server-rendered carrying
+   their hidden state — opacity 0 and a small offset — because that
+   state is set by the animation library, and on the server there is no media query for it to read
+   and no preference for it to honour. The correction normally arrives on the client, which is
+   fine for someone who wanted the animation and is not fine for someone who asked for less of it:
+   they get a blank card row for as long as hydration takes, which is the one thing
+   `prefers-reduced-motion` is supposed to prevent.
+   CSS is the only layer that runs before hydration and still knows the preference, so the reset
+   lives here. `!important` because it is overriding an inline style and nothing else will.
+   The badge is called out separately because a blanket `transform: none` would un-centre it: its
+   `translateX(-50%)` is layout, not motion, and is the one transform here that has to survive. */
+@media (prefers-reduced-motion: reduce) {
+  [data-entrance] { opacity: 1 !important; transform: none !important; }
+  [data-entrance='badge'] { transform: translateX(-50%) !important; }
+}

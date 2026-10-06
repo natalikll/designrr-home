@@ -119,6 +119,14 @@ export function Tooltip({ label, children, position = 'top', maxWidth, fullWidth
       className={fullWidth ? 'relative flex w-full' : 'relative inline-flex'}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={() => setPlacement(null)}
+      // The box is portalled to body, so mouseleave on this wrapper is the only
+      // thing that takes it down — and a trigger that disappears on click never
+      // gets one. The bubble menu's Footnote button is the clearest case: the
+      // insert moves the selection to the note at the end of the chapter, TipTap
+      // hides the bar (visibility, not unmount), the pointer never leaves, and
+      // the tooltip stays painted over the page. Acting on the trigger dismisses
+      // the tooltip anyway, so clear it on the way down.
+      onPointerDown={() => setPlacement(null)}
     >
       {children}
 

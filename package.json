@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@tiptap/extension-blockquote": "3.31.3",
     "@tiptap/extension-bubble-menu": "^3.31.3",
     "@tiptap/extension-color": "^3.31.3",
     "@tiptap/extension-highlight": "^3.31.3",
@@ -27,7 +28,9 @@
     "@tiptap/starter-kit": "^3.31.3",
     "fflate": "^0.8.3",
     "framer-motion": "^12.34.0",
+    "marked": "^14.1.4",
     "next": "16.1.6",
+    "pdfjs-dist": "^6.4.299",
     "qrcode": "^1.5.4",
     "react": "19.2.3",
     "react-contenteditable": "^3.3.7",

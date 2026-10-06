@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect, useId, Fragment } from 'react';
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useId, Fragment } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { useFlowStore, manuscriptLimitFor, combinedGenerationsUsed, allowanceResetLabel } from '@/stores/flowStore';
@@ -9,7 +9,16 @@ import { Tooltip } from '@/components/ui/Tooltip';
 
 import { AISparkleIcon } from '@/components/presentation/presentationIcons';
 
+/* Runs before paint on the client and does nothing on the server, where there is no layout to
+   read. The branch is on the environment, not on anything that can change between renders, so
+   the hook order is stable. */
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
 type Tab = 'profile' | 'password' | 'preferences' | 'billing';
+
+/* Preview variants for the standing upgrade page. 'A' and 'B' differ in how many cards sit in the
+   row; 'A-sale' is A priced as a promotion. Delete all of this once one wins. */
+type CardLayout = 'A' | 'A-sale' | 'B';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'profile', label: 'Profile' },
@@ -944,6 +953,173 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
    Upgrade Plan Modal
 ───────────────────────────────────────────── */
 
+/* The promotion. Explicit prices rather than a rate applied to the list price, for two reasons
+   that both came out of trying it the other way.
+   Standard has no entry at all, and that is the point: it is a $27 lifetime tier, so there is
+   nothing to discount and nothing won by discounting it. Three struck prices against one that
+   holds its price reads as an offer with a boundary; four struck prices reads as a pricing
+   gimmick. Base44 does the same — its cheapest plan shows a plain price while the three above it
+   carry struck ones.
+   The numbers are whole because a rate does not land on whole numbers. Half of $97 is $48.50, and
+   those cents are not a rounding detail — they are what makes the inline layout impossible, since
+   the two ".x0" pairs cost about 60px across a card that has 227px of text column. $49/$149/$249
+   also reads as prices a person chose rather than prices a spreadsheet produced, and the discount
+   lands at roughly half either way. */
+const PROMO_PRICES: Record<string, string> = { pro: '$49', premium: '$149', agency: '$249' };
+
+/* ── The gap between the price and its period, measured optically ─────────────
+   The literal 2px and 6px this replaces were never really 2 and 6. Every list price on this page
+   ends in a 7 — $27, $97, $297, $497 — and a 7 at 36px leaves 7.3px of white beneath its diagonal
+   at exactly the height the period sits at, so those gaps were delivering about 9.3px and 13.3px
+   of visible space. The numbers were tuned against that shape without anyone needing to know it.
+   The promo prices end in 0, which leaves 0.8px, so the same literal 2px rendered as a quarter of
+   the space and the period looked glued to the price — same CSS, same box geometry, measurably
+   identical, and plainly wrong to look at.
+   So the gap is computed from the final digit instead: hold the white constant and let the box
+   distance vary. The table is ink measured off a canvas at 36px/700 with this page's -0.03em, in
+   the 10px band above the baseline where the period's own glyphs sit — not `actualBoundingBoxRight`,
+   which reports a 7's widest point at the top bar and puts it within 0.4px of a 0.
+   Page only. The modal sets its price at 28px, where these distances would all scale, and it is
+   not what this change is about — it keeps the literals it already had. */
+/* ── Promo reveal ────────────────────────────────────────────────────────────
+   Two small pieces, both at module scope rather than inside the card's render, because a
+   component built during render is remounted on every pass — which would restart the very
+   animations they exist to run.
+
+   `VISUALLY_HIDDEN` is here rather than reused from the card body's own `SR_ONLY` for the same
+   reason: these render outside that closure. Same declarations, deliberately. */
+const VISUALLY_HIDDEN: React.CSSProperties = {
+  position: 'absolute', width: 1, height: 1, padding: 0, margin: -1,
+  overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0,
+};
+
+/* Pads the shorter of the two prices on the LEFT, so the strings align the way numbers do —
+   units under units — and a price that loses a digit drops it from the front rather than
+   shifting every column. Figure space, which is exactly one digit wide in a tabular font. */
+const alignPrices = (from: string, to: string) => {
+  const w = Math.max(from.length, to.length);
+  return [from.padStart(w, '\u2007'), to.padStart(w, '\u2007')] as const;
+};
+
+/* The odometer. Each character gets its own column; only the ones that actually change are
+   built as a moving strip, so an unchanged digit is a static glyph and cannot shimmer.
+   The strip is [new, old] with the new one ABOVE, and it travels from showing the old to
+   showing the new — which moves the glyphs DOWNWARD, the direction a falling price should go.
+
+   The hidden sizer underneath is what holds the layout. The columns are absolutely positioned
+   over it, so the element's width and its baseline come from one ordinary run of text and cannot
+   drift as the digits change — which is also why the period beside it never moves, and why the
+   width is simply constant rather than something that has to be animated. */
+function RollingPrice({ from, to, rolled, live, lineHeight, duration, ease, style }: {
+  from: string;
+  to: string;
+  rolled: boolean;
+  /** false once the sequence is done with it: render one plain text run, exactly as before. */
+  live: boolean;
+  lineHeight: number;
+  duration: number;
+  ease: string;
+  style: React.CSSProperties;
+}) {
+  if (!live) return <span style={style}>{rolled ? to : from}</span>;
+  const [a, z] = alignPrices(from, to);
+  return (
+    <span style={{ ...style, position: 'relative', display: 'inline-block', whiteSpace: 'nowrap' }}>
+      <span aria-hidden="true" style={{ visibility: 'hidden' }}>{z}</span>
+      {/* Hidden from assistive tech: a screen reader should hear one price, not a column of
+          digits mid-spin. The real text is the visually hidden node below. */}
+      <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, display: 'flex' }}>
+        {z.split('').map((ch, i) => {
+          const prev = a[i];
+          if (prev === ch) return <span key={i} style={{ display: 'block', height: lineHeight }}>{ch}</span>;
+          return (
+            <span key={i} style={{ display: 'block', height: lineHeight, overflow: 'hidden' }}>
+              <span style={{
+                display: 'block',
+                transform: rolled ? 'translateY(0)' : `translateY(${-lineHeight}px)`,
+                /* Only while rolling forward. These elements start life at the settled state and
+                   are wound back to the list price a frame later, and a transition declared
+                   unconditionally animates that rewind too — the digits would spin the wrong way
+                   and the rule would un-draw itself before the sequence had even begun. Going
+                   back is a jump; only going forward is animated. */
+                transition: rolled ? `transform ${duration}ms ${ease}` : undefined,
+              }}>
+                <span style={{ display: 'block', height: lineHeight }}>{ch}</span>
+                <span style={{ display: 'block', height: lineHeight }}>{prev}</span>
+              </span>
+            </span>
+          );
+        })}
+      </span>
+      <span style={VISUALLY_HIDDEN}>{to}</span>
+    </span>
+  );
+}
+
+/* The list price and the rule through it. The rule is drawn rather than left to
+   `text-decoration: line-through`, because a decoration cannot be animated — and this one has to
+   arrive after its text and draw itself left to right.
+   Geometry measured off the real decoration rather than guessed: at 16px/400 on a 24px line,
+   Nunito Sans puts it 11px down and 1px thick. `currentColor` keeps it the colour of the text it
+   strikes, which is what `text-decoration-color` defaulted to. */
+function StrikePrice({ text, revealed, live, fadeMs, drawMs, drawDelayMs, top, thickness, style }: {
+  text: string;
+  revealed: boolean;
+  live: boolean;
+  fadeMs: number;
+  drawMs: number;
+  drawDelayMs: number;
+  /** Where the rule sits inside the line box, and how thick — both measured, both specific to the
+      size and line-height it is rendered at, so they travel with the call site rather than
+      pretending to be universal. Measured by rendering the real decoration with transparent text
+      and scanning the inked rows at 8x: at 20px/400 on a 26px line Nunito Sans puts it 11px down
+      and 2px thick. It moved every time the type did — 19px on a 42px line, 11px and 1px at
+      16px/24px — which is exactly why it is not a constant. */
+  top: number;
+  thickness: number;
+  style: React.CSSProperties;
+}) {
+  const shown = !live || revealed;
+  return (
+    /* The rule is positioned against the paragraph itself rather than against an inline-block
+       wrapper inside it. The wrapper was the obvious way to make `left: 0; right: 0` span exactly
+       the text — and it silently added 5px of height, because an inline-level box sitting on a
+       line box pushes that line box taller by its own baseline offset. That put the promo cards'
+       price rows at 47px against Standard's 42 and dropped their buttons five pixels lower than
+       Standard's, which is visible across a row of four. Here the paragraph is the grid column's
+       only child and the column is sized to its content, so the paragraph is already exactly as
+       wide as the text and needs nothing wrapped around it. */
+    <p style={{
+      ...style,
+      position: 'relative',
+      opacity: shown ? 1 : 0,
+      transition: live && shown ? `opacity ${fadeMs}ms ease-out` : undefined,
+    }}>
+      {/* `<s>` rather than a bare span. Drawing the rule ourselves bought the animation but gave
+          up what `text-decoration: line-through` was quietly doing for assistive tech — marking
+          this price as no longer current. The element restores that meaning and adds no visible
+          copy; its own decoration is off so it cannot draw a second rule over ours. */}
+      <s style={{ textDecoration: 'none' }}>{text}</s>
+      <span aria-hidden="true" style={{
+        position: 'absolute', left: 0, right: 0, top, height: thickness,
+        background: 'currentColor', transformOrigin: 'left center',
+        transform: shown ? 'scaleX(1)' : 'scaleX(0)',
+        transition: live && shown ? `transform ${drawMs}ms ease-out ${drawDelayMs}ms` : undefined,
+      }} />
+    </p>
+  );
+}
+
+const DIGIT_TRAIL: Record<string, number> = {
+  '0': 0.8, '1': 1.1, '2': 0.8, '3': 1.1, '4': -0.2, '5': 0.3, '6': 0.6, '7': 7.3, '8': 0.3, '9': 1.1,
+};
+const periodGap = (price: string, unit: boolean) => {
+  /* What the page already delivers, read off a 7: 2 + 7.3 for a unit, 6 + 7.3 for a phrase.
+     Keeping these as the targets is what makes every existing price render byte-identically. */
+  const target = unit ? 9.3 : 13.3;
+  return Math.max(0, +(target - (DIGIT_TRAIL[price.slice(-1)] ?? 0.8)).toFixed(1));
+};
+
 const PLANS = [
   {
     id: 'standard',
@@ -1222,27 +1398,27 @@ export function UpgradePlanModal({
      blocked and nothing yet arguing for the spend. */
   const isPage = presentation === 'page' && mode === 'standing';
 
-  /* One column edge for the whole page. The header and card row were capped at 1060 and the
-     comparison at 1050 — 10px apart, which is a misalignment rather than a step, and neither
-     used the width the route actually offers. 1136 is that width at 1440: viewport less the
-     sidebar less the page's own 32px gutters. Below 1440 every block shrinks together and the
-     cap stops binding, so this only changes large screens.
-     Two widths, not one. PAGE_W is that full column and the comparison takes it; the header
-     and the card row sit at COL_W and the table steps out 38px each side of them.
-     The step has to come out of the cards, because 1136 already IS the whole column — so it
-     was measured rather than picked: at 1100 the step is 18px a side, which reads as a
-     misalignment rather than a decision, and at 1020 it costs seven wrapped bullet lines.
-     1060 is the knee: 38px a side is unambiguous, and it costs two wrapped lines
-     ("Create presentations & courses" and "Accounts for agency members"), both of which
-     read fine on two.
-     Below 1440 neither cap binds and the two collapse to the same width together. */
-  const PAGE_W = 1136;
-  const COL_W = 1060;
-  /* The comparison goes wider than the column by bleeding 16px into each of the route's own
-     32px gutters — the only width left, since PAGE_W already is the full column. It keeps a
-     16px gutter rather than running to the window edge, which is what stops a full-bleed table
-     reading as a rendering fault. Step against the cards goes 38px a side to 54. */
-  const TABLE_W = PAGE_W + 32;
+  /* One column edge for the whole page — header, card row and comparison all land on it.
+     1136 is the width the route actually offers at 1440: viewport less the sidebar less the
+     page's own 32px gutters. Below 1440 the cap stops binding and every block shrinks
+     together, so this only changes large screens.
+     There used to be three widths here: header and cards at 1060, the table stepping 38px
+     out of them on each side and then another 16 into the route's gutters, to 1168. The step
+     was meant to read as a deliberate tier — cards are the summary, the table is the full
+     detail — but two blocks 54px apart on a page that has no other vertical edge read as a
+     block that failed to line up, not as two levels. One edge, and the cards get the 76px
+     the step was costing them, which unwraps "Create presentations & courses" and
+     "Accounts for agency members".
+     1320, not the 1136 this started at. 1136 was the full column at 1440 — viewport less the
+     240 sidebar less the page's 32px gutters — which made it a cap that could never actually
+     bind: it described the narrowest common screen, so every screen above one got 1136 and
+     empty margins. 1320 binds on the large displays this page is read on and stops binding
+     below ~1600, where the column is narrower than the cap and every block shrinks together
+     exactly as before. The table is what gains: five columns at 1320 give the value strings
+     ("10 Active", "3 additional pages") room to sit on one line. */
+  const PAGE_W = 1320;
+  const COL_W = PAGE_W;
+  const TABLE_W = PAGE_W;
 
   /* All four plans stay in the row. Agency Premium is the most expensive but not the most
      valuable — it adds client accounts, seats and a custom template creator, which is a
@@ -1268,13 +1444,42 @@ export function UpgradePlanModal({
          Three across also buys each card 50px over A (250 -> 300), enough to unwrap
          every bullet in the row.
      Preview only — delete the switch and the `cardLayout` state once one wins. */
-  const [cardLayout, setCardLayout] = useState<'A' | 'B'>('A');
-  useEffect(() => {
+  const [cardLayout, setCardLayout] = useState<CardLayout>('A');
+  /* Before paint, not after. This restores which variant is being previewed, and everything
+     downstream is timed off it — the promo schedule, and the badge's delay, which has to be the
+     one that clears the price rolls. Read in a passive effect it arrived a frame late: the first
+     render was always plain A, framer had already committed the badge to its no-promo delay of
+     1.3s, and the badge then landed in the middle of the third card's roll. A state update made
+     from a layout effect is flushed before the browser paints, so the variant is settled before
+     anything is timed against it. */
+  useIsomorphicLayoutEffect(() => {
     const v = localStorage.getItem('dsgn_upgrade_layout');
-    if (v === 'A' || v === 'B') setCardLayout(v);
+    if (v === 'A' || v === 'A-sale' || v === 'B') setCardLayout(v);
   }, []);
-  const chooseLayout = (v: 'A' | 'B') => { setCardLayout(v); localStorage.setItem('dsgn_upgrade_layout', v); };
+  /* Selecting the sale variant replays its price drop, including when it is already selected —
+     so the button doubles as a replay for the one part of this page you cannot otherwise see
+     twice. The sequence is deliberately once-per-session for real viewers, which is correct for
+     them and useless for anyone reviewing it: the first load spends it, and every reload after
+     that shows the settled state, which looks exactly like the animation being broken.
+     Preview chrome only. Nothing a real viewer can reach clears that flag, so the once-per-session
+     rule still holds everywhere it applies. Goes when the pill goes. */
+  const [promoReplay, setPromoReplay] = useState(0);
+  const chooseLayout = (v: CardLayout) => {
+    setCardLayout(v);
+    localStorage.setItem('dsgn_upgrade_layout', v);
+    if (v === 'A-sale') {
+      try { sessionStorage.removeItem('dsgn_promo_rolled'); } catch { /* private mode */ }
+      setPromoReplay((n) => n + 1);
+    }
+  };
   const splitAgency = isPage && cardLayout === 'B';
+  /* A's second subversion: the same layout, the same four cards, priced as a promotion. It is a
+     variant of A rather than a third layout because nothing about the arrangement changes — only
+     what each card claims the plan costs — and the question it answers ("does a struck-through
+     list price sell this better") is independent of the question A and B are asking. */
+  const saleMode = isPage && cardLayout === 'A-sale';
+  const promoFor = (planId: string) => (saleMode ? PROMO_PRICES[planId] ?? null : null);
+
   /* B's row is narrower than A's. Three cards at COL_W come out 340 wide, which is more width
      than five short bullets and a price need — the row started to read as stretched rather than
      generous. 940 puts them at 300, still 50 wider than A's four-across, and the longest bullet
@@ -1317,7 +1522,7 @@ export function UpgradePlanModal({
      The rule that matters is the ratio, not the number: a gap between groups is at
      least twice the gap inside one, which is what makes the card read as three
      things (identity, action, contents) rather than one column of stacked lines. */
-  const S = { xs: 4, sm: 8, md: 12, base: 16, lg: 20, xl: 24, xxl: 32, section: 80 } as const;
+  const S = { xs: 4, sm: 8, md: 12, base: 16, lg: 20, xl: 24, xxl: 32, xxxl: 48, section: 80 } as const;
 
   /* Visible to a screen reader, not to the eye. Inline rather than a `sr-only` class because the
      project has no such utility and a table cell whose only content is an icon is exactly where
@@ -1339,82 +1544,191 @@ export function UpgradePlanModal({
      Colours go out as custom properties rather than as background/border, because the hover,
      focus and disabled states are in `.dr-btn` and an inline background would beat them. Hover
      and disabled values are the system's own: Primary Blue/40 and /90, and White gray. */
-  /* Entrance. One pass on mount, then completely still — nothing loops, because a moving
-     gradient on a page someone sits and reads carries no information and charges attention for
-     it. The cards arrive left to right in price order rather than leading with the recommended
-     one: the price order IS the comparison, and revealing it out of sequence makes you re-scan.
-     Emphasis comes after, when the light gathers on Premium.
+  /* ── Entrance ────────────────────────────────────────────────────────────────
+     One pass on mount, then completely still — nothing loops, because a moving gradient on a
+     page someone sits and reads carries no information and charges attention for it.
+
+     Three movements: the cards drop in from above, each one whole; the feature lists slide in
+     from the right, column by column; the badge on the recommended card lands last.
+
+     The card is ONE object. Its border, background, shadow, plan name, price, button and — on
+     Premium — its gradient glow all carry the same opacity and the same drop, because they are
+     not separate things that happen to share a box. They are the offer, and an empty outline
+     that exists before its own price is a loading state, not an entrance. Everything inside the
+     card is a plain element with no animation of its own; being a child of the card is what
+     makes it arrive with the card, and it is also what makes a second clock impossible.
+
+     The feature lists are the exception, and they earn it by being the part nobody reads until
+     they have decided the card is worth reading. They go column by column rather than in rank
+     across the row: a plan's list is an argument that only makes sense read downward, and
+     revealing every card's first bullet, then every card's second, turns four arguments into
+     one interleaved one.
+
+     ── Why opacity is timed separately from movement ──
+     Every element fades in faster than it finishes moving, so it is legible early and spends the
+     rest of its budget travelling. This matters most for the cards, whose spring runs for over a
+     second: on one clock they would still be visibly translucent while bouncing, which reads as
+     unfinished rather than as lively. The fade is always a plain ease-out — a fade has no
+     momentum to express, and a spring or an overshoot curve on opacity only clamps at 1 and
+     produces a flat spot.
+
      Page only. A gate modal is an interruption mid-task and already has its own 180ms entrance;
      staging it would make an interruption take longer to read.
-     Under reduced motion every element renders at its resting state directly — the card is
-     finished whether or not any of this runs. */
+
+     Under reduced motion every element renders at its resting state directly — and, because
+     these elements are server-rendered, the reset that guarantees it lives in `globals.css`
+     under `[data-entrance]`, which is the only layer that runs before hydration and still knows
+     the preference. */
   const reduceMotion = useReducedMotion();
   const animateIn = isPage && !reduceMotion;
-  const EASE = [0.2, 0, 0, 1] as const;
+
+  /* The timeline, in seconds. Written out as data rather than buried in each element so the
+     order is checkable at a glance. */
+  const CARD_STEP = 0.13;   // left to right, in price order: the order IS the comparison
+  const ROW_AT = 0.6;       // the first list starts as the early cards finish bouncing
+  const COL_STEP = 0.2;     // per card
+  const ROW_STEP = 0.06;    // within a column, the list's own heading counting as row 0
+  const BADGE_AT = 1.3;     // once the recommended card's list is in
+
+  /* ── The promo price drop ───────────────────────────────────────────────────
+     Offsets below are relative to a card's OWN entrance, so each promo card drops on its own
+     beat and the rolls arrive one after another rather than as one event across the row. */
+  const PROMO_AT = 0.7;     // after the card has arrived and been read at its list price
+  const PROMO_ROLL = 0.55;  // the odometer
+  const PROMO_FADE = 0.25;  // the list price appearing beneath it
+  const PROMO_DRAW = 0.3;   // the rule drawing through it, once that text is there
+  /* The badge cannot land in the middle of a price rolling — two things claiming the eye at
+     once, and the cheaper one wins. When there are promos it waits until 150ms after the last
+     card's roll has finished. Held for the whole sale variant rather than only when the roll
+     actually plays: on a second visit in the same session there is no roll to collide with, but
+     one timeline that always holds is worth more than 490ms saved on a repeat view. */
+  const lastRollEnds = (rowPlans.length - 1) * CARD_STEP + PROMO_AT + PROMO_ROLL;
+  const badgeAt = saleMode ? Math.max(BADGE_AT, lastRollEnds + 0.15) : BADGE_AT;
+
+  /* Which promo cards have already dropped to their promo price.
+     `null` is the settled state and is deliberately the initial one: it is what the server
+     renders, what a second visit in the same session renders, and what reduced motion renders.
+     Starting from the settled state rather than the pre-drop one is what keeps a returning
+     visitor from seeing the list price flash before it snaps — and it costs the first visit
+     nothing, because the rewind below happens while the card is still at opacity 0, invisible
+     inside its own entrance.
+     A Set means the sequence is running, and holds the indices that have dropped so far. */
+  const [droppedCards, setDroppedCards] = useState<Set<number> | null>(null);
+  const promoRolling = droppedCards !== null;
+  const hasDropped = (i: number) => droppedCards === null || droppedCards.has(i);
+  useEffect(() => {
+    if (!saleMode || reduceMotion) return;
+    let already = false;
+    try { already = sessionStorage.getItem('dsgn_promo_rolled') === '1'; } catch { already = true; }
+    if (already) return;
+    try { sessionStorage.setItem('dsgn_promo_rolled', '1'); } catch { /* private mode: play it, don't record it */ }
+    /* The rewind is a timer rather than a straight call so this reads as scheduling rather than
+       as setting state during an effect. At 0ms it lands well inside the card's 260ms fade, so
+       nothing is ever seen at the promo price before it rolls to it. */
+    const timers = [window.setTimeout(() => setDroppedCards(new Set<number>()), 0)];
+    /* The 700ms lead-in exists so the card can arrive, be read at its list price, and only then
+       drop. On a replay there is no arrival to wait for — the row has been sitting there settled —
+       so the same 700ms is just dead air between a click and any response, which reads as the
+       button not having worked. The stagger between cards is kept either way; it is the lead-in
+       that has nothing to lead into. */
+    const lead = promoReplay > 0 ? 0.12 : PROMO_AT;
+    rowPlans.forEach((_, i) => timers.push(window.setTimeout(
+      () => setDroppedCards((prev) => new Set(prev ?? []).add(i)),
+      (i * CARD_STEP + lead) * 1000,
+    )));
+    /* Back to `null` once the last roll has landed, which tears the odometer down and leaves the
+       price as one ordinary run of text — the exact markup the page renders for someone who never
+       saw the animation at all. Worth doing rather than leaving the columns mounted: a row of
+       single-character spans is not quite a text run, because each column's width rounds on its
+       own, and measured against the plain version the glyphs sat up to 0.06px off. Invisible, but
+       it is the state the page then holds for as long as it is open, and it should be the
+       canonical one. The swap itself moves nothing anyone can see — it IS that 0.06px. */
+    timers.push(window.setTimeout(
+      () => setDroppedCards(null),
+      ((rowPlans.length - 1) * CARD_STEP + lead + PROMO_ROLL + 0.05) * 1000,
+    ));
+    return () => timers.forEach(clearTimeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saleMode, reduceMotion, rowPlans.length, promoReplay]);
+
+  /* Damping ratio 0.326 (8.7 / 2·√(178·1)), which is what produces the overshoot this is tuned
+     for: a first swing of about 34% past rest and a reverse swing of about 12%, settling near
+     0.9s. Stated as the physics rather than as a curve because the three numbers are the
+     contract, and because the ratio is the part that has to be held: stiffness alone sets how
+     fast this settles, but bounce is the ratio, so a faster spring keeps its character only if
+     damping rises with √stiffness. It did — 0.325 before, 0.326 now — which is why this reads as
+     the same movement played quicker rather than as a different one. */
+  const CARD_SPRING = { type: 'spring' as const, stiffness: 178, damping: 8.7, mass: 1 };
+  /* Ease-out for the rows and the badge. No overshoot: the cards already carry all the bounce
+     this sequence can afford, and a list that springs is a list you read twice. */
+  const EASE = [0.22, 1, 0.36, 1] as const;
+  const FADE = 'easeOut' as const;
+
   /* `animate` is always supplied and only `initial` is conditional. Dropping the whole prop set
      when motion is off strands the element on its initial opacity:0 with nothing to move it —
      `useReducedMotion` resolves after the first render, so the initial had already applied and
      the animate that would have cleared it vanished on the next pass. `initial={false}` is the
-     supported way to say "start at the resting state". */
-  const cardVariants = {
-    hidden: { opacity: 0, y: 10, scale: 0.985 },
-    show: (i: number) => ({
-      opacity: 1, y: 0, scale: 1,
+     supported way to say "start at the resting state", and it is also what guarantees nothing is
+     ever painted in its hidden state and then corrected.
+
+     `delay` is repeated into every per-property entry rather than set once alongside them. A
+     value-specific transition REPLACES the parent options for that value instead of merging with
+     them, so a lone top-level `delay` is silently dropped the moment `y` and `opacity` get
+     entries of their own — which stripped every stagger in the sequence at once and made the
+     whole row arrive on a single frame. */
+
+  /* The card drops in from 56px ABOVE its resting position, which is why the spring reads as
+     weight rather than as a wobble: it arrives travelling downward, overshoots past the line it
+     is heading for, and comes back. */
+  const cardEnter = (i: number) => {
+    const delay = i * CARD_STEP;
+    return {
+      initial: animateIn ? { opacity: 0, y: -56 } : false,
+      animate: { opacity: 1, y: 0 },
       transition: animateIn
-        ? { duration: 0.38, delay: i * 0.07, ease: EASE, delayChildren: i * 0.07 + 0.06, staggerChildren: 0.045 }
+        ? { y: { ...CARD_SPRING, delay }, opacity: { duration: 0.26, delay, ease: FADE } }
         : { duration: 0 },
-    }),
+    };
   };
-  /* The card's own contents. No initial or animate of their own — they inherit the label from
-     the card, which is what makes `staggerChildren` above apply to them. Movement is 6px: any
-     more and four cards doing it at once reads as the page assembling itself. */
-  const partVariants = {
-    hidden: { opacity: 0, y: 6 },
-    show: { opacity: 1, y: 0, transition: animateIn ? { duration: 0.26, ease: EASE } : { duration: 0 } },
+  /* A feature row, including the list's own heading at r = 0. These come in laterally rather
+     than vertically, which is what keeps them from reading as more of the same motion the cards
+     just made — and it runs with the text direction, so a line arrives the way it is read. */
+  const rowEnter = (col: number, r: number) => {
+    const delay = ROW_AT + col * COL_STEP + r * ROW_STEP;
+    return {
+      initial: animateIn ? { opacity: 0, x: 30 } : false,
+      animate: { opacity: 1, x: 0 },
+      transition: animateIn
+        ? { x: { duration: 0.6, delay, ease: EASE }, opacity: { duration: 0.45, delay, ease: FADE } }
+        : { duration: 0 },
+    };
   };
-  const cardEnter = (i: number) => ({
-    variants: cardVariants,
-    custom: i,
-    initial: (animateIn ? 'hidden' : false) as 'hidden' | false,
-    animate: 'show',
-  });
-  const partEnter = { variants: partVariants };
-  /* Starts once the last card has landed, so the light reads as arriving on a settled row. */
-  const glowEnter = {
-    initial: animateIn ? { opacity: 0, scale: 0.9 } : false,
-    animate: { opacity: 1, scale: 1 },
-    transition: animateIn ? { duration: 0.55, delay: 0.42, ease: EASE } : { duration: 0 },
-  };
-  /* `x: '-50%'` rather than a CSS `translateX(-50%)` in the style object: animating `scale`
-     makes framer-motion own the transform property outright, and an inline transform alongside
-     it is simply overwritten — which is how the centred pill quietly drifted right. Handing the
-     offset to motion as a value keeps it composed with the scale. */
-  /* The shell, and the band that sits in it.
-     No scale. The shell is anchored to the card's edges — 4px proud on three sides, 36 above —
-     and that geometry IS what it means, so arriving at 90% of it read as a rendering fault
-     rather than as motion. It is also a child of the card, so it already inherits the card's
-     own y and scale; giving it a second transform was animating the same thing twice.
-     No fixed 0.42 delay either. That was long enough for the row to finish landing first, so a
-     blue plane appeared behind a card that had already settled. Timed off the card's own index
-     instead, it resolves as that card arrives — the reader sees a recommended card, not a card
-     that becomes recommended.
-     Explicit initial/animate on both, because relying on the card to propagate `show` through
-     the Fragment left the label parked at opacity 0 — the same failure the centred pill had. */
-  const shellEnter = (i: number) => ({
-    initial: animateIn ? { opacity: 0 } : false,
-    animate: { opacity: 1 },
-    transition: animateIn ? { duration: 0.45, delay: i * 0.07 + 0.1, ease: EASE } : { duration: 0 },
-  });
-  const bandEnter = (i: number) => ({
-    initial: animateIn ? { opacity: 0 } : false,
-    animate: { opacity: 1 },
-    transition: animateIn ? { duration: 0.3, delay: i * 0.07 + 0.26, ease: EASE } : { duration: 0 },
-  });
-  const pillEnter = {
+  /* The badge. Scale only — no lift. It is pinned to the card's top edge, so a badge that also
+     travelled would be a second object arriving at a seam the card has already settled. */
+  const badgeTransition = animateIn
+    ? {
+        scale: { duration: 0.38, delay: badgeAt, ease: EASE },
+        opacity: { duration: 0.38, delay: badgeAt, ease: FADE },
+      }
+    : { duration: 0 };
+  /* `x: '-50%'` rather than a CSS `translateX(-50%)` in the style object: animating `scale` makes
+     framer-motion own the transform property outright, and an inline transform alongside it is
+     simply overwritten — which is how the centred pill quietly drifted right. Handing the offset
+     to motion as a value keeps it composed with the scale. */
+  const pillEnter = () => ({
     initial: animateIn ? { opacity: 0, scale: 0.9, x: '-50%' } : { x: '-50%' },
     animate: { opacity: 1, scale: 1, x: '-50%' },
-    transition: animateIn ? { duration: 0.2, delay: 0.4, ease: EASE } : { duration: 0 },
-  };
+    transition: badgeTransition,
+  });
+  /* Layout B's band is the badge by another name and takes its timing. Its shell is not an
+     accent at all — it is that card's background, since the card itself is drawn with no border
+     and no fill — so it has no entrance of its own and rides the card, exactly as the glow does
+     on Premium. */
+  const bandEnter = () => ({
+    initial: animateIn ? { opacity: 0, scale: 0.9 } : false,
+    animate: { opacity: 1, scale: 1 },
+    transition: badgeTransition,
+  });
 
   const ctaSkin = (variant: 'primary' | 'secondary' | 'tertiary' | 'disabled'): React.CSSProperties => ({
     primary:   { '--btn-bg': BTN.primary, '--btn-bg-h': 'var(--color-accent-hover)', '--btn-bd': BTN.primary, '--btn-bd-h': 'var(--color-accent-hover)', '--btn-fg': '#fff', '--btn-bg-d': 'var(--color-accent-disabled)' },
@@ -1455,6 +1769,23 @@ export function UpgradePlanModal({
   const baseWidth = mode === 'standing' ? 980 : visiblePlans.length === 1 ? 460 : 720;
   const modalWidth = compareOpen ? 980 : baseWidth;
 
+  /* The plan row is a plain grid of equal tracks. It used to redistribute width on hover:
+     pointing at a card handed it about a quarter of its own width and its neighbours gave
+     that width up, animated on `grid-template-columns`. The idea was that the row is one
+     composition rather than four cards, so emphasis should move space around instead of
+     sitting on top of a layout that stayed put. Taken out because it read as the card
+     expanding under the pointer rather than as the row rearranging — the eye tracks the edge
+     that moves. Removed rather than tuned down: a smaller version of the same movement is
+     the same movement. Noting it as a decision, not a settled argument — another session was
+     asked to build this, so if it comes back the machinery below has to come back with it.
+     That takes with it the ResizeObserver width probe, the font-load re-measure, the
+     compressed-layout measuring pass and the reserved row height — all of which existed only
+     to stop the redistribution shifting everything below the row. With nothing moving there
+     is nothing to reserve, so the row is back to sizing itself from its contents.
+     228 is the narrowest the longest button label ("Upgrade to Agency Premium") stays on one
+     line at 14/600 inside 20px of padding — the floor `auto-fit` wraps at. */
+  const CARD_MIN = 228;
+
   /* Everything below the chrome — header, plan cards, compare table — shared between the two
      shells this component can render as. It doesn't reference the backdrop, the card, or the
      close button, so nothing here needs to change for a shell that has neither. */
@@ -1473,7 +1804,7 @@ export function UpgradePlanModal({
               boxShadow: '0 2px 8px rgba(15,23,51,0.08)', backdropFilter: 'blur(8px)',
             }}
           >
-            {(['A', 'B'] as const).map((v) => {
+            {(['A', 'A-sale', 'B'] as const).map((v) => {
               const active = cardLayout === v;
               return (
                 <button
@@ -1487,7 +1818,7 @@ export function UpgradePlanModal({
                     color: active ? '#006EFE' : '#8596AD',
                   }}
                 >
-                  {v === 'A' ? 'A · 4 cards' : 'B · 3 + Agency'}
+                  {v === 'A' ? 'A · list price' : v === 'A-sale' ? 'A · sale price' : 'B · 3 + Agency'}
                 </button>
               );
             })}
@@ -1506,35 +1837,29 @@ export function UpgradePlanModal({
         <div style={{ paddingTop: 32, /* B pays 44px of grid padding for the shell's band, so the 32 that sits right under
                A's subhead stacks into a 76px hole under a headline that now stands alone. 16 puts
                the band 16 below the headline and the card tops at 60. */
-          marginBottom: isPage ? (splitAgency ? S.base : S.xxl) : 20, paddingRight: presentation === 'page' ? 0 : 28, ...(isPage ? { maxWidth: ROW_W, marginInline: 'auto' } : null) }}>
-          {/* The page gets an eyebrow and a headline that makes a claim, because it has to earn
-              the spend on its own. The modal keeps the plain title: whatever fired the gate is
-              already the headline, and a second one competing with it would only add words. */}
-          {/* A only, same reasoning as the subhead: B's header is the headline alone. An eyebrow
-              labels a page whose title needs context, and "More formats, fewer limits" sitting
-              above four plan prices does not. */}
-          {isPage && !splitAgency && (
-            <p style={{ ...ns, fontSize: T.label, fontWeight: W.bold, color: 'var(--color-accent)', letterSpacing: '0.1em', lineHeight: LH.label, marginBottom: S.sm }}>
-              UPGRADE
-            </p>
-          )}
+          marginBottom: isPage ? (splitAgency ? S.base : S.xxxl) : 20, paddingRight: presentation === 'page' ? 0 : 28, ...(isPage ? { maxWidth: ROW_W, marginInline: 'auto' } : null) }}>
+          {/* No eyebrow. A blue uppercase "UPGRADE" over "More formats, fewer limits" labelled
+              a page that was already unambiguous — the sidebar row that reaches here says
+              Upgrade, and four plan prices under the headline say the rest. It was also the
+              only text on the page set in accent blue that wasn't an action, which is the same
+              reason the plan names and the table's checks came off blue. Layout B never had
+              one; now neither does A, and the headline is the first thing on the page. */}
           <p id={titleId} style={{ ...ns, fontSize: isPage ? T.title : 20, fontWeight: W.bold, color: 'var(--color-text-display)', lineHeight: isPage ? LH.title : '26px', letterSpacing: isPage ? '-0.02em' : undefined, textWrap: 'balance' }}>
-            {/* B names the job instead of making a claim. With the eyebrow and the subhead gone
-                this line is the whole header, and "More formats, fewer limits" is a two-clause
-                pitch above four prices that already make the argument. Every in-app plan page in
-                the survey titles itself plainly — Melio "Choose a plan that's right for you",
-                Cursor "Adjust your plan", Lyssna "Change your plan", folk and Webflow just
-                "Plans" — and none of them opens with marketing copy. */}
-            {contextMessage ?? (splitAgency ? 'Choose your plan' : isPage ? 'More formats, fewer limits' : 'Upgrade your account')}
+            {/* Names the job instead of making a claim. "More formats, fewer limits" was a
+                two-clause pitch standing above four prices that already make the argument, and
+                every in-app plan page in the survey titles itself plainly — Melio "Choose a plan
+                that's right for you", Cursor "Adjust your plan", Lyssna "Change your plan", folk
+                and Webflow just "Plans". None of them opens with marketing copy.
+                A only. B keeps "Choose your plan": every instruction behind this header — the
+                new headline, the dropped eyebrow, the dropped subhead, the 48px gap below —
+                was given about layout A, and B is a live preview someone else may still be
+                reading. Unifying the two was my inference, not a request. */}
+            {contextMessage ?? (splitAgency ? 'Choose your plan' : isPage ? 'Find the plan that fits.' : 'Upgrade your account')}
           </p>
-          {/* A only. In B the three cards carry the same claim in their own words one line
-              below, and the Agency band adds a fourth voice — the subhead became the third
-              summary of the page in the first 200px. */}
-          {isPage && !splitAgency && (
-            <p style={{ ...ns, fontSize: T.lead, fontWeight: W.regular, color: 'var(--color-text-muted)', lineHeight: LH.lead, marginTop: S.sm, textWrap: 'pretty' }}>
-              Upgrading adds Kindle, print and audiobooks, and lifts your generation limit.
-            </p>
-          )}
+          {/* No subhead. "Upgrading adds Kindle, print and audiobooks, and lifts your generation
+              limit" re-stated in prose what the four cards say in their own feature lists a
+              hundred pixels below, so the first screen made the same argument twice before
+              showing a single price. With the eyebrow gone too, the header is one line. */}
           {/* Waiting is a legitimate way out of a quota, so say when the allowance returns
               instead of implying paying is the only option. */}
           {mode === 'quota' && quota?.resetLabel && (
@@ -1552,7 +1877,10 @@ export function UpgradePlanModal({
             ("Upgrade to Agency Premium") stays on one line at 14/600 inside 20px of padding.
             The modal keeps an explicit count: its width is set by `modalWidth`, so its columns
             can't be asked to reflow. */}
-        <div className="grid" style={{ gridTemplateColumns: isPage ? 'repeat(auto-fit, minmax(228px, 1fr))' : `repeat(${rowPlans.length}, 1fr)`, gap: isPage ? 20 : 16, ...(isPage ? { maxWidth: ROW_W, marginInline: 'auto', paddingTop: splitAgency ? 44 : 0 } : null) }}>
+        <div
+          className="grid"
+          style={{ gridTemplateColumns: isPage ? `repeat(auto-fit, minmax(${CARD_MIN}px, 1fr))` : `repeat(${rowPlans.length}, 1fr)`, gap: isPage ? 20 : 16, ...(isPage ? { maxWidth: ROW_W, marginInline: 'auto', paddingTop: splitAgency ? 44 : 0 } : null) }}
+        >
           {rowPlans.map((plan, cardIndex) => {
             const isCurrent = plan.id === currentPlanId;
             const isDowngrade = !isCurrent && PLAN_ORDER.indexOf(plan.id) < currentRank;
@@ -1569,6 +1897,7 @@ export function UpgradePlanModal({
             <motion.div
               key={plan.id}
               {...cardEnter(cardIndex)}
+              data-entrance="card"
               style={{
                 borderRadius: isPage ? 14 : 12,
                 /* On the page the recommended card is tinted and outlined rather than shadowed.
@@ -1581,11 +1910,17 @@ export function UpgradePlanModal({
                    white page nothing sat on a plane at all — which is most of why the row read
                    as flat. Premium's is stronger and blue-cast, so the glow reads as light
                    falling on a raised card rather than a stain on a flat one. */
+                /* One resting shadow per card, no hover state. The deeper variant that used to
+                   ride along with the width change went with it: a shadow that grows under the
+                   pointer is the same "this card came forward" reading the widths gave, which
+                   is what was being removed. */
                 boxShadow: isHighlighted
                   ? (isPage
                       ? '0 2px 4px rgba(16,24,40,0.05), 0 18px 40px rgba(0,110,254,0.18)'
                       : '0 8px 24px rgba(0,110,254,0.14)')
-                  : (isPage ? '0 1px 2px rgba(16,24,40,0.04), 0 6px 16px rgba(16,24,40,0.05)' : 'none'),
+                  : (isPage
+                      ? '0 1px 2px rgba(16,24,40,0.04), 0 6px 16px rgba(16,24,40,0.05)'
+                      : 'none'),
                 overflow: 'visible',
                 display: 'flex',
                 flexDirection: 'column',
@@ -1602,7 +1937,8 @@ export function UpgradePlanModal({
                   the card, which has to stay overflow:visible for the pill on its top edge. */}
               {isPage && isHighlighted && !shellRec && (
                 <div aria-hidden="true" style={{ position: 'absolute', inset: 0, borderRadius: 14, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
-                  <motion.div {...glowEnter} style={{
+                  {/* Plain, not animated. It rides the card. */}
+                  <div style={{
                     position: 'absolute', top: -70, right: -80, width: 300, height: 260, filter: 'blur(26px)',
                     background: [
                       'radial-gradient(closest-side at 62% 34%, rgba(0,110,254,0.34), transparent 72%)',
@@ -1615,7 +1951,14 @@ export function UpgradePlanModal({
               )}
 
               {isHighlighted && !shellRec && (
-                <motion.div {...pillEnter} style={{
+                /* Keyed on the variant so it remounts when the preview resolves from storage.
+                   framer-motion commits a transition when the element mounts and does not re-read
+                   it afterwards, so without this the badge kept the 1.3s delay it was given on the
+                   first render — before the sale variant was known — and landed in the middle of
+                   the third card's price roll, which is the one collision the schedule exists to
+                   prevent. The remount happens before paint, so it costs a render and shows
+                   nothing. */
+                <motion.div key={cardLayout} {...pillEnter()} data-entrance="badge" style={{
                   position: 'absolute', top: -13, left: '50%', zIndex: 2,
                   background: 'var(--color-accent)', borderRadius: 999, padding: '4px 14px', whiteSpace: 'nowrap',
                   ...ns, fontSize: 11, fontWeight: 700, color: '#fff', letterSpacing: 0.3,
@@ -1627,7 +1970,8 @@ export function UpgradePlanModal({
 
               {shellRec && (
                 <>
-                  <motion.div aria-hidden="true" {...shellEnter(cardIndex)} style={{
+                  {/* Plain, not animated. It rides the card. */}
+                  <div aria-hidden="true" style={{
                     position: 'absolute', top: -36, left: -4, right: -4, bottom: -4,
                     borderRadius: 18, zIndex: 0, pointerEvents: 'none',
                     /* No drop shadow. The shell is already 4px proud of the card on three sides
@@ -1635,7 +1979,7 @@ export function UpgradePlanModal({
                        coloured plane just smears its edge. */
                     background: 'var(--color-accent)',
                   }} />
-                  <motion.div {...bandEnter(cardIndex)} style={{
+                  <motion.div {...bandEnter()} data-entrance="card" style={{
                     position: 'absolute', top: -36, left: 0, right: 0, height: 36, zIndex: 2,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     ...ns, fontSize: 11, fontWeight: W.bold, color: '#fff', letterSpacing: '0.09em',
@@ -1649,7 +1993,12 @@ export function UpgradePlanModal({
                   and at 16 inline the content sat closer to the card edge than the card's own
                   14 radius wants. 20 still leaves "Upgrade to Agency Premium", the longest label
                   in the row at 25 characters, room to breathe inside its button. */}
-              <div style={{ padding: isPage ? '24px 20px 24px' : '20px 16px 16px', flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1,
+              {/* 32 top and bottom on the page, not 24. The row got wider twice over (the cards
+                  stopped stepping in from the table, then the shared column went to 1320), and
+                  card height didn't follow — four short wide boxes on a tall page read as a
+                  strip rather than as four things to choose between. The extra 16 goes on the
+                  vertical only; 20 on the sides is still what the 14px radius wants. */}
+              <div style={{ padding: isPage ? '32px 20px 32px' : '20px 16px 16px', flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1,
                 ...(shellRec ? { background: '#fff', border: '1px solid var(--color-border)', borderRadius: 14 } : null) }}>
 
               {/* Name — no tier icon above it. A decorative bolt/star/crown/briefcase told a
@@ -1658,7 +2007,7 @@ export function UpgradePlanModal({
                   On the page it is ink rather than blue. Blue was on the name, the price accents,
                   every checkmark and the button — seven things per card, which is six too many for
                   a colour that is supposed to mean "this is the action". */}
-              <motion.div {...partEnter} className="flex items-center" style={{ gap: 10, justifyContent: 'space-between', marginBottom: isPage ? S.sm : 8 }}>
+              <div className="flex items-center" style={{ gap: 10, justifyContent: 'space-between', marginBottom: isPage ? S.sm : 8 }}>
                 {/* A label, not a second headline. At 19/800/ink against a 32/800/ink price these
                     two differed only by size, and by a ratio of 1.7 — close enough that the eye
                     read them as one block and neither led. As a small uppercase label the name
@@ -1672,16 +2021,78 @@ export function UpgradePlanModal({
                     enough under the price (32 against 13.5) that the price still leads.
                     700, not 800: only 400/600/700 are loaded, so 800 was resolving to 700 anyway. */}
                 <p style={{ ...ns, fontSize: isPage ? T.label : 18, fontWeight: W.bold, color: isPage ? 'var(--color-text-muted)' : 'var(--color-accent)', lineHeight: isPage ? LH.label : '24px', letterSpacing: isPage ? '0.1em' : undefined, textTransform: isPage ? 'uppercase' : undefined }}>{plan.name}</p>
-              </motion.div>
+              </div>
 
               {/* Price. Same treatment in every mode now — the allowance moved into the list
                   below, so a quota card and a feature card are the same shape. */}
-              <motion.div {...partEnter} className="flex items-baseline" style={{ gap: 6, marginBottom: isPage ? 0 : 16, order: isPage ? 2 : undefined }}>
-                <span style={{ ...ns, fontSize: isPage ? T.display : 28, fontWeight: W.bold, color: 'var(--color-text-display)', lineHeight: isPage ? LH.display : '34px', letterSpacing: isPage ? '-0.03em' : undefined, fontVariantNumeric: 'tabular-nums' }}>{plan.price}</span>
+              {/* Two gaps, because there are two kinds of period. "/year" is a unit riding on
+                  the number — one measurement, not a number with a label beside it — so it sits
+                  2px off the price. "lifetime access" is a phrase, and at 2px it runs into the
+                  7 of $27, so it keeps the wider 6.
+                  Inside "/year" the slash gets 1.5px after it: a slash with nothing either side
+                  reads as part of the word, but this only has to break the join, not separate
+                  two things. Set in markup rather than as a Unicode hair space (~1.4px at 14px,
+                  and not adjustable) so `period` stays plain data — the billing panel renders
+                  the same string and wants no special case. */}
+              {(() => {
+                const unit = plan.period.startsWith('/');
+                const promo = promoFor(plan.id);
+                const shown = promo ?? plan.price;
+                return (
+              <div className="flex items-baseline" style={{ marginBottom: isPage ? 0 : 16, order: isPage ? 2 : undefined, gap: isPage ? periodGap(shown, unit) : (unit ? 2 : 6) }}>
+                {/* The list price, struck, to the LEFT of what you now pay — the order the
+                    sentence runs in. It sits on the same baseline and one step down the scale, so
+                    the pair reads as one price with a history rather than as two prices competing
+                    to be the live one.
+                    It is inside a collapsing track rather than simply hidden, so that before the
+                    drop it occupies no width at all and the real price sits flush at the card's
+                    left edge, exactly where a card with no promotion puts it. Reserving the space
+                    instead would park the price mid-card behind a gap, which reads as a layout
+                    fault for the second and a half before anything happens. */}
+                {promo && (
+                  <span style={{
+                    display: 'grid',
+                    gridTemplateColumns: hasDropped(cardIndex) ? '1fr' : '0fr',
+                    transition: promoRolling && hasDropped(cardIndex)
+                      ? `grid-template-columns ${PROMO_ROLL}s cubic-bezier(0.22, 1, 0.36, 1)` : undefined,
+                    marginRight: hasDropped(cardIndex) ? 8 : 0,
+                  }}>
+                    <span style={{ overflow: 'hidden', minWidth: 0 }}>
+                      <StrikePrice
+                        text={plan.price}
+                        revealed={hasDropped(cardIndex)}
+                        live={promoRolling}
+                        fadeMs={PROMO_FADE * 1000}
+                        drawMs={PROMO_DRAW * 1000}
+                        drawDelayMs={PROMO_FADE * 1000}
+                        top={11}
+                        thickness={2}
+                        style={{ ...ns, fontSize: T.heading, fontWeight: W.regular, color: 'var(--color-text-muted)', lineHeight: LH.heading, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}
+                      />
+                    </span>
+                  </span>
+                )}
+                {/* The big number is whatever the customer actually pays. Before the drop it is
+                    the list price, and it rolls from there — so the price is never a figure
+                    nobody is being charged. */}
+                <RollingPrice
+                  from={plan.price}
+                  to={shown}
+                  rolled={hasDropped(cardIndex)}
+                  live={!!promo && promoRolling}
+                  lineHeight={42}
+                  duration={PROMO_ROLL * 1000}
+                  ease="cubic-bezier(0.22, 1, 0.36, 1)"
+                  style={{ ...ns, fontSize: isPage ? T.display : 28, fontWeight: W.bold, color: 'var(--color-text-display)', lineHeight: isPage ? LH.display : '34px', letterSpacing: isPage ? '-0.03em' : undefined, fontVariantNumeric: 'tabular-nums' }}
+                />
                 {/* 400, not 600. The period is a unit riding on the number, not a label — at 600
                     it carried the same weight as the plan name and read as a second one. */}
-                <span style={{ ...ns, fontSize: T.body, fontWeight: W.regular, color: 'var(--color-text-muted)', lineHeight: LH.body }}>{plan.period}</span>
-              </motion.div>
+                <span style={{ ...ns, fontSize: T.body, fontWeight: W.regular, color: 'var(--color-text-muted)', lineHeight: LH.body }}>
+                  {unit ? (<><span style={{ marginRight: 1.5 }}>/</span>{plan.period.slice(1)}</>) : plan.period}
+                </span>
+              </div>
+                );
+              })()}
 
               {/* Divider — modal only. On the page the seam between the offer (price, action) and
                   the list already had 44px across it, four times the 11px between bullets, so
@@ -1697,7 +2108,16 @@ export function UpgradePlanModal({
                   comes first and is marked, so the answer to "does this fix my problem" is the
                   first line rather than the fourth. At a quota that answer is already the
                   headline above, so it's dropped from the list instead of stated twice. */}
-              <motion.div {...partEnter} className="flex flex-col" style={{ gap: isPage ? S.md : 10, flex: 1, marginTop: isPage ? S.xl : 0, order: isPage ? 5 : undefined }}>
+              <div className="flex flex-col" style={{ gap: isPage ? S.md : 10, flex: 1, marginTop: isPage ? S.xxl : 0, order: isPage ? 5 : undefined,
+                /* Clips the rows' 30px lateral travel, and nothing else — at rest every row is
+                   narrower than this box, so there is nothing here to clip and the resting state
+                   is untouched. Without it the slide-in is visibly broken rather than subtly
+                   wrong: a row starts 30px right of home, the card's padding only absorbs 20 of
+                   them, and the remaining 9px of live text sits outside the card's own border in
+                   the gutter between two cards. Measured on Pro, where the longest bullet wraps
+                   and therefore fills the full column width. The clip edge is the card's text
+                   column, so a line reads as arriving from under the card's padding. */
+                ...(isPage ? { overflow: 'hidden' } : null) }}>
                 {(() => {
                   const prevPlan = PLANS[PLAN_ORDER.indexOf(plan.id) - 1];
                   return (
@@ -1706,13 +2126,13 @@ export function UpgradePlanModal({
                        and a card with three interchangeable small labels has no hierarchy at
                        all. The 6 here plus the list's own 10 gives 16 to the first bullet
                        against 10 between bullets, so it reads as heading the list. */
-                    <p style={{ ...ns, fontSize: T.body, fontWeight: W.regular, color: 'var(--color-text-muted)', lineHeight: LH.body, marginBottom: S.xs }}>
+                    <motion.p {...rowEnter(cardIndex, 0)} data-entrance="row" style={{ ...ns, fontSize: T.body, fontWeight: W.regular, color: 'var(--color-text-muted)', lineHeight: LH.body, marginBottom: S.xs }}>
                       {prevPlan ? `Everything in ${prevPlan.name}, plus:` : 'Features:'}
-                    </p>
+                    </motion.p>
                   );
                 })()}
-                {featureLinesFor(plan).map(({ text, lead }) => (
-                  <div key={text} className="flex items-start" style={{ gap: 8 }}>
+                {featureLinesFor(plan).map(({ text, lead }, rowIndex) => (
+                  <motion.div key={text} {...rowEnter(cardIndex, rowIndex + 1)} data-entrance="row" className="flex items-start" style={{ gap: 8 }}>
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
                       {/* Same colour and optical weight as the line it marks. "Included" and
                           "this is the action" are different meanings that were sharing one
@@ -1726,9 +2146,9 @@ export function UpgradePlanModal({
                         had against these bullets, one level up, and it is most of why the row
                         read as lightweight against a table it should be leading. */}
                     <span style={{ ...ns, fontSize: isPage ? 14 : 13, fontWeight: lead ? W.bold : W.regular, color: 'var(--color-text-primary)', lineHeight: isPage ? LH.body : '18px' }}>{text}</span>
-                  </div>
+                  </motion.div>
                 ))}
-              </motion.div>
+              </div>
 
               {/* CTA button — names its destination. Three adjacent buttons all reading
                   "Upgrade" leave the column position as the only thing distinguishing them.
@@ -1739,7 +2159,7 @@ export function UpgradePlanModal({
               {/* 20 against the 6 that holds the name to its price: the identity block groups
                   more than 3x tighter than it separates from the action, which is what makes the
                   two read as two things rather than one run of stacked lines. */}
-              <motion.div {...partEnter} style={{ marginTop: isPage ? S.lg : 20, order: isPage ? 3 : undefined }}>
+              <div style={{ marginTop: isPage ? S.lg : 20, order: isPage ? 3 : undefined }}>
                 {isCurrent ? (
                   <button disabled className="dr-btn" style={{ width: '100%', ...ns, ...ctaGeom(), ...ctaSkin('disabled') }}>
                     Current plan
@@ -1762,7 +2182,7 @@ export function UpgradePlanModal({
                     Upgrade to {plan.name}
                   </button>
                 )}
-              </motion.div>
+              </div>
               </div>
             </motion.div>
             );
@@ -1778,7 +2198,7 @@ export function UpgradePlanModal({
           const isCurrent = agencyPlan.id === currentPlanId;
           const isDowngrade = !isCurrent && PLAN_ORDER.indexOf(agencyPlan.id) < currentRank;
           return (
-            <motion.div {...cardEnter(rowPlans.length)} style={{
+            <motion.div {...cardEnter(rowPlans.length)} data-entrance="card" style={{
               maxWidth: ROW_W, marginInline: 'auto', marginTop: S.lg,
               /* Blue/97 to Blue/90, not a neutral. The neutral wash measured 1.07:1 against the
                  white page — technically a fill, visually nothing. The two ways to be seen were a
@@ -1794,7 +2214,7 @@ export function UpgradePlanModal({
               boxShadow: '0 1px 2px rgba(16,24,40,0.04), 0 6px 16px rgba(16,24,40,0.05)',
               padding: '20px 24px', display: 'flex', alignItems: 'center', gap: S.xl,
             }}>
-              <motion.div {...partEnter} style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ ...ns, fontSize: T.label, fontWeight: W.bold, color: 'var(--color-text-muted)', lineHeight: LH.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: S.xs }}>{agencyPlan.name}</p>
                 {/* Names the job, not the feature list. "Their own view" rather than "their own
                     login": the Client Interface row describes a dedicated view to leave feedback
@@ -1803,9 +2223,9 @@ export function UpgradePlanModal({
                   <span style={{ fontWeight: W.bold }}>Managing books for clients?</span>{' '}
                   <span style={{ color: 'var(--color-text-muted)' }}>Give each one their own view, and keep every template on your brand.</span>
                 </p>
-              </motion.div>
+              </div>
 
-              <motion.div {...partEnter} style={{ flexShrink: 0, width: 210 }}>
+              <div style={{ flexShrink: 0, width: 210 }}>
                 {isCurrent ? (
                   <button disabled className="dr-btn" style={{ width: '100%', ...ns, ...ctaGeom(), ...ctaSkin('disabled') }}>Current plan</button>
                 ) : isDowngrade ? (
@@ -1816,7 +2236,7 @@ export function UpgradePlanModal({
                      halves of the offer disagreeing. */
                   <button className="dr-btn" style={{ width: '100%', cursor: 'pointer', ...ns, lineHeight: '18px', ...ctaGeom(), ...ctaSkin('secondary') }}>Talk to us</button>
                 )}
-              </motion.div>
+              </div>
             </motion.div>
           );
         })()}
@@ -1909,7 +2329,11 @@ export function UpgradePlanModal({
                           most visibly in the footer, where "Upgrade to Agency Premium" had two
                           pixels either side of it while "Upgrade to Pro" floated in the middle
                           of an identical button. */}
-                      <th style={{ position: 'sticky', top: 0, zIndex: 2, width: '26%', padding: '16px', background: '#fff', verticalAlign: 'bottom', boxShadow: '0 1px 0 var(--color-border)' }} />
+                      {/* No rule under the header row. It was a second line doing the first
+                          row's job: every row in the table already draws its own borderTop, so
+                          the band of Upgrade buttons sat on a hairline immediately followed by
+                          another one. The buttons are what separate the header from the rows. */}
+                      <th style={{ position: 'sticky', top: 0, zIndex: 2, width: '26%', padding: '16px', background: '#fff', verticalAlign: 'bottom' }} />
                       {PLANS.map((p) => {
                         const isHighlighted = p.id === effectiveHighlight;
                         return (
@@ -1917,7 +2341,6 @@ export function UpgradePlanModal({
                             position: 'sticky', top: 0, zIndex: 2,
                             padding: isPage ? '12px 12px 16px' : '16px 12px', width: '18.5%', verticalAlign: 'bottom',
                             background: isHighlighted ? 'var(--color-accent-light)' : '#fff',
-                            boxShadow: '0 1px 0 var(--color-border)',
                           }}>
                             {/* Name and action only. The price is already in the card above and
                                 in the table's own first rows; repeating it here would be the third
@@ -2037,34 +2460,33 @@ export function UpgradePlanModal({
                                         {/* Matches this table's own row labels, the way the card
                                             checks match their feature lines. Forty-odd blue checks
                                             was the largest single block of accent on the page, and
-                                            none of it was an action. */}
-                                        <path d="M3 8l3.5 3.5 6.5-7" stroke={isPage ? 'var(--color-text-primary)' : 'var(--color-accent)'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                            none of it was an action.
+                                            12 x 8.4 units in a 16px box: the glyph was 10 x 7,
+                                            which put it under the 10px cap height of the 14px
+                                            labels beside it, so the answer read smaller than the
+                                            question. The box stays 16 — only the path grew, so
+                                            column rhythm and row height are untouched. */}
+                                        <path d="M2 8l4.2 4.2 7.8-8.4" stroke={isPage ? 'var(--color-text-primary)' : 'var(--color-accent)'} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                                       </svg>
                                       <span style={SR_ONLY}>Included</span>
                                     </>
                                   ) : (
-                                    /* "Not included" was an en dash at #C5CDD9 — 1.60:1 on white and
-                                       1.48:1 inside the Premium column's tint, so the single most
-                                       decision-relevant fact in the table was drawn at the edge of
-                                       visibility, and to a screen reader the cell was simply empty.
-                                       Now a cross at the check's own weight and cap, in #7A8AA3:
-                                       3.50:1 on white, 3.25 on the tint and 3.26 on the hover band,
-                                       clearing the 3:1 floor for non-text on every ground it lands
-                                       on while staying well below the check's 9:1 so present still
-                                       outranks absent. The rest of the weight comes off thickness
-                                       and size, not colour, which has no headroom left: a cross
-                                       reads heavier than a check at equal stroke because two
-                                       strokes meet in the middle, so it runs 1.5 against the
-                                       check's 2 while matching its size: 7 units square against
-                                       the check's 10 x 7 box. Weight comes off the stroke, not
-                                       the footprint — a smaller glyph made the two states look
-                                       like different kinds of mark rather than two answers to
-                                       the same question. Not red — every in-app plan table surveyed
-                                       that used red (Synthesia, Krea) is a marketing page; a tier
-                                       not including something is a fact, not an error. */
+                                    /* A dash, the way Wix's plan table marks absence — a cross
+                                       reads as a failure or a removal, and a tier simply not
+                                       carrying a feature is neither. What made the earlier dash
+                                       wrong was its colour, not its shape: #C5CDD9 was 1.60:1 on
+                                       white and 1.48:1 inside the Premium column's tint, so the
+                                       most decision-relevant fact in the table sat at the edge of
+                                       visibility. It keeps the cross's #7A8AA3 — 3.50:1 on white,
+                                       3.25 on the tint, 3.26 on the hover band, past the 3:1 floor
+                                       for non-text on every ground it lands on, and still well
+                                       under the check's 9:1 so present outranks absent. Stroke
+                                       1.5 against the check's 1.6, and 10 units wide against the
+                                       check's 12, so the two marks share a footprint and read as
+                                       two answers to one question. */
                                     <>
                                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ display: 'inline-block' }} aria-hidden="true">
-                                        <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke={isPage ? 'var(--color-icon-absent)' : 'var(--color-icon-absent)'} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                        <path d="M3 8h10" stroke="var(--color-icon-absent)" strokeWidth="1.5" strokeLinecap="round" />
                                       </svg>
                                       <span style={SR_ONLY}>Not included</span>
                                     </>

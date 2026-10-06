@@ -198,6 +198,28 @@ const WORDY_PHRASES: Record<string, string> = {
   'past history': 'history', 'future plans': 'plans', 'basic fundamentals': 'fundamentals',
   'completely eliminate': 'eliminate', 'absolutely essential': 'essential',
   'in the process of': '', 'the reason why is that': 'because', 'the reason is because': 'because',
+  /* Added because the original set only caught bureaucratic padding, which
+     almost never appears in a book — so Reduce reported "nothing to change" on
+     ordinary prose and read as broken. These are the ones that actually turn
+     up in writing people do for pleasure. */
+  'as a result of': 'because of', 'in the case of': 'for', 'by means of': 'by',
+  'on the grounds that': 'because', 'until such time as': 'until',
+  'in the absence of': 'without', 'with the exception of': 'except',
+  'a sufficient amount of': 'enough', 'during the course of': 'during',
+  'throughout the course of': 'throughout', 'in the vicinity of': 'near',
+  'in close proximity to': 'near', 'in excess of': 'over', 'at an early date': 'soon',
+  'in connection with': 'about', 'in terms of': 'for', 'in light of the fact that': 'because',
+  'for the simple reason that': 'because', 'in the final analysis': 'finally',
+  'when all is said and done': 'finally', 'at the end of the day': 'ultimately',
+  'the question as to whether': 'whether', 'there is no doubt that': 'undoubtedly',
+  'in a situation where': 'when', 'in any way, shape or form': 'at all',
+  'full and complete': 'complete', 'various different': 'various',
+  'close proximity': 'proximity', 'free gift': 'gift', 'added bonus': 'bonus',
+  'unexpected surprise': 'surprise', 'personally believe': 'believe',
+  'join together': 'join', 'merge together': 'merge', 'combine together': 'combine',
+  'plan ahead': 'plan', 'revert back': 'revert', 'return back': 'return',
+  'repeat again': 'repeat', 'brief summary': 'summary', 'final outcome': 'outcome',
+  'advance warning': 'warning', 'general consensus': 'consensus',
 };
 
 const FILLER_WORDS = [
@@ -210,6 +232,11 @@ export function reduce(text: string): TextEdit[] {
   const fillerPattern = new RegExp(`\\b(${FILLER_WORDS.map(escapeRe).join('|')})\\b[ \\t]+`, 'gi');
   return collect(text, [
     phraseRule(WORDY_PHRASES),
+    /* Both of these belong to Rewrite as much as to Reduce — a buried verb and
+       an empty "there is" are weaker AND longer. Shared rather than forked, so
+       the two actions can't drift into disagreeing about the same sentence. */
+    phraseRule(NOMINALISATIONS),
+    expletiveThere,
     /* Filler is dropped with its trailing space. Skipped when it opens a
        sentence, because deleting it there strands the next word lowercase —
        a correctness bug dressed up as concision. */
@@ -254,8 +281,13 @@ const CASUAL: Record<string, string> = {
    only. Intellectual therefore changes less than Friendly does, which is the
    right trade: a smaller correct edit beats a larger broken one. Real verb
    handling needs a parser, or a model. */
+/* but / so / also / plus are NOT in this map, though they look like they
+   belong. Each is a connective in one position and something else entirely in
+   another: "a client list so varied that..." is an intensifier, "nothing but
+   trouble" is a preposition, and swapping either for its formal connective
+   produces "therefore varied" and "nothing however trouble". They're handled by
+   formalConnectives() below, which checks where the word is sitting first. */
 const FORMAL: Record<string, string> = {
-  but: 'however', so: 'therefore', also: 'moreover', plus: 'moreover',
   'a lot of': 'considerable', 'lots of': 'numerous', 'a bunch of': 'numerous',
   big: 'substantial', huge: 'considerable', tiny: 'negligible',
   'find out': 'determine', 'a lot': 'considerably', 'pretty': 'rather',
@@ -279,12 +311,31 @@ const HEDGES: Record<string, string> = {
   perhaps: '', maybe: '', possibly: '', 'sort of': '', 'kind of': '', 'more or less': '',
 };
 
+/* A casual connective only becomes a formal one where it is actually joining
+   two clauses: at the start of a sentence, or after a comma or dash, and
+   followed by something that can begin a clause. Anywhere else the same word is
+   doing a different job and has to be left alone. */
+const FORMAL_CONNECTIVES: Record<string, string> = {
+  but: 'however', so: 'therefore', also: 'moreover', plus: 'moreover', and: 'and',
+};
+const CLAUSE_OPENER = /^(I|we|you|he|she|they|it|the|a|an|this|that|these|those|my|our|your|his|her|their|its|there|if|when|after|before|most|many|some|few|no|one|two|three)$/i;
+
+function formalConnectives(text: string, push: (e: TextEdit) => void) {
+  scan(text, /(^|[.!?]\s+|,\s+|\s—\s)(but|so|also|plus)\s+([\w'’-]+)/gi, (m) => {
+    const [, lead, word, next] = m;
+    const formal = FORMAL_CONNECTIVES[word.toLowerCase()];
+    if (!formal || formal === word) return null;
+    if (!CLAUSE_OPENER.test(next)) return null;
+    return `${lead}${matchCase(word, formal)} ${next}`;
+  }, push);
+}
+
 export function adjustTone(text: string, tone: Tone): TextEdit[] {
   switch (tone) {
     case 'Friendly':
       return collect(text, [phraseRule(CASUAL), phraseRule(CONTRACTIONS)]);
     case 'Intellectual':
-      return collect(text, [phraseRule(EXPANSIONS), phraseRule(FORMAL)]);
+      return collect(text, [phraseRule(EXPANSIONS), formalConnectives, phraseRule(FORMAL)]);
     case 'Excited':
       return collect(text, [
         phraseRule(EXCITED),
@@ -308,15 +359,294 @@ export function adjustTone(text: string, tone: Tone): TextEdit[] {
   }
 }
 
+/* ── rewrite ──────────────────────────────────────────────────────────────── */
+
+/* Structure, not vocabulary. This is the one kind of rewriting that doesn't mean
+   inventing sentences the author never wrote: every rule here says the same
+   thing with the same material in a stronger arrangement. The agent of a
+   passive sentence moves back to the front of it; a verb hiding inside a noun
+   comes back out as a verb; an empty "there is" opening is dropped so the real
+   subject can start the sentence; and a phrase propped up by an intensifier
+   becomes the single word it was reaching for.
+   What it still can't do is have an idea. That needs a model, and it's the one
+   claim this file doesn't make. */
+
+/* Past participles whose past tense is a different word, for the passive flip.
+   Regular verbs need no entry — "was published by Faber" -> "Faber published",
+   because -ed is already the past tense. The identity entries ("made": "made")
+   earn their place by doubling as the test for "is this a participle at all",
+   which -ed can't answer for irregulars. */
+const IRREGULAR_PAST: Record<string, string> = {
+  written: 'wrote', made: 'made', given: 'gave', taken: 'took', seen: 'saw', known: 'knew',
+  built: 'built', held: 'held', told: 'told', sold: 'sold', kept: 'kept', found: 'found',
+  chosen: 'chose', shown: 'showed', driven: 'drove', drawn: 'drew', thrown: 'threw',
+  brought: 'brought', bought: 'bought', taught: 'taught', caught: 'caught', sent: 'sent',
+  spent: 'spent', left: 'left', lost: 'lost', paid: 'paid', run: 'ran', done: 'did',
+  begun: 'began', broken: 'broke', forgotten: 'forgot', hidden: 'hid', worn: 'wore',
+  won: 'won', led: 'led', met: 'met', understood: 'understood', heard: 'heard',
+  said: 'said', read: 'read', set: 'set', put: 'put', cut: 'cut', eaten: 'ate',
+};
+
+/* An object pronoun has to become a subject pronoun when a passive flips round:
+   "was written by her" -> "SHE wrote", never "her wrote". */
+const SUBJECT_PRONOUN: Record<string, string> = {
+  me: 'I', him: 'he', her: 'she', them: 'they', us: 'we', you: 'you', it: 'it',
+};
+
+const DETERMINER = /^(the|a|an|his|her|their|my|our|your|this|that|these|those)\b/i;
+
+/* A verb buried in a noun, with the empty verb propping it up. Shared with
+   Reduce, which wants the same list for a different reason: these are shorter
+   as well as more direct. */
+const NOMINALISATIONS: Record<string, string> = {
+  'make a decision': 'decide', 'makes a decision': 'decides', 'made a decision': 'decided',
+  'reach a decision': 'decide', 'reached a decision': 'decided',
+  'make an assumption': 'assume', 'made an assumption': 'assumed',
+  /* Only the "that" form. "Reached a conclusion about the data" has no verb
+     rewrite that keeps the meaning — "concluded the data" says something else
+     entirely — so the bare noun is deliberately left alone. */
+  'reach a conclusion that': 'conclude that', 'reached a conclusion that': 'concluded that',
+  'give an explanation': 'explain', 'gave an explanation': 'explained',
+  'provide assistance': 'help', 'provides assistance': 'helps', 'provided assistance': 'helped',
+  'conduct a review': 'review', 'conducted a review': 'reviewed',
+  'perform an analysis': 'analyse', 'performed an analysis': 'analysed',
+  'carry out an investigation': 'investigate', 'carried out an investigation': 'investigated',
+  /* The verb these nouns are hiding governs its own preposition, and the noun
+     form's doesn't survive the swap: "hold a discussion ABOUT x" has to become
+     "discuss x", never "discuss about x". Each entry that can be followed by a
+     preposition needs that preposition inside the key, and phraseRule sorts
+     longest-first so these win over the bare form above. */
+  'hold a discussion about': 'discuss', 'hold a discussion of': 'discuss',
+  'held a discussion about': 'discussed', 'had a discussion about': 'discussed',
+  'have a discussion about': 'discuss',
+  'give an explanation of': 'explain', 'give an explanation for': 'explain',
+  'gave an explanation of': 'explained', 'gave an explanation for': 'explained',
+  'provide assistance to': 'help', 'provided assistance to': 'helped',
+  'conduct a review of': 'review', 'conducted a review of': 'reviewed',
+  'perform an analysis of': 'analyse', 'performed an analysis of': 'analysed',
+  'carry out an investigation into': 'investigate', 'carry out an investigation of': 'investigate',
+  'carried out an investigation into': 'investigated',
+  'offer a suggestion that': 'suggest that', 'make a suggestion that': 'suggest that',
+  'take action': 'act', 'took action': 'acted',
+  'have an effect on': 'affect', 'has an effect on': 'affects', 'had an effect on': 'affected',
+  'has a tendency to': 'tends to', 'have a tendency to': 'tend to',
+  'is indicative of': 'indicates', 'are indicative of': 'indicate',
+  'give consideration to': 'consider', 'put an end to': 'end',
+  'make a contribution to': 'contribute to', 'make reference to': 'refer to',
+  'offer a suggestion': 'suggest', 'hold a discussion': 'discuss',
+  'take a look at': 'examine', 'make an improvement to': 'improve',
+  'come to an agreement': 'agree', 'came to an agreement': 'agreed',
+  'came to the realisation': 'realised', 'came to the realization': 'realized',
+  'is of the opinion that': 'believes', 'are of the opinion that': 'believe',
+  'the fact that': 'that',
+};
+
+/* "very big" -> "huge". The intensifier isn't adding anything the stronger word
+   doesn't already carry, which is why this reads as a rewrite rather than a
+   deletion: one word replaces two, and it's a word the author didn't have. */
+const INTENSIFIED: Record<string, string> = {
+  'very big': 'huge', 'very large': 'enormous', 'very small': 'tiny', 'very little': 'tiny',
+  'very good': 'excellent', 'very bad': 'terrible', 'very old': 'ancient', 'very new': 'brand new',
+  'very happy': 'delighted', 'very sad': 'miserable', 'very angry': 'furious',
+  'very tired': 'exhausted', 'very hungry': 'starving', 'very cold': 'freezing',
+  'very hot': 'scorching', 'very fast': 'rapid', 'very slow': 'sluggish',
+  'very difficult': 'gruelling', 'very easy': 'effortless', 'very important': 'vital',
+  'very quiet': 'silent', 'very loud': 'deafening', 'very clean': 'spotless',
+  'very dirty': 'filthy', 'very scared': 'terrified', 'very pretty': 'beautiful',
+  'very interesting': 'fascinating', 'very sure': 'certain', 'very strong': 'powerful',
+  'really big': 'huge', 'really small': 'tiny', 'really good': 'excellent',
+  'really bad': 'terrible', 'really important': 'vital', 'really tired': 'exhausted',
+  'extremely tired': 'exhausted', 'extremely large': 'enormous', 'extremely important': 'vital',
+};
+
+/* An adverb doing a verb's job. Same move as the intensifiers above, one rung
+   up: the pair collapses into the verb English already has for it. */
+const ADVERBIAL_VERBS: Record<string, string> = {
+  'walked quickly': 'hurried', 'walked slowly': 'ambled', 'ran quickly': 'sprinted',
+  'said quietly': 'whispered', 'said loudly': 'shouted', 'said angrily': 'snapped',
+  'spoke quietly': 'murmured', 'looked carefully': 'studied', 'looked quickly': 'glanced',
+  'laughed quietly': 'chuckled', 'cried loudly': 'wailed', 'ate quickly': 'devoured',
+  'moved slowly': 'crawled', 'held tightly': 'gripped', 'pushed hard': 'shoved',
+  'thought carefully about': 'weighed', 'looked closely at': 'examined',
+};
+
+/* "The cover was designed by Mira" -> "Mira designed the cover".
+   Anchored at a clause boundary, so the subject can't reach back into the
+   previous clause and swallow its tail, and limited to a passive with a named
+   agent: one without a "by" has nobody to promote, and supplying one would be
+   inventing. */
+function passiveToActive(text: string, push: (e: TextEdit) => void) {
+  const re = /(^|[.!?;:]\s+|,\s+(?:and|but|so|yet)\s+)([A-Za-z][\w'’-]*(?:\s+[\w'’-]+){0,3})\s+(?:was|were|is|are)\s+([a-z]+)\s+by\s+((?:the|a|an|his|her|their|my|our|your)\s+)?([A-Za-z][\w'’-]*(?:\s+[\w'’-]+){0,1})(?=[\s,.;:!?]|$)/g;
+  scan(text, re, (m) => {
+    const [, lead, subject, participle, det, agentWord] = m;
+    const verb = IRREGULAR_PAST[participle.toLowerCase()] ?? (/ed$/.test(participle) ? participle : null);
+    if (!verb) return null;
+    /* The passive has to be the clause's MAIN verb. When the subject capture
+       ends on a relative pronoun or a preposition, the "was ... by" belongs to
+       a clause inside the subject, not to the sentence — flipping it there
+       ("The chapter that was written by her is best" -> "Her is the wrote the
+       chapter that best") tears the sentence apart. reduceRelativeClause
+       handles that shape correctly instead. */
+    if (/\b(that|which|who|whom|and|or|but|of|in|on|at|with|by|for|to|from)$/i.test(subject)) return null;
+    const pronoun = SUBJECT_PRONOUN[agentWord.toLowerCase()];
+    /* A bare pronoun has to swap case ("her" -> "she"); a pronoun carrying a
+       determiner ("her editor") is a noun phrase and stays as written. */
+    const agent = pronoun && !det ? pronoun : `${det ?? ''}${agentWord}`.trim();
+    const atSentenceStart = lead === '' || /[.!?]/.test(lead);
+    /* The old subject becomes the object, so it drops the capital it only had
+       for sitting first — unless it never had a determiner, in which case it's
+       a name and keeps it. */
+    const object = DETERMINER.test(subject) ? subject[0].toLowerCase() + subject.slice(1) : subject;
+    const promoted = atSentenceStart ? agent[0].toUpperCase() + agent.slice(1) : agent;
+    return `${lead}${promoted} ${verb} ${object}`;
+  }, push);
+}
+
+/* "There are three chapters that cover this" -> "Three chapters cover this".
+   The relative clause's verb already agrees with the noun it belongs to, so it
+   survives the move untouched — which is what makes this safe to do with a rule
+   at all. */
+function expletiveThere(text: string, push: (e: TextEdit) => void) {
+  const re = /(^|[.!?;:]\s+|,\s+(?:and|but|so)\s+)there\s+(?:is|are|was|were)\s+((?:[\w'’-]+\s+){0,3}[\w'’-]+)\s+(?:that|who|which)\s+([\w'’-]+)/gi;
+  scan(text, re, (m) => {
+    const [, lead, phrase, next] = m;
+    /* "There is a reason that I stopped" is not the same shape: that "that"
+       introduces a clause with its own subject, and dropping the "there is"
+       leaves a fragment ("A reason I stopped"). A subject word following the
+       relative pronoun is the tell, so those are left alone. */
+    if (/^(i|we|you|he|she|they|it|the|a|an|this|that|these|those|my|our|your|his|her|their|its|there|people|someone|everyone|nobody)$/i.test(next)) return null;
+    const atSentenceStart = lead === '' || /[.!?]/.test(lead);
+    const np = atSentenceStart ? phrase[0].toUpperCase() + phrase.slice(1) : phrase;
+    return `${lead}${np} ${next}`;
+  }, push);
+}
+
+/* "the people who are waiting" -> "the people waiting", and "a page that had
+   forty items" -> "a page with forty items". A relative pronoun propped up by a
+   bare auxiliary is carrying no meaning, and English lets you drop it — which
+   makes this the rewrite that actually fires on narrative prose, where the
+   passives and buried verbs the other rules hunt for simply don't appear.
+   Both rules are tightly fenced, because the same words in a slightly different
+   shape are load-bearing. */
+function reduceRelativeClause(text: string, push: (e: TextEdit) => void) {
+  /* -ing only. "-ed" would match the participle adjectives too, and "a list
+     that is varied" -> "a list varied" is not English. */
+  scan(text, /\b(?:that|which|who)\s+(?:is|are|was|were)\s+(?=[a-z]+ing\b)/g, () => '', push);
+  /* "that was written BY x" keeps its agent, so the participle still has
+     somewhere to lean — unlike the bare "-ed" case above. The participle is
+     matched and then checked rather than pattern-matched on "-ed", because the
+     irregular ones ("written", "taken", "built") have no suffix in common and
+     a suffix test silently skips exactly the verbs this is for. */
+  scan(text, /\b(?:that|which|who)\s+(?:was|were)\s+([a-z]+)(\s+by\b)/g, (m) =>
+    (m[1].toLowerCase() in IRREGULAR_PAST || /ed$/.test(m[1]) ? `${m[1]}${m[2]}` : null), push);
+  /* Possessive "have" only: "that had been", "that has to" and "that had no"
+     are all different sentences, and "with been made" is the kind of wreckage
+     a rule like this leaves when it isn't fenced. */
+  scan(text, /\b(?:that|which)\s+(?:had|has|have)\s+(?!been\b|to\b|not\b|no\b|never\b|already\b|just\b)(?=[\da-z])/g, () => 'with ', push);
+}
+
+export function rewrite(text: string): TextEdit[] {
+  return collect(text, [
+    passiveToActive,
+    expletiveThere,
+    reduceRelativeClause,
+    phraseRule(ADVERBIAL_VERBS),
+    phraseRule(NOMINALISATIONS),
+    phraseRule(INTENSIFIED),
+  ]);
+}
+
+/* ── expand ───────────────────────────────────────────────────────────────── */
+
+/* Expand means written out in full, not padded out with invented material.
+   Everything compressed in the paragraph gets its full form back: contractions,
+   abbreviations, symbols, small numerals, and the "that" a reporting verb is
+   allowed to drop. The paragraph gets longer and more formal, and every added
+   word was already implied by one the author wrote.
+   It deliberately does NOT add sentences. A rule can't know what the next
+   sentence should say, and guessing would put words in the author's mouth —
+   the one thing a writing tool must never do quietly. */
+
+const ABBREVIATIONS: [RegExp, string][] = [
+  [/\be\.?g\.(?=\s|$)/gi, 'for example'],
+  [/\bi\.?e\.(?=\s|$)/gi, 'that is'],
+  [/\betc\.?(?=\s|[,.;:!?]|$)/gi, 'and so on'],
+  [/\bvs\.?(?=\s|$)/gi, 'versus'],
+  [/\bapprox\.(?=\s|$)/gi, 'approximately'],
+  [/\bincl\.(?=\s|$)/gi, 'including'],
+  [/\besp\.(?=\s|$)/gi, 'especially'],
+  [/\bmax\.(?=\s|$)/gi, 'maximum'],
+  [/\bmin\.(?=\s|$)/gi, 'minimum'],
+  [/\baka\b/gi, 'also known as'],
+  [/\basap\b/gi, 'as soon as possible'],
+  [/\bw\/o(?=\s|$)/gi, 'without'],
+  [/\bw\/(?=\s)/gi, 'with'],
+];
+
+const NUMBER_WORDS = [
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen',
+  'eighteen', 'nineteen', 'twenty',
+];
+
+/* The participles that tell "'d" apart. "I'd been waiting" is "I had been",
+   "I'd wait" is "I would wait" — same two letters, two different verbs, and
+   picking the wrong one changes the tense of the sentence. */
+const HAD_PARTICIPLES = /^(been|had|got|gotten|seen|done|made|taken|gone|felt|known|left|told|thought|found|written|said|heard|become|begun|forgotten|lost|meant|kept|spent|put|read|run|come)$/i;
+
+/* Reporting verbs that are allowed to drop their "that" — restoring it is the
+   expansion. Only before a word that actually opens a clause, or "said yes"
+   becomes "said that yes". */
+const REPORTING_VERBS = /\b(said|says|thought|thinks|knew|knows|believed|believes|felt|feels|noticed|notices|realised|realized|argued|argues|assumed|assumes|decided|decides|agreed|agrees)\s+(?!that\b)(I|we|you|he|she|they|it|the|this|there|my|our|your|his|her|their)\b/g;
+
+export function expand(text: string): TextEdit[] {
+  return collect(text, [
+    // Explicit forms first: they beat the generic clitic rules below on a tie.
+    phraseRule(EXPANSIONS),
+    (t, push) => {
+      for (const [re, full] of ABBREVIATIONS) scan(t, re, (m) => matchCase(m[0], full), push);
+    },
+    (t, push) => scan(t, /(\d)\s*%/g, (m) => `${m[1]} percent`, push),
+    (t, push) => scan(t, /(\s)&(\s)/g, (m) => `${m[1]}and${m[2]}`, push),
+    /* n't / 'll / 're / 've / 'd, including the curly apostrophe the editor's
+       own smart-typography inserts — without it this rule silently stops
+       working on anything actually typed into the book. */
+    (t, push) => scan(t, /\b(\w+)n['’]t\b/g, (m) => {
+      const stem = m[1].toLowerCase();
+      if (stem === 'ca') return matchCase(m[0], 'cannot');
+      if (stem === 'wo') return matchCase(m[0], 'will not');
+      if (stem === 'sha') return matchCase(m[0], 'shall not');
+      return `${m[1]} not`;
+    }, push),
+    (t, push) => scan(t, /\b(\w+)['’]ll\b/g, (m) => `${m[1]} will`, push),
+    (t, push) => scan(t, /\b(\w+)['’]re\b/g, (m) => `${m[1]} are`, push),
+    (t, push) => scan(t, /\b(\w+)['’]ve\b/g, (m) => `${m[1]} have`, push),
+    (t, push) => scan(t, /\b(\w+)['’]d\b(\s+)(\w+)/g, (m) =>
+      `${m[1]} ${HAD_PARTICIPLES.test(m[3]) ? 'had' : 'would'}${m[2]}${m[3]}`, push),
+    (t, push) => scan(t, REPORTING_VERBS, (m) => `${m[1]} that ${m[2]}`, push),
+    /* Small numerals only. Four digits are years and two-digit-plus figures are
+       usually data, and spelling either out makes the sentence worse. */
+    (t, push) => scan(t, /(^|[^\w.,$£€-])(\d{1,2})(?![\w.,%])/g, (m) => {
+      const n = Number(m[2]);
+      return n <= 20 ? `${m[1]}${NUMBER_WORDS[n]}` : null;
+    }, push),
+  ]);
+}
+
 /* ── dispatch ─────────────────────────────────────────────────────────────── */
 
-/* `null` means "this action cannot be done locally" — Rewrite and Expand both
-   mean producing language that isn't in the paragraph already. The caller shows
-   an explicit unavailable state for those rather than reporting a success that
-   changed nothing, which is what the old canned no-op did. */
-export function editsFor(action: string, text: string): TextEdit[] | null {
+/* Every action in the menu now returns real edits. Rewrite and Expand used to
+   return `null` for "can't be done locally", and the caller had a whole notice
+   state built for it — but a row that can never succeed shouldn't be in a menu
+   wearing the same weight as the ones that can. They were rescoped instead:
+   Rewrite rearranges what's there, Expand writes it out in full, and neither
+   claims to invent material. An unknown action returns no edits rather than a
+   null the caller has to special-case. */
+export function editsFor(action: string, text: string): TextEdit[] {
   if (action === 'Fix spelling & grammar') return fixSpellingGrammar(text);
   if (action === 'Reduce') return reduce(text);
+  if (action === 'Rewrite') return rewrite(text);
+  if (action === 'Expand') return expand(text);
   if ((TONES as readonly string[]).includes(action)) return adjustTone(text, action as Tone);
-  return null;
+  return [];
 }
