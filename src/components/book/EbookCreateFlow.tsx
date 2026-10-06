@@ -1,20 +1,22 @@
 'use client';
 
-import { useState, useEffect, useRef, type ReactElement } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactElement } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
-import { useFlowStore, PLAN_LABELS } from '@/stores/flowStore';
+import { useFlowStore, PLAN_LABELS, ownsPlan, type PlanId } from '@/stores/flowStore';
 import { usePresentationFlowStore } from '@/stores/presentationFlowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
 import { UpgradePlanModal } from '../account/MyAccountView';
-import { TierBadge, OfferBadge, shouldShowTierBadge } from '../ui/TierBadge';
+import { TierBadge, shouldShowTierBadge } from '../ui/TierBadge';
+import { track } from '@/lib/analytics';
+import { SortDropdown } from '../ui/SortDropdown';
 
 /* ── constants ──────────────────────────────────────────────────────────────── */
 
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 
-const WIZARD_STEPS = ['Generate', 'Writing a content', 'Choose template', 'Review', 'Publish'];
+const WIZARD_STEPS = ['Generate', 'Write content', 'Choose template', 'Review', 'Publish'];
 
 /* One theme vocabulary, taken from the live product. It was previously two — a bespoke list in
    the modal and a different one in the gallery filter — which meant a theme picked here could
@@ -54,24 +56,29 @@ interface Template {
   accentColor: string;
   themes: string[];
   isPro?: boolean;
-  /** Pro-tier template usable without upgrading, as a trial. Locked Pro templates omit this. */
-  tryForFree?: boolean;
+  /* Admin-set rank for the Recommended order: lower sorts earlier, and a template without one
+     sorts after every template that has one. Named for the column it maps to rather than in the
+     file's camelCase, so the field survives the trip to the backend unrenamed. */
+  sort_order?: number;
+  /* Publication date — what the Newest sort reads. */
+  createdAt: string;
 }
 
 const TEMPLATES: Template[] = [
-  { id: 1,  name: 'SEO 2-05',                    bg: 'linear-gradient(160deg,#22c55e,#15803d)', textColor: '#fff',     accentColor: '#86efac', themes: ['Digital Marketing', 'Business', 'E-Commerce'] },
-  { id: 2,  name: 'Social Media Marketing 2-05', bg: '#111827',                                 textColor: '#f59e0b', accentColor: '#fbbf24', themes: ['Digital Marketing', 'Advertising', 'Blogging', 'Marketing coaching'] },
-  { id: 3,  name: 'Pro Print Book',              bg: '#f8f8f6',                                 textColor: '#111827', accentColor: '#6b7280', themes: ['Business', 'Writing Non-Fiction', 'Author'], isPro: true, tryForFree: true },
-  { id: 4,  name: 'Echoes',                      bg: 'linear-gradient(160deg,#a78bfa,#7c3aed)', textColor: '#fff',     accentColor: '#c4b5fd', themes: ['Writing Fiction', 'Author'] },
-  { id: 5,  name: 'Sunset',                      bg: 'linear-gradient(160deg,#fb923c,#dc2626)', textColor: '#fff',     accentColor: '#fcd34d', themes: ['Self Development', 'Life coaching'] },
-  { id: 6,  name: 'Kamy',                        bg: '#1a1a1a',                                 textColor: '#e5e7eb', accentColor: '#9ca3af', themes: ['Writing Fiction', 'Blogging'], isPro: true },
-  { id: 7,  name: 'Regalia',                     bg: 'linear-gradient(160deg,#d4a574,#b8860b)', textColor: '#1a1a1a', accentColor: '#78350f', themes: ['Business Development / Sales', 'Copywriting'], isPro: true, tryForFree: true },
-  { id: 8,  name: 'Bestseller',                  bg: '#111',                                    textColor: '#fff',     accentColor: '#d1d5db', themes: ['Author', 'Writing Non-Fiction', 'Business'] },
-  { id: 9,  name: 'Minimal Pro',                 bg: '#fff',                                    textColor: '#111827', accentColor: '#4b5563', themes: ['Business', 'Training and Development', 'Education'], isPro: true },
-  { id: 10, name: 'Business Blue',               bg: 'linear-gradient(160deg,#3b82f6,#1d4ed8)', textColor: '#fff',     accentColor: '#93c5fd', themes: ['Business', 'Business Development / Sales', 'Network Marketing'] },
-  { id: 11, name: 'Creative Orange',             bg: 'linear-gradient(160deg,#f97316,#ea580c)', textColor: '#fff',     accentColor: '#fed7aa', themes: ['Self Development', 'Spiritual Self Development'] },
-  { id: 12, name: 'Nature Green',                bg: 'linear-gradient(160deg,#4ade80,#15803d)', textColor: '#fff',     accentColor: '#bbf7d0', themes: ['Health & wellness', 'Life coaching'] },
+  { id: 1,  name: 'SEO 2-05',                    bg: 'linear-gradient(160deg,#22c55e,#15803d)', textColor: '#fff',     accentColor: '#86efac', themes: ['Digital Marketing', 'Business', 'E-Commerce'],                        sort_order: 20,  createdAt: '2024-03-12' },
+  { id: 2,  name: 'Social Media Marketing 2-05', bg: '#111827',                                 textColor: '#f59e0b', accentColor: '#fbbf24', themes: ['Digital Marketing', 'Advertising', 'Blogging', 'Marketing coaching'], sort_order: 10,  createdAt: '2024-05-02' },
+  { id: 3,  name: 'Pro Print Book',              bg: '#f8f8f6',                                 textColor: '#111827', accentColor: '#6b7280', themes: ['Business', 'Writing Non-Fiction', 'Author'], isPro: true,            sort_order: 30,  createdAt: '2024-01-18' },
+  { id: 4,  name: 'Echoes',                      bg: 'linear-gradient(160deg,#a78bfa,#7c3aed)', textColor: '#fff',     accentColor: '#c4b5fd', themes: ['Writing Fiction', 'Author'],                                         sort_order: 70,  createdAt: '2025-02-20' },
+  { id: 5,  name: 'Sunset',                      bg: 'linear-gradient(160deg,#fb923c,#dc2626)', textColor: '#fff',     accentColor: '#fcd34d', themes: ['Self Development', 'Life coaching'],                                 sort_order: 50,  createdAt: '2024-09-04' },
+  { id: 6,  name: 'Kamy',                        bg: '#1a1a1a',                                 textColor: '#e5e7eb', accentColor: '#9ca3af', themes: ['Writing Fiction', 'Blogging'], isPro: true,                          sort_order: 90,  createdAt: '2025-06-11' },
+  { id: 7,  name: 'Regalia',                     bg: 'linear-gradient(160deg,#d4a574,#b8860b)', textColor: '#1a1a1a', accentColor: '#78350f', themes: ['Business Development / Sales', 'Copywriting'], isPro: true,          sort_order: 60,  createdAt: '2025-01-09' },
+  { id: 8,  name: 'Bestseller',                  bg: '#111',                                    textColor: '#fff',     accentColor: '#d1d5db', themes: ['Author', 'Writing Non-Fiction', 'Business'],                         sort_order: 40,  createdAt: '2024-07-23' },
+  { id: 9,  name: 'Minimal Pro',                 bg: '#fff',                                    textColor: '#111827', accentColor: '#4b5563', themes: ['Business', 'Training and Development', 'Education'], isPro: true,    sort_order: 80,  createdAt: '2025-04-30' },
+  { id: 10, name: 'Business Blue',               bg: 'linear-gradient(160deg,#3b82f6,#1d4ed8)', textColor: '#fff',     accentColor: '#93c5fd', themes: ['Business', 'Business Development / Sales', 'Network Marketing'],                      createdAt: '2025-08-14' },
+  { id: 11, name: 'Creative Orange',             bg: 'linear-gradient(160deg,#f97316,#ea580c)', textColor: '#fff',     accentColor: '#fed7aa', themes: ['Self Development', 'Spiritual Self Development'],                    sort_order: 100, createdAt: '2025-11-27' },
+  { id: 12, name: 'Nature Green',                bg: 'linear-gradient(160deg,#4ade80,#15803d)', textColor: '#fff',     accentColor: '#bbf7d0', themes: ['Health & wellness', 'Life coaching'],                                                 createdAt: '2026-02-06' },
 ];
+
 
 const PUBLISH_FORMATS: { id: string; label: string; sub: string; badgeBg: string; badgeText: string; icon: string; requiredPlan?: 'pro' | 'premium' }[] = [
   { id: 'pdf',      label: 'PDF',      sub: 'For adobe reader',        badgeBg: '#FEE2E2', badgeText: '#B91C1C',  icon: 'pdf' },
@@ -289,21 +296,130 @@ function ThemesModal({ docTitle, initial, onSave, onClose }: {
   );
 }
 
+/* ── cover legibility ───────────────────────────────────────────────────────── */
+
+type RGB = [number, number, number];
+
+function hexToRgb(hex: string): RGB | null {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  if (full.length !== 6) return null;
+  const n = parseInt(full, 16);
+  return Number.isNaN(n) ? null : [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/* Every colour a cover actually paints behind its text. A solid background is one stop; a
+   gradient is all of them, because text has to clear the darkest *and* the lightest run it
+   crosses — checking only the first stop passes a cover that fails at the other end. */
+function coverStops(bg: string): RGB[] {
+  const stops = (bg.match(/#[0-9a-fA-F]{3,6}/g) ?? []).map(hexToRgb).filter((c): c is RGB => !!c);
+  return stops.length ? stops : [[255, 255, 255]];
+}
+
+function relLuminance([r, g, b]: RGB): number {
+  const lin = [r, g, b].map(v => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+}
+
+function contrast(a: RGB, b: RGB): number {
+  const [hi, lo] = [relLuminance(a), relLuminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function mix(a: RGB, b: RGB, t: number): RGB {
+  return [0, 1, 2].map(i => Math.round(a[i] * t + b[i] * (1 - t))) as RGB;
+}
+
+/* The quietest version of `fg` that still clears `min` against every stop of the cover.
+ *
+ * The covers used to fade their secondary text with a fixed alpha suffix — `${textColor}77` for
+ * the author line, `55` for the rule — which is a look, not a measurement. On Bestseller, 47%
+ * white over #111 lands at 4.85:1, which scrapes past WCAG AA and still reads as a smudge at
+ * 9px; on Regalia the same alpha put near-black over gold at well under 3:1.
+ *
+ * So the alpha is computed rather than fixed. The walk goes muted → full strength, and only if
+ * full strength still misses does it continue toward white or black — whichever direction `fg`
+ * already leans, so a cover never flips its text from light to dark and ends up with a white
+ * title above a black byline. Where even that cannot reach the target (white on mid-green tops
+ * out near 2.3:1 whatever you do) the text lands at full strength, which is the most legible
+ * thing available without redrawing the cover. */
+function legibleOn(fg: string, bg: string, min: number): string {
+  const stops = coverStops(bg);
+  const f = hexToRgb(fg) ?? [255, 255, 255];
+  const base = stops[0];
+  const extreme: RGB = relLuminance(f) >= relLuminance(base) ? [255, 255, 255] : [0, 0, 0];
+
+  const ramp: RGB[] = [];
+  for (let a = 0.45; a <= 1.001; a += 0.05) ramp.push(mix(f, base, a));
+  for (let a = 0.1; a <= 1.001; a += 0.1) ramp.push(mix(extreme, f, a));
+
+  const worst = (c: RGB) => Math.min(...stops.map(stop => contrast(c, stop)));
+  const found = ramp.find(c => worst(c) >= min);
+  const [r, g, b] = found ?? ramp[ramp.length - 1];
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/* Shrinks a cover title until its longest word fits on one line.
+ *
+ * The covers used to set `wordBreak: 'break-word'`, which splits a word at whatever character
+ * happens to sit at the edge — "MARKETIN G", "BESTSELLE R". Breaking is now off entirely, so a
+ * word that cannot fit overflows instead, and this measures that overflow and steps the size
+ * down until it is gone. Half-pixel steps because whole ones overshoot badly at 13px.
+ *
+ * Measurement rather than a character count because the same component renders at four very
+ * different widths — a gallery card, a 480px lightbox page, a 96px review thumbnail — and a
+ * count cannot tell those apart. The observer watches the parent, not the element: resizing the
+ * element is what this hook does, and observing it would feed itself. */
+function useFitText(base: number, min: number, title: string) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      let size = base;
+      el.style.fontSize = `${size}px`;
+      while (size > min && el.scrollWidth > el.clientWidth) {
+        size -= 0.5;
+        el.style.fontSize = `${size}px`;
+      }
+    };
+    fit();
+    const parent = el.parentElement;
+    if (!parent || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(parent);
+    return () => ro.disconnect();
+  }, [base, min, title]);
+
+  return ref;
+}
+
 /* ── template cover mock ────────────────────────────────────────────────────── */
 
 function TemplateCover({ t, height = 300, ratio, fill, title }: { t: Template; height?: number; ratio?: string; fill?: boolean; title?: string }) {
   const isLight = t.bg === '#f8f8f6' || t.bg === '#fff';
+  const label = title ?? t.name;
+  const titleRef = useFitText(13, 7, label);
+  /* 7:1 for the byline. It is 9px — the size at which AA's 4.5 stops being enough to read, and
+     the reason Bestseller's author line was reported as invisible while technically passing.
+     The rule above it is decoration carrying no information, so 3:1 is the right bar there. */
+  const authorColor = useMemo(() => legibleOn(t.textColor, t.bg, 7), [t.textColor, t.bg]);
+  const ruleColor = useMemo(() => legibleOn(t.textColor, t.bg, 3), [t.textColor, t.bg]);
   // `position: relative` so the light-cover accent bar below anchors to the cover. Without it the
   // bar resolved against whatever ancestor happened to be positioned — now the grey stage — and
   // painted across the tile's foot instead of the cover's.
   return (
     <div style={{ position: 'relative', width: '100%', ...(fill ? { height: '100%' } : ratio ? { aspectRatio: ratio } : { height }), background: t.bg, borderRadius: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px 16px', gap: 8, overflow: 'hidden', flexShrink: 0 }}>
       <div style={{ width: 40, height: 3, borderRadius: 2, background: t.accentColor, marginBottom: 4 }} />
-      <div style={{ textAlign: 'center', fontSize: 13, fontWeight: 800, fontFamily: 'Georgia, serif', color: t.textColor, lineHeight: 1.25, textTransform: 'uppercase', letterSpacing: 1, maxWidth: '82%', wordBreak: 'break-word' }}>
-        {title ?? t.name}
+      <div ref={titleRef} style={{ textAlign: 'center', fontSize: 13, fontWeight: 800, fontFamily: 'Georgia, serif', color: t.textColor, lineHeight: 1.25, textTransform: 'uppercase', letterSpacing: 1, maxWidth: '82%', wordBreak: 'normal', overflowWrap: 'normal', hyphens: 'none' }}>
+        {label}
       </div>
-      <div style={{ width: 50, height: 1.5, borderRadius: 1, background: `${t.textColor}55` }} />
-      <div style={{ fontSize: 9, color: `${t.textColor}77`, fontFamily: "'Nunito Sans', sans-serif" }}>Author Name</div>
+      <div style={{ width: 50, height: 1.5, borderRadius: 1, background: ruleColor }} />
+      <div style={{ fontSize: 9, color: authorColor, fontFamily: "'Nunito Sans', sans-serif" }}>Author Name</div>
       {isLight && <div style={{ position: 'absolute' as const, bottom: 0, left: 0, right: 0, height: 3, background: t.accentColor, opacity: 0.5 }} />}
     </div>
   );
@@ -315,8 +431,7 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
   const [hovered, setHovered] = useState(false);
   const currentPlan = useFlowStore((s) => s.currentPlan);
   // GitLab's rule, already encoded in TierBadge: don't mark a tier the viewer owns. A PRO
-  // customer was seeing "Pro" on templates they can already use, and "Try for free" on ones
-  // that are simply free to them.
+  // customer was seeing "Pro" on templates they can already use.
   const showBadge = t.isPro && shouldShowTierBadge(currentPlan, 'pro');
   // This badge, plus the lightbox's "Unlock with Pro" on a locked template, is the whole upgrade
   // affordance on this screen. The header's "Upgrade to use all Pro templates" link was removed
@@ -345,12 +460,10 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
             10/10, no shadow, and lineHeight 0 on the wrapper so the inline-flex pill doesn't sit
             on a line box and pick up a descender gap above it, which renders an identical
             top/right offset unequal. An earlier pass here used 10/10 with a drop shadow; the
-            shadow was invented for this one surface and the platform doesn't use one.
-            "Pro" is the tier badge; "Try for free" is its inverted sibling, because an offer is
-            not a tier and shouldn't wear a tier's mark. */}
+            shadow was invented for this one surface and the platform doesn't use one. */}
         {showBadge && (
           <div className="absolute" style={{ top: 8, right: 8, lineHeight: 0 }}>
-            {t.tryForFree ? <OfferBadge label="Try for free" /> : <TierBadge tier="pro" />}
+            <TierBadge tier="pro" />
           </div>
         )}
         {hovered && (
@@ -374,7 +487,9 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
   t: Template;
   allTemplates: Template[];
   selectedThemes: string[];
-  onUse: (template: Template) => void;
+  /* The position is the grid's, not the lightbox's: `allTemplates` is the rendered order, and
+     the arrows walk it, so the index here is the slot the author saw the template in. */
+  onUse: (template: Template, position: number) => void;
   onClose: () => void;
 }) {
   const currentPlan = useFlowStore((st) => st.currentPlan);
@@ -447,19 +562,18 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
             </svg>
           </button>
 
-          {/* Name first, badge after it — the same badge the card in the gallery shows, at the same
-              default size and by the same rule: "Try for free" replaces "Pro" rather than sitting
-              beside it. A template must not change its mark between the grid and the preview of
-              that grid item; an author picks a card by its badge and then has to recognise it here.
-              This deliberately drops two earlier one-offs — the `size="lg"` variant, and a green
-              "Try for free — no upgrade needed" sentence carrying the offer in prose while the
-              badge said "Pro". The gold star in a black tile that used to lead this row is long
-              gone for the same reason: it named no plan. */}
+          {/* Name first, badge after it — the same badge the card in the gallery shows, at the
+              same default size. A template must not change its mark between the grid and the
+              preview of that grid item; an author picks a card by its badge and then has to
+              recognise it here. This deliberately drops two earlier one-offs — the `size="lg"`
+              variant, and a green sentence carrying an offer in prose while the badge said "Pro".
+              The gold star in a black tile that used to lead this row is long gone for the same
+              reason: it named no plan. */}
           <div className="flex items-center" style={{ gap: 10, marginBottom: 12 }}>
             <h3 style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#15191F' }}>{current.name}</h3>
             {current.isPro && shouldShowTierBadge(currentPlan, 'pro') && (
               <span style={{ lineHeight: 0, flexShrink: 0 }}>
-                {current.tryForFree ? <OfferBadge label="Try for free" /> : <TierBadge tier="pro" />}
+                <TierBadge tier="pro" />
               </span>
             )}
           </div>
@@ -483,11 +597,11 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
             })}
           </div>
 
-          <button onClick={() => onUse(current)}
+          <button onClick={() => onUse(current, idx + 1)}
             style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '11px 0', cursor: 'pointer', width: '100%', marginBottom: 10 }}
             onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
             onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
-            {current.isPro && !current.tryForFree ? 'Unlock with Pro' : 'Use this template'}
+            {current.isPro ? 'Unlock with Pro' : 'Use this template'}
           </button>
 
           <div style={{ display: 'flex', gap: 8 }}>
@@ -508,10 +622,71 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
   );
 }
 
-const TYPE_OPTIONS = ['All', 'Standard', 'Two Column', 'User', 'Asian', 'Cyrillic', 'RTL', 'Pro'];
+/* Type used to read "All, Standard, Two Column, User, Asian, Cyrillic, RTL, Pro" — several
+   unrelated questions in one list, where answering one silently cleared the others, and only two
+   of the answers matched any template. What's left is the one distinction the grid can actually
+   draw. Standard rather than Free because that is the product's own word for the tier: the live
+   gallery heads its two sections "Pro templates" and "Standard templates". */
+const TYPE_OPTIONS = ['All', 'Standard', 'Pro'] as const;
+type TypeFilter = typeof TYPE_OPTIONS[number];
 const PAGE_SIZE_OPTIONS = ['Letter', 'A4', 'A5', '6x9', 'Legal', 'A3', 'Square'];
 const ORIENTATION_OPTIONS = ['Portrait', 'Landscape'];
 const THEME_OPTIONS = ALL_THEMES;
+
+/* ── sorting ────────────────────────────────────────────────────────────────── */
+
+type SortId = 'recommended' | 'popular' | 'newest';
+
+const SORT_KEY = 'dsgn_template_sort';
+
+/* Most popular ranks templates by how many books were created from each in the last 60 days.
+   Nothing records that yet — `template_selected` and `template_published`, added in this change,
+   are the first events that could, and they need 60 days of history behind them before the
+   ranking means anything. Until then the option is hidden rather than shown sorting by a
+   stand-in: a "Most popular" order built from something other than popularity is worse than no
+   option at all. Flip this to true once the counts are queryable and give POPULARITY a real
+   source. */
+const POPULARITY_DATA_AVAILABLE = false;
+const POPULARITY: Record<number, number> = {};
+
+/* Sentence case, like the two beside it and like the rest of the product's copy. */
+const SORT_OPTIONS: { id: SortId; label: string }[] = [
+  { id: 'recommended', label: 'Recommended' },
+  { id: 'newest', label: 'Newest' },
+  { id: 'popular', label: 'Most popular' },
+].filter(o => o.id !== 'popular' || POPULARITY_DATA_AVAILABLE) as { id: SortId; label: string }[];
+
+/* A template with no sort_order ranks after every template that has one, rather than at 0. */
+const rank = (t: Template) => t.sort_order ?? Number.MAX_SAFE_INTEGER;
+const byRank = (a: Template, b: Template) => rank(a) - rank(b);
+
+/* Recommended, on an account that cannot use Pro templates.
+ *
+ * Free and Pro are ranked separately and then woven together on a fixed cycle, so the grid opens
+ * on something the author can actually use and keeps handing them one every other slot or two,
+ * while Pro work still gets seen high up rather than exiled to the bottom. Three of every five
+ * positions are free, and position 1 always is. When one list runs dry the other simply
+ * continues, so the tail is whatever is left rather than a run of blanks. */
+const FREE_WEAVE: ('free' | 'pro')[] = ['free', 'pro', 'free', 'free', 'pro'];
+
+function weaveForFreePlan(list: Template[]): Template[] {
+  const free = list.filter(t => !t.isPro).sort(byRank);
+  const pro = list.filter(t => t.isPro).sort(byRank);
+  const out: Template[] = [];
+  for (let i = 0; free.length || pro.length; i++) {
+    const wantFree = FREE_WEAVE[i % FREE_WEAVE.length] === 'free';
+    const next = (wantFree ? free.shift() ?? pro.shift() : pro.shift() ?? free.shift());
+    if (next) out.push(next);
+  }
+  return out;
+}
+
+function sortTemplates(list: Template[], sort: SortId, hasPro: boolean): Template[] {
+  if (sort === 'newest') return [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (sort === 'popular') return [...list].sort((a, b) => (POPULARITY[b.id] ?? 0) - (POPULARITY[a.id] ?? 0));
+  // A Pro account can use everything, so there is nothing to weave around — rank alone.
+  return hasPro ? [...list].sort(byRank) : weaveForFreePlan(list);
+}
 
 function FilterChevron({ open }: { open: boolean }) {
   return (
@@ -521,31 +696,116 @@ function FilterChevron({ open }: { open: boolean }) {
   );
 }
 
+/* One dropdown shape for every single-value filter. The gallery went from four of these to six,
+   and the block below was already pasted three times before that — the sixth copy is where a
+   change stops reaching every control it should. Themes keeps its own markup: it is the only one
+   with a search field inside it. */
+function FilterSelect<T extends string>({ label, value, options, onChange, open, onToggle, width = 180, alwaysShowValue = false, align = 'left' }: {
+  label: string;
+  value: T;
+  options: readonly T[];
+  onChange: (v: T) => void;
+  open: boolean;
+  onToggle: () => void;
+  width?: number;
+  /* Page Size and Orientation always name their value; the rest say only "Layout" until the
+     author narrows them, so an untouched bar reads as labels rather than a row of "All"s. */
+  alwaysShowValue?: boolean;
+  align?: 'left' | 'right';
+}) {
+  return (
+    <div className="relative flex-shrink-0">
+      <button onClick={onToggle} className="flex items-center cursor-pointer"
+        style={{ gap: 6, height: 42, padding: '0 14px', borderRadius: 8, border: `1px solid ${open ? '#006EFE' : '#E0E5EB'}`, background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
+        {alwaysShowValue || value !== 'All' ? `${label}: ${value}` : label}
+        <FilterChevron open={open} />
+      </button>
+      {open && (
+        <div className="absolute" style={{ top: 48, [align]: 0, zIndex: 30, width, background: '#fff', borderRadius: 10, border: '1px solid #E0E5EB', boxShadow: '0 12px 32px rgba(0,0,0,0.12)', padding: '8px 0' }}>
+          {options.map(opt => (
+            <button key={opt} onClick={() => onChange(opt)}
+              className="flex items-center justify-between cursor-pointer w-full text-left"
+              style={{ padding: '9px 16px', background: 'none', border: 'none', ...ns, fontSize: 14, color: '#15191F' }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+              {opt}
+              {value === opt && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type OpenFilter = null | 'type' | 'themes' | 'pageSize' | 'orientation';
+
+/* What the author took, and from which slot. The position is carried forward rather than
+   recomputed at publish time: by then the grid has been left behind, and the question the ranking
+   wants answered is which slot won the click, not which slot the template would occupy now. */
+interface TemplateSelection {
+  template: Template;
+  position: number;
+}
+
+function templateEventProps(selection: TemplateSelection, plan: PlanId) {
+  return {
+    template_id: selection.template.id,
+    plan,
+    grid_position: selection.position,
+  };
+}
+
 function TemplateGallery({ selectedThemes, onUse, onBack }: {
   selectedThemes: string[];
-  onUse: (t: Template) => void;
+  onUse: (t: Template, position: number) => void;
   onBack: () => void;
 }) {
+  const currentPlan = useFlowStore(s => s.currentPlan);
+  const hasPro = ownsPlan(currentPlan, 'pro');
+
   const [search, setSearch] = useState('');
   const [pageSize, setPageSize] = useState('Letter');
   const [orientation, setOrientation] = useState('Portrait');
-  const [typeFilter, setTypeFilter] = useState('All');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('All');
   const [themesFilter, setThemesFilter] = useState<string[]>(selectedThemes);
   const [themeSearch, setThemeSearch] = useState('');
+  const [sort, setSort] = useState<SortId>('recommended');
   // On the Wordgenie path the gallery is already mounted when themes are saved, so the initial
   // state above would keep the stale value.
   useEffect(() => { setThemesFilter(selectedThemes); }, [selectedThemes]);
-  const [openFilter, setOpenFilter] = useState<null | 'type' | 'themes' | 'pageSize' | 'orientation'>(null);
+
+  /* The sort survives the session, not the account: read after mount rather than in the initial
+     state so the server and the first client render agree, the way the sidebar preference is
+     hydrated rather than read inline. */
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(SORT_KEY);
+      if (saved && SORT_OPTIONS.some(o => o.id === saved)) setSort(saved as SortId);
+    } catch { /* private mode — the default is fine */ }
+  }, []);
+  useEffect(() => {
+    try { sessionStorage.setItem(SORT_KEY, sort); } catch { /* private mode */ }
+  }, [sort]);
+
+  const [openFilter, setOpenFilter] = useState<OpenFilter>(null);
   const [preview, setPreview] = useState<Template | null>(null);
   const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro'; feature: string } | null>(null);
   const themesLabel = themesFilter.length ? `Themes: ${themesFilter.join(', ')}` : 'Themes';
+  const sortLabel = SORT_OPTIONS.find(o => o.id === sort)?.label ?? 'Recommended';
 
-  const filtered = TEMPLATES.filter(t => {
+  const matches = (t: Template) => {
     const matchSearch = !search || t.name.toLowerCase().includes(search.toLowerCase());
     const matchTheme = themesFilter.length === 0 || t.themes.some(th => themesFilter.includes(th));
-    const matchType = typeFilter === 'All' || (typeFilter === 'Pro' ? t.isPro : true);
+    const matchType = typeFilter === 'All' || (typeFilter === 'Pro' ? !!t.isPro : !t.isPro);
     return matchSearch && matchTheme && matchType;
-  });
+  };
+
+  const gridTemplates = useMemo(
+    () => sortTemplates(TEMPLATES.filter(matches), sort, hasPro),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [search, themesFilter, typeFilter, sort, hasPro],
+  );
   const visibleThemeOptions = THEME_OPTIONS.filter(o => o.label.toLowerCase().includes(themeSearch.toLowerCase()));
 
   return (
@@ -575,7 +835,7 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
         <h1 style={{ ...ns, fontSize: 26, fontWeight: 700, color: '#15191F', marginBottom: themesFilter.length > 0 ? 8 : 24 }}>Choose a template</h1>
         {themesFilter.length > 0 && (
           <p style={{ ...ns, fontSize: 14, color: '#52637A', marginBottom: 24 }}>
-            {filtered.length} of {TEMPLATES.length} templates match your themes.{' '}
+            {gridTemplates.length} of {TEMPLATES.length} templates match your themes.{' '}
             {/* The way out of a narrow theme pick. Without it a two-theme selection can strand an
                 author on "No templates found" with no hint that the filter caused it. */}
             <button onClick={() => setThemesFilter([])} className="cursor-pointer"
@@ -585,36 +845,20 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
           </p>
         )}
 
-        {/* Filters */}
-        <div className="flex items-center relative" style={{ gap: 12, marginBottom: 24 }}>
-          <div className="flex-1 flex items-center" style={{ gap: 10, height: 42, padding: '0 16px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', maxWidth: 520 }}>
+        {/* Filters, with the sort at the far right. It answers a different question from them —
+            what order, not which ones — so it reads as a separate instrument rather than one more
+            filter. The row still wraps rather than squeezing the search field to nothing at narrow
+            widths. */}
+        <div className="flex items-center relative" style={{ gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+          <div className="flex items-center" style={{ gap: 10, height: 42, padding: '0 16px', borderRadius: 8, border: '1px solid #E0E5EB', background: '#fff', flex: '1 1 220px', maxWidth: 360 }}>
             <svg width="16" height="16" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#8E99AB" strokeWidth="1.5"/><path d="M12.5 12.5L16 16" stroke="#8E99AB" strokeWidth="1.5" strokeLinecap="round"/></svg>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search for a template"
-              style={{ flex: 1, border: 'none', outline: 'none', ...ns, fontSize: 14, color: '#15191F', background: 'transparent' }}/>
+              style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', ...ns, fontSize: 14, color: '#15191F', background: 'transparent' }}/>
           </div>
 
-          {/* Type — single-select */}
-          <div className="relative flex-shrink-0">
-            <button onClick={() => setOpenFilter(openFilter === 'type' ? null : 'type')} className="flex items-center cursor-pointer"
-              style={{ gap: 6, height: 42, padding: '0 14px', borderRadius: 8, border: `1px solid ${openFilter === 'type' ? '#006EFE' : '#E0E5EB'}`, background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
-              Type
-              <FilterChevron open={openFilter === 'type'} />
-            </button>
-            {openFilter === 'type' && (
-              <div className="absolute" style={{ top: 48, left: 0, zIndex: 30, width: 220, background: '#fff', borderRadius: 10, border: '1px solid #E0E5EB', boxShadow: '0 12px 32px rgba(0,0,0,0.12)', padding: '8px 0' }}>
-                {TYPE_OPTIONS.map(opt => (
-                  <button key={opt} onClick={() => { setTypeFilter(opt); setOpenFilter(null); }}
-                    className="flex items-center justify-between cursor-pointer w-full text-left"
-                    style={{ padding: '9px 16px', background: 'none', border: 'none', ...ns, fontSize: 14, color: '#15191F' }}
-                    onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-                    {opt}
-                    {typeFilter === opt && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <FilterSelect label="Type" value={typeFilter} options={TYPE_OPTIONS} width={160}
+            open={openFilter === 'type'} onToggle={() => setOpenFilter(openFilter === 'type' ? null : 'type')}
+            onChange={v => { setTypeFilter(v); setOpenFilter(null); }} />
 
           {/* Themes — multi-select with search */}
           <div className="relative flex-shrink-0">
@@ -652,50 +896,23 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
             )}
           </div>
 
-          {/* Page Size — single-select */}
-          <div className="relative flex-shrink-0">
-            <button onClick={() => setOpenFilter(openFilter === 'pageSize' ? null : 'pageSize')} className="flex items-center cursor-pointer"
-              style={{ gap: 6, height: 42, padding: '0 14px', borderRadius: 8, border: `1px solid ${openFilter === 'pageSize' ? '#006EFE' : '#E0E5EB'}`, background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
-              {`Page Size: ${pageSize}`}
-              <FilterChevron open={openFilter === 'pageSize'} />
-            </button>
-            {openFilter === 'pageSize' && (
-              <div className="absolute" style={{ top: 48, left: 0, zIndex: 30, width: 180, background: '#fff', borderRadius: 10, border: '1px solid #E0E5EB', boxShadow: '0 12px 32px rgba(0,0,0,0.12)', padding: '8px 0' }}>
-                {PAGE_SIZE_OPTIONS.map(opt => (
-                  <button key={opt} onClick={() => { setPageSize(opt); setOpenFilter(null); }}
-                    className="flex items-center justify-between cursor-pointer w-full text-left"
-                    style={{ padding: '9px 16px', background: 'none', border: 'none', ...ns, fontSize: 14, color: '#15191F' }}
-                    onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-                    {opt}
-                    {pageSize === opt && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <FilterSelect label="Page Size" value={pageSize} options={PAGE_SIZE_OPTIONS} width={180} alwaysShowValue
+            open={openFilter === 'pageSize'} onToggle={() => setOpenFilter(openFilter === 'pageSize' ? null : 'pageSize')}
+            onChange={v => { setPageSize(v); setOpenFilter(null); }} />
 
-          {/* Orientation — single-select */}
-          <div className="relative flex-shrink-0">
-            <button onClick={() => setOpenFilter(openFilter === 'orientation' ? null : 'orientation')} className="flex items-center cursor-pointer"
-              style={{ gap: 6, height: 42, padding: '0 14px', borderRadius: 8, border: `1px solid ${openFilter === 'orientation' ? '#006EFE' : '#E0E5EB'}`, background: '#fff', ...ns, fontSize: 13, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
-              {`Orientation: ${orientation}`}
-              <FilterChevron open={openFilter === 'orientation'} />
-            </button>
-            {openFilter === 'orientation' && (
-              <div className="absolute" style={{ top: 48, left: 0, zIndex: 30, width: 170, background: '#fff', borderRadius: 10, border: '1px solid #E0E5EB', boxShadow: '0 12px 32px rgba(0,0,0,0.12)', padding: '8px 0' }}>
-                {ORIENTATION_OPTIONS.map(opt => (
-                  <button key={opt} onClick={() => { setOrientation(opt); setOpenFilter(null); }}
-                    className="flex items-center justify-between cursor-pointer w-full text-left"
-                    style={{ padding: '9px 16px', background: 'none', border: 'none', ...ns, fontSize: 14, color: '#15191F' }}
-                    onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-                    {opt}
-                    {orientation === opt && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5 6.5-7" stroke="#006EFE" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                  </button>
-                ))}
-              </div>
-            )}
+          <FilterSelect label="Orientation" value={orientation} options={ORIENTATION_OPTIONS} width={170} alwaysShowValue
+            open={openFilter === 'orientation'} onToggle={() => setOpenFilter(openFilter === 'orientation' ? null : 'orientation')}
+            onChange={v => { setOrientation(v); setOpenFilter(null); }} />
+
+          {/* The platform's sort control, the same component Projects uses, at the end of the
+              control row — not a seventh filter built out of the filter buttons. It runs at 42 to
+              match the filters beside it; Projects runs the same control at its own 38. */}
+          <div className="flex-shrink-0" style={{ marginLeft: 'auto' }}>
+            <SortDropdown options={SORT_OPTIONS.map(o => o.label)} value={sortLabel} height={42} fontSize={13}
+              onChange={label => {
+                const picked = SORT_OPTIONS.find(o => o.label === label);
+                if (picked) setSort(picked.id);
+              }} />
           </div>
 
           {/* Click-outside backdrop to close any open dropdown */}
@@ -705,10 +922,10 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
         </div>
 
         {/* Unified grid — Pro templates are badged inline, not segregated into a skippable row */}
-        {filtered.length === 0
+        {gridTemplates.length === 0
           ? <p style={{ ...ns, fontSize: 14, color: '#8596AD', textAlign: 'center', marginTop: 60 }}>No templates found.</p>
           : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '28px 24px' }}>
-              {filtered.map(t => (
+              {gridTemplates.map(t => (
                 <TemplateCard key={t.id} t={t} onClick={() => setPreview(t)} />
               ))}
             </div>}
@@ -728,14 +945,14 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
         {preview && (
           <TemplateLightbox
             t={preview}
-            allTemplates={filtered}
+            allTemplates={gridTemplates}
             selectedThemes={themesFilter}
-            onUse={(template) => {
+            onUse={(template, position) => {
               setPreview(null);
-              if (template.isPro && !template.tryForFree) {
+              if (template.isPro) {
                 setUpgradeCtx({ message: 'Unlock this template', planId: 'pro', feature: 'Pro Templates' });
               } else {
-                onUse(template);
+                onUse(template, position);
               }
             }}
             onClose={() => setPreview(null)}
@@ -897,7 +1114,8 @@ function FormatIcon({ id }: { id: string }) {
   return map[id] ?? null;
 }
 
-function PublishView({ template, onBack }: { template: Template; onBack: () => void }) {
+function PublishView({ selection, onBack }: { selection: TemplateSelection; onBack: () => void }) {
+  const template = selection.template;
   const router = useRouter();
   const setSelectedManuscriptId = usePresentationFlowStore((s) => s.setSelectedManuscriptId);
   const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium'; feature: string } | null>(null);
@@ -954,6 +1172,10 @@ function PublishView({ template, onBack }: { template: Template; onBack: () => v
               if (selectedRequiredPlan) {
                 setUpgradeCtx({ message: `Unlock ${selectedFormatMeta?.label} export`, planId: selectedRequiredPlan, feature: `${selectedFormatMeta?.label} export` });
               } else {
+                /* The publish half of the template's usage record. It fires on the publish that
+                   goes through, not on the click — a click that opens the upgrade modal produced
+                   no book, and counting it would make gated templates look the most used. */
+                track('template_published', templateEventProps(selection, currentPlan));
                 setPublished(true);
               }
             }}
@@ -1347,7 +1569,8 @@ export function EbookCreateFlow({ startStep = 2 }: { startStep?: 2 | 3 }) {
   // because there is no manuscript screen on this path to open it from.
   const [showThemesModal, setShowThemesModal] = useState(startStep === 3);
   const [selectedThemes, setSelectedThemes] = useState<string[]>([]);
-  const [selectedTemplate, setSelectedTemplate] = useState<Template>(TEMPLATES[1]);
+  const currentPlan = useFlowStore(s => s.currentPlan);
+  const [selection, setSelection] = useState<TemplateSelection>({ template: TEMPLATES[1], position: 2 });
 
   const handleSaveThemes = (themes: string[]) => {
     setSelectedThemes(themes);
@@ -1355,8 +1578,12 @@ export function EbookCreateFlow({ startStep = 2 }: { startStep?: 2 | 3 }) {
     setStep(3);
   };
 
-  const handleUseTemplate = (t: Template) => {
-    setSelectedTemplate(t);
+  const handleUseTemplate = (template: Template, position: number) => {
+    const next: TemplateSelection = { template, position };
+    /* Only reached by a template the author can actually use — a Pro one on a lower plan opens
+       the upgrade modal inside the gallery and never gets here. */
+    track('template_selected', templateEventProps(next, currentPlan));
+    setSelection(next);
     setStep(4);
   };
 
@@ -1384,14 +1611,14 @@ export function EbookCreateFlow({ startStep = 2 }: { startStep?: 2 | 3 }) {
             <motion.div key="step4" className="absolute inset-0"
               initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
               transition={{ duration: 0.22 }}>
-              <ReviewView template={selectedTemplate} onPublish={() => setStep(5)} />
+              <ReviewView template={selection.template} onPublish={() => setStep(5)} />
             </motion.div>
           )}
           {step === 5 && (
             <motion.div key="step5" className="absolute inset-0"
               initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
               transition={{ duration: 0.22 }}>
-              <PublishView template={selectedTemplate} onBack={() => setStep(4)} />
+              <PublishView selection={selection} onBack={() => setStep(4)} />
             </motion.div>
           )}
         </AnimatePresence>

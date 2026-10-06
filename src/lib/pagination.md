@@ -137,7 +137,7 @@ Cases against the pure function, at a small fixture geometry so the arithmetic
 stays checkable by hand:
 
 ```
-G = { w: 300, h: 240, padX: 20, padY: 20 }
+G = { w: 300, h: 240, padTop: 20, padRight: 20, padBottom: 20, padLeft: 20 }
 contentH(G) = 200   PAGE_GAP = 28   band pitch = 268   footnoteReserveMax(G) = 100
 para(top, n)  = { top, bottom: top + n*20, spacerBefore: 0, lineHeight: 20, lineCount: n }
 mono(top, h)  = { top, bottom: top + h, spacerBefore: 0 }

@@ -13,7 +13,7 @@ import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { TierBadge, shouldShowTierBadge } from '../ui/TierBadge';
 import { Tooltip } from '../ui/Tooltip';
 import { UpgradePlanModal } from '../account/MyAccountView';
-import { MenuTick } from '@/components/ui/MenuTick';
+import { SortDropdown } from '@/components/ui/SortDropdown';
 
 const ns = { fontFamily: "'Nunito Sans', sans-serif" } as const;
 
@@ -93,70 +93,10 @@ function PlusIcon() {
 }
 
 /* ── Sort dropdown ── */
-const SORT_OPTIONS = ['Newest', 'Oldest', 'Title A–Z', 'Title Z–A'];
-
-function SortIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <path d="M3.5 4h9M3.5 8h6M3.5 12h3" stroke="#52637A" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function SortDropdown({ compact = false }: { compact?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [selected, setSelected] = useState('Newest');
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  const button = (
-    <button
-      onClick={() => setOpen(v => !v)}
-      className="flex items-center cursor-pointer bg-white"
-      style={compact
-        ? { width: 38, height: 38, justifyContent: 'center', borderRadius: 8, border: '1px solid #E0E5EB' }
-        : { gap: 8, height: 38, padding: '0 14px', borderRadius: 8, border: '1px solid #E0E5EB' }}
-    >
-      {compact ? <SortIcon /> : (
-        <>
-          <span style={{ ...ns, fontSize: 14, fontWeight: 500, color: '#15191F', whiteSpace: 'nowrap' }}>
-            Sort: {selected}
-          </span>
-          <ChevronDown />
-        </>
-      )}
-    </button>
-  );
-
-  return (
-    <div className="relative" ref={ref}>
-      {compact ? <Tooltip label={`Sort: ${selected}`} position="bottom">{button}</Tooltip> : button}
-      {open && (
-        <div className="absolute bg-white flex flex-col" style={{ top: 'calc(100% + 4px)', right: 0, minWidth: 160, borderRadius: 8, padding: 5, boxShadow: '0px 4px 20px rgba(0,0,0,0.1)', zIndex: 20 }}>
-          {SORT_OPTIONS.map(opt => (
-            <button
-              key={opt}
-              onClick={() => { setSelected(opt); setOpen(false); }}
-              className="text-left cursor-pointer rounded-md flex items-center justify-between"
-              style={{ ...ns, fontSize: 13.5, color: '#15191F', padding: '7px 10px', gap: 10, fontWeight: opt === selected ? 600 : 400, background: opt === selected ? '#F4F6F9' : 'transparent', border: 'none' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#F4F6F9')}
-              onMouseLeave={e => (e.currentTarget.style.background = opt === selected ? '#F4F6F9' : 'transparent')}
-            >
-              <span>{opt}</span>
-              <MenuTick on={opt === selected} />
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+/* The control itself now lives in components/ui/SortDropdown so the template gallery can show the
+   same one; the option list stays here because it is this screen's vocabulary. */
+const SORT_OPTIONS = ['Newest', 'Oldest', 'Title A–Z', 'Title Z–A'] as const;
+type SortOption = typeof SORT_OPTIONS[number];
 
 /* ── Tab bar with priority-nav overflow ── */
 type TabDef = { id: ProjectType | 'all'; label: string };
@@ -320,6 +260,7 @@ const COMPACT_SORT_THRESHOLD = 480;
 function TabsAndControlsRow({ activeTab, onSelect }: { activeTab: ProjectType; onSelect: (t: ProjectType) => void }) {
   const rowRef = useRef<HTMLDivElement>(null);
   const [compactSort, setCompactSort] = useState(false);
+  const [sort, setSort] = useState<SortOption>('Newest');
 
   useEffect(() => {
     const el = rowRef.current;
@@ -333,7 +274,7 @@ function TabsAndControlsRow({ activeTab, onSelect }: { activeTab: ProjectType; o
     <div ref={rowRef} className="flex items-center" style={{ margin: '20px 0 0', padding: '0 32px', height: 52, gap: 24 }}>
       <TabsWithOverflow activeTab={activeTab} onSelect={onSelect} />
       <div className="flex-shrink-0">
-        <SortDropdown compact={compactSort} />
+        <SortDropdown options={SORT_OPTIONS} value={sort} onChange={setSort} compact={compactSort} />
       </div>
     </div>
   );

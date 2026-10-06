@@ -62,26 +62,6 @@ export function pillStyle(size: PillSize): React.CSSProperties {
   };
 }
 
-/* Not a tier — the opposite of one. A Pro template you may use without upgrading.
-   Identical to the tier badge in every respect, including colour. Two earlier passes tried to
-   distinguish it by treatment — solid blue, then green — and both were wrong for the same
-   reason: they made the one badge that isn't a tier the loudest thing on the card, and each
-   spent a hue that already means something else here (blue is every button, green was a new
-   signal for one word).
-   This follows the rule TierBadge's own header cites: GitLab holds one badge style constant and
-   varies only the text. The cost is honest — scanning the grid, the two states are the same
-   visual object and you have to read the word. The benefit is that no one has to learn a colour
-   code that exists on exactly one screen.
-   Sentence case, like every label here: "Try for free", not "TRY FOR FREE". PRO only reads as
-   caps because that is literally how the plan is named. */
-export function OfferBadge({ label, size = 'md' }: { label: string; size?: PillSize }) {
-  return (
-    <span style={{ ...pillStyle(size), background: PILL_TINT.bg, color: PILL_TINT.fg }}>
-      {label}
-    </span>
-  );
-}
-
 /* Mirrors each tier's own icon from the pricing modal — star for Pro, crown for Premium
    and above. Decorative here: the label beside it is what actually names the plan. */
 export function TierIcon({ tier, color, size = 12 }: { tier: GateTier; color: string; size?: number }) {

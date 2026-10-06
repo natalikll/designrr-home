@@ -22,6 +22,266 @@ export interface BookIcon {
 /** The Elements > Icons library. */
 export const BOOK_ICONS: readonly BookIcon[] = [
   {
+    "name": "arrow-right",
+    "label": "Arrow right",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.037 2.037) scale(0.039)",
+          "d": "M502.6 278.6c12.5-12.5 12.5-32.8 0-45.3l-160-160c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L402.7 224 32 224c-17.7 0-32 14.3-32 32s14.3 32 32 32l370.7 0-105.4 105.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0l160-160z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.037 2.037) scale(0.039)",
+          "d": "M505 273c9.4-9.4 9.4-24.6 0-33.9L337 71c-9.4-9.4-24.6-9.4-33.9 0s-9.4 24.6 0 33.9l127 127-406.1 0c-13.3 0-24 10.7-24 24s10.7 24 24 24l406.1 0-127 127c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0L505 273z"
+        }
+      }
+    ]
+  },
+  {
+    "name": "arrow-left",
+    "label": "Arrow left",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.037 2.037) scale(0.039)",
+          "d": "M9.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 288 480 288c17.7 0 32-14.3 32-32s-14.3-32-32-32l-370.7 0 105.4-105.4c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.037 2.037) scale(0.039)",
+          "d": "M7 239c-9.4 9.4-9.4 24.6 0 33.9L175 441c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9L81.9 280 488 280c13.3 0 24-10.7 24-24s-10.7-24-24-24L81.9 232 209 105c9.4-9.4 9.4-24.6 0-33.9s-24.6-9.4-33.9 0L7 239z"
+        }
+      }
+    ]
+  },
+  {
+    "name": "arrow-up",
+    "label": "Arrow up",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(4.537 2.037) scale(0.039)",
+          "d": "M214.6 9.4c-12.5-12.5-32.8-12.5-45.3 0l-160 160c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L160 109.3 160 480c0 17.7 14.3 32 32 32s32-14.3 32-32l0-370.7 105.4 105.4c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3l-160-160z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(4.537 2.037) scale(0.039)",
+          "d": "M209.5 7c-9.4-9.4-24.6-9.4-33.9 0L7.5 175c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0l127-127 0 406.1c0 13.3 10.7 24 24 24s24-10.7 24-24l0-406.1 127 127c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9L209.5 7z"
+        }
+      }
+    ]
+  },
+  {
+    "name": "arrow-down",
+    "label": "Arrow down",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(4.537 2.037) scale(0.039)",
+          "d": "M169.4 502.6c12.5 12.5 32.8 12.5 45.3 0l160-160c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L224 402.7 224 32c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 370.7-105.4-105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l160 160z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(4.537 2.037) scale(0.039)",
+          "d": "M175.5 505c9.4 9.4 24.6 9.4 33.9 0l168-168c9.4-9.4 9.4-24.6 0-33.9s-24.6-9.4-33.9 0l-127 127 0-406.1c0-13.3-10.7-24-24-24s-24 10.7-24 24l0 406.1-127-127c-9.4-9.4-24.6-9.4-33.9 0s-9.4 24.6 0 33.9l168 168z"
+        }
+      }
+    ]
+  },
+  {
+    "name": "arrow-up-right",
+    "label": "Arrow up-right",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.05 -1.329) scale(0.052)",
+          "d": "M384 96c0-17.7-14.3-32-32-32L128 64c-17.7 0-32 14.3-32 32s14.3 32 32 32L274.7 128 9.4 393.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L320 173.3 320 320c0 17.7 14.3 32 32 32s32-14.3 32-32l0-224z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.05 -1.284) scale(0.052)",
+          "d": "M360 64c13.3 0 24 10.7 24 24l0 240c0 13.3-10.7 24-24 24s-24-10.7-24-24l0-182.1-295 295c-9.4 9.4-24.6 9.4-33.9 0S-2.3 416.4 7 407l295-295-182.1 0c-13.3 0-24-10.7-24-24s10.7-24 24-24l240 0z"
+        }
+      }
+    ]
+  },
+  {
+    "name": "arrow-up-left",
+    "label": "Arrow up-left",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.05 -1.329) scale(0.052)",
+          "d": "M32 64C14.3 64 0 78.3 0 96L0 320c0 17.7 14.3 32 32 32s32-14.3 32-32l0-146.7 265.4 265.4c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 128 256 128c17.7 0 32-14.3 32-32s-14.3-32-32-32L32 64z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.05 -1.284) scale(0.052)",
+          "d": "M24 64C10.7 64 0 74.7 0 88L0 328c0 13.3 10.7 24 24 24s24-10.7 24-24l0-182.1 295 295c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9L81.9 112 264 112c13.3 0 24-10.7 24-24s-10.7-24-24-24L24 64z"
+        }
+      }
+    ]
+  },
+  {
+    "name": "arrow-down-right",
+    "label": "Arrow down-right",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.05 -1.284) scale(0.052)",
+          "d": "M352 448c17.7 0 32-14.3 32-32l0-224c0-17.7-14.3-32-32-32s-32 14.3-32 32L320 338.7 54.6 73.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L274.7 384 128 384c-17.7 0-32 14.3-32 32s14.3 32 32 32l224 0z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.05 -1.284) scale(0.052)",
+          "d": "M360 448c13.3 0 24-10.7 24-24l0-240c0-13.3-10.7-24-24-24s-24 10.7-24 24L336 366.1 41 71C31.6 61.7 16.4 61.7 7 71S-2.3 95.6 7 105l295 295-182.1 0c-13.3 0-24 10.7-24 24s10.7 24 24 24l240 0z"
+        }
+      }
+    ]
+  },
+  {
+    "name": "arrow-down-left",
+    "label": "Arrow down-left",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.05 -1.238) scale(0.052)",
+          "d": "M0 416c0 17.7 14.3 32 32 32l224 0c17.7 0 32-14.3 32-32s-14.3-32-32-32l-146.7 0 265.4-265.4c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L64 338.7 64 192c0-17.7-14.3-32-32-32S0 174.3 0 192L0 416z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(2.05 -1.284) scale(0.052)",
+          "d": "M24 448c-13.3 0-24-10.7-24-24L0 184c0-13.3 10.7-24 24-24s24 10.7 24 24L48 366.1 343 71c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9L81.9 400 264 400c13.3 0 24 10.7 24 24s-10.7 24-24 24L24 448z"
+        }
+      }
+    ]
+  },
+  {
+    "name": "chevron-right",
+    "label": "Chevron right",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(3.449 0.636) scale(0.044)",
+          "d": "M311.1 233.4c12.5 12.5 12.5 32.8 0 45.3l-192 192c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L243.2 256 73.9 86.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l192 192z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(3.293 0.636) scale(0.044)",
+          "d": "M313.5 239c9.4 9.4 9.4 24.6 0 33.9l-200 200c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l183-183-183-183c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0l200 200z"
+        }
+      }
+    ]
+  },
+  {
+    "name": "chevron-left",
+    "label": "Chevron left",
+    "category": "Arrows",
+    "viewBox": "0 0 24 24",
+    "nodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(6.339 0.636) scale(0.044)",
+          "d": "M9.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l192 192c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L77.3 256 246.6 86.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-192 192z"
+        }
+      }
+    ],
+    "outlineNodes": [
+      {
+        "tag": "path",
+        "attrs": {
+          "fill": "currentColor",
+          "transform": "translate(6.496 0.636) scale(0.044)",
+          "d": "M7.5 239c-9.4 9.4-9.4 24.6 0 33.9l200 200c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-183-183 183-183c9.4-9.4 9.4-24.6 0-33.9s-24.6-9.4-33.9 0L7.5 239z"
+        }
+      }
+    ]
+  },
+  {
     "name": "check",
     "label": "Check",
     "category": "Marks",
@@ -1998,32 +2258,6 @@ export const BOOK_ICONS: readonly BookIcon[] = [
     ]
   },
   {
-    "name": "arrow-right",
-    "label": "Arrow",
-    "category": "Tools",
-    "viewBox": "0 0 24 24",
-    "nodes": [
-      {
-        "tag": "path",
-        "attrs": {
-          "fill": "currentColor",
-          "transform": "translate(2.037 2.037) scale(0.039)",
-          "d": "M502.6 278.6c12.5-12.5 12.5-32.8 0-45.3l-160-160c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L402.7 224 32 224c-17.7 0-32 14.3-32 32s14.3 32 32 32l370.7 0-105.4 105.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0l160-160z"
-        }
-      }
-    ],
-    "outlineNodes": [
-      {
-        "tag": "path",
-        "attrs": {
-          "fill": "currentColor",
-          "transform": "translate(2.037 2.037) scale(0.039)",
-          "d": "M505 273c9.4-9.4 9.4-24.6 0-33.9L337 71c-9.4-9.4-24.6-9.4-33.9 0s-9.4 24.6 0 33.9l127 127-406.1 0c-13.3 0-24 10.7-24 24s10.7 24 24 24l406.1 0-127 127c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0L505 273z"
-        }
-      }
-    ]
-  },
-  {
     "name": "house",
     "label": "Home",
     "category": "Tools",
@@ -2238,14 +2472,8 @@ export const SOCIAL_ICONS: readonly BookIcon[] = [
   }
 ];
 
-/** The short list the Button inspector offers, in order. */
-export const BUTTON_ICON_NAMES: readonly string[] = ["arrow-right","external-link","download","play","shopping-cart","mail","calendar","book-open"];
-
 export const BOOK_ICONS_BY_NAME: Readonly<Record<string, BookIcon>> =
   Object.fromEntries([...BOOK_ICONS, ...SOCIAL_ICONS].map((i) => [i.name, i]));
-
-export const BUTTON_ICONS: readonly BookIcon[] =
-  BUTTON_ICON_NAMES.map((n) => BOOK_ICONS_BY_NAME[n]).filter(Boolean);
 
 /* Falls back to the solid cut rather than drawing nothing: a brand mark has no
    outline form, and it can still be asked for one. */

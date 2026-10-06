@@ -51,9 +51,22 @@ export interface PageGeometry {
   /** Outer sheet. */
   w: number;
   h: number;
-  /** The sheet's own margins — content lives inside these. */
-  padX: number;
-  padY: number;
+  /** The sheet's own margins — content lives inside these. Four sides, not an
+      x/y pair: a page can be given a wider left than right (an inner margin for
+      a book that will be bound) and a taller foot than head, and every measure
+      in this file that used to double one value now adds the two it means. */
+  padTop: number;
+  padRight: number;
+  padBottom: number;
+  padLeft: number;
+}
+
+/** A page's four margins, in inches. */
+export interface PageMargins {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
 }
 
 export interface PageSize {
@@ -81,21 +94,78 @@ export const DEFAULT_PAGE_SIZE = 'letter';
     rather than a snap onto the grid. */
 export const DEFAULT_MARGIN_X = 0.75;
 export const DEFAULT_MARGIN_Y = 0.625;
+export const DEFAULT_MARGINS: PageMargins = {
+  top: DEFAULT_MARGIN_Y, right: DEFAULT_MARGIN_X, bottom: DEFAULT_MARGIN_Y, left: DEFAULT_MARGIN_X,
+};
+
+/* ── Units ────────────────────────────────────────────────────────────────────
+   Every length above is stored in inches and stays that way: the unit below is
+   a DISPLAY choice, so the same book opened by a metric reader and an imperial
+   one is the same book, and nothing downstream (pageGeometry, the exporters,
+   a saved file) has to know which one was looking.
+
+   It exists because the ISO sizes made the panel lie by omission. A4 was
+   printed as "8.27 × 11.69 in" — true, and unrecognisable to the reader who
+   knows that sheet as 210 × 297 mm, which is most of the people who pick it.
+
+   Millimetres rather than centimetres, for the reason that example shows: mm is
+   the unit ISO paper and print shops are quoted in, and at this scale it is the
+   only one that needs no decimal point at all. Every trim size lands on a whole
+   number of millimetres (210 × 297, 216 × 279, 148 × 210) and so does every
+   margin on the grid below, where cm would print 21 × 29.7 and 1.9 cm. */
+export type LengthUnit = 'in' | 'mm';
+
+/** Per unit: its size, what the stepper's grid is, and how a number is written
+    in it. One row per unit, so adding or swapping one is a data change.
+
+    The grid is stated in the DISPLAY unit, not converted from one: a round
+    number is only round in the unit you are reading. An eighth of an inch is
+    3.175 mm, and a stepper that walked a metric reader through 19, 22, 25 would
+    be arithmetically faithful and useless. 5 mm is the metric eighth — the
+    increment printers quote margins and bleed at. */
+export const UNIT_SPEC: Record<LengthUnit, { label: string; perIn: number; step: number; decimals: number; suffix: string }> = {
+  /* No space before ″, a space before mm — each unit's own typographic
+     convention, not a house style imposed on both. */
+  in: { label: 'in', perIn: 1, step: 0.125, decimals: 3, suffix: '″' },
+  mm: { label: 'mm', perIn: 25.4, step: 5, decimals: 0, suffix: ' mm' },
+};
+
+export const toUnit = (inches: number, unit: LengthUnit) => inches * UNIT_SPEC[unit].perIn;
+export const toInches = (value: number, unit: LengthUnit) => value / UNIT_SPEC[unit].perIn;
+
+/** A length written for the panel: converted, rounded to the unit's precision
+    and stripped of the zeros that rounding leaves behind, so a margin reads
+    0.75″ rather than 0.750″. The suffix is opt-in because the size tiles carry
+    one unit for two numbers ("210 × 297 mm"). */
+export function formatLength(inches: number, unit: LengthUnit, withSuffix = false): string {
+  const spec = UNIT_SPEC[unit];
+  const text = toUnit(inches, unit)
+    .toFixed(spec.decimals)
+    .replace(/(\.\d*?)0+$/, '$1')
+    .replace(/\.$/, '');
+  return withSuffix ? `${text}${spec.suffix}` : text;
+}
+
+/** "8.5 × 11 in" / "216 × 279 mm" — one unit named once, for a size tile. */
+export const formatPageSize = (size: PageSize, unit: LengthUnit) =>
+  `${formatLength(size.inW, unit)} × ${formatLength(size.inH, unit)} ${UNIT_SPEC[unit].label}`;
 
 /** Turns a chosen size and margins into the pixel box everything measures
     against. Rounded, because a sub-pixel page height makes two consecutive
     measurements differ forever and the reflow loop never settles. */
-export function pageGeometry(sizeId: string, marginX: number, marginY: number): PageGeometry {
+export function pageGeometry(sizeId: string, margins: PageMargins): PageGeometry {
   const size = PAGE_SIZES.find((s) => s.id === sizeId) ?? PAGE_SIZES[0];
   return {
     w: Math.round(size.inW * PX_PER_IN),
     h: Math.round(size.inH * PX_PER_IN),
-    padX: Math.round(marginX * PX_PER_IN),
-    padY: Math.round(marginY * PX_PER_IN),
+    padTop: Math.round(margins.top * PX_PER_IN),
+    padRight: Math.round(margins.right * PX_PER_IN),
+    padBottom: Math.round(margins.bottom * PX_PER_IN),
+    padLeft: Math.round(margins.left * PX_PER_IN),
   };
 }
 
-export const DEFAULT_GEOMETRY = pageGeometry(DEFAULT_PAGE_SIZE, DEFAULT_MARGIN_X, DEFAULT_MARGIN_Y);
+export const DEFAULT_GEOMETRY = pageGeometry(DEFAULT_PAGE_SIZE, DEFAULT_MARGINS);
 
 /* The default geometry's parts, for the handful of module-level things that
    are about the EDITOR rather than about the user's book — a template row's
@@ -105,7 +175,7 @@ export const PAGE_W = DEFAULT_GEOMETRY.w;
 export const PAGE_H = DEFAULT_GEOMETRY.h;
 
 /** Usable height for content on one page. */
-export function contentH(g: PageGeometry): number { return g.h - g.padY * 2; }
+export function contentH(g: PageGeometry): number { return g.h - g.padTop - g.padBottom; }
 
 /** Visual gap between two stacked pages of the same chapter. Canvas chrome,
     not page geometry — it doesn't change with the trim size. */
@@ -141,7 +211,7 @@ export function spacerHeight(usedOnPage: number, g: PageGeometry): number {
   // Rounded, because sub-pixel text metrics otherwise make two consecutive
   // measurements differ by a fraction of a pixel forever, and the reflow loop
   // never settles.
-  return Math.round(Math.max(0, contentH(g) - usedOnPage)) + g.padY + PAGE_GAP + g.padY;
+  return Math.round(Math.max(0, contentH(g) - usedOnPage)) + g.padBottom + PAGE_GAP + g.padTop;
 }
 
 export interface Measured {

@@ -1,4 +1,13 @@
-/* Short, trackable destinations for QR blocks.
+/* NOT WIRED UP. The QR block is static: it encodes the author's URL directly,
+   and the inspector has no tracking toggle. This module is kept whole because
+   the feature is right and the implementation under it was not — the store below
+   is localStorage, so a code resolved only in the browser that made it, while
+   the reader of a printed book is on another device entirely. When there is a
+   server-side store behind /r/[code], re-point resolveLink/recordScan at it and
+   the block can offer the toggle again. Until then the only export the editor
+   uses is destinationHost, at the bottom.
+
+   Short, trackable destinations for QR blocks.
 
    Why a QR code wants an indirection at all, given the author already has a URL:
 

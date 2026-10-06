@@ -60,6 +60,12 @@ export interface EpubInput {
   metadata: EpubMetadata;
   chapters: EpubChapter[];
   coverImage?: string;      // data: URI or asset path
+  /* What a screen reader announces for the cover. Falls back to the book title,
+     which is the long-standing behaviour and a reasonable default — but once an
+     author has written alt text for that photo, theirs is the one that ships.
+     The EU Accessibility Act has required alt on meaningful ebook images since
+     June 2025, and the published guidance names the cover specifically. */
+  coverAlt?: string;
   coverTitle?: string;      // plain text, for the generated cover page
   coverSubtitle?: string;
   backMatterHtml?: string;
@@ -68,6 +74,9 @@ export interface EpubInput {
      the editor regenerates its own TOC page the same way. */
   tocHeading?: string;
   includeTocPage?: boolean;
+  /* How chapters open. Book-wide, set once in the Paragraphs settings, and
+     applied per chapter unless that chapter opted out. */
+  chapterOpener?: 'none' | 'dropcap';
   theme?: EpubTheme;
   textStyles?: EpubTextStyle[];
   /* 'spaced' is the web/blog paragraph — a blank line between paragraphs, no
@@ -296,19 +305,102 @@ function extractImages(html: string, images: ExtractedImage[], attr: 'src' | 'po
    an id on each H3 at package time gives the nav real second-level entries. */
 interface Subheading { id: string; text: string; }
 
+/* Every h3 AND h4 gets an id; only the h3s come back as `subs`.
+
+   Two jobs on one pass. The navigation document wants second-level entries, and
+   those are the h3s — an h4 is a sub-sub-heading and nesting the nav three deep
+   helps nobody. But an internal LINK can point at either, so both need something
+   to point at.
+
+   The ordinal counts every h3 and h4 in document order, empty ones included, and
+   is 0-based. That is not arbitrary: it is the same number the editor uses to
+   address a heading (see internalHref in BookEditorView), and the editor derives
+   it by position because two headings in a chapter are allowed to read the same.
+   If one side counts differently from the other, every link lands one heading
+   out — so they count identically, including the empty heading somebody is
+   halfway through typing. */
 function addHeadingIds(html: string, chapterIndex: number): { html: string; subs: Subheading[] } {
   const subs: Subheading[] = [];
-  let n = 0;
-  const out = html.replace(/<h3([^>]*)>([\s\S]*?)<\/h3>/gi, (whole, attrs: string, inner: string) => {
+  let ordinal = -1;
+  const out = html.replace(/<(h3|h4)([^>]*)>([\s\S]*?)<\/\1>/gi, (whole, tag: string, attrs: string, inner: string) => {
+    ordinal += 1;
     const text = inner.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
-    if (!text) return whole;
     if (/\bid=/.test(attrs)) return whole;
-    n += 1;
-    const id = `sec-${chapterIndex + 1}-${n}`;
-    subs.push({ id, text });
-    return `<h3${attrs} id="${id}">${inner}</h3>`;
+    const id = headingAnchorId(chapterIndex, ordinal);
+    if (text && tag.toLowerCase() === 'h3') subs.push({ id, text });
+    return `<${tag}${attrs} id="${id}">${inner}</${tag}>`;
   });
   return { html: out, subs };
+}
+
+function headingAnchorId(chapterIndex: number, ordinal: number): string {
+  return `sec-${chapterIndex + 1}-${ordinal}`;
+}
+
+/* Links to somewhere else in the same book.
+
+   The editor writes these as `#ch-<pageId>` (optionally `--h-<ordinal>`),
+   because inside the editor a book is one continuous document. An EPUB is not —
+   it is one file per chapter — so every one of these has to become a real
+   filename before it ships, or the reading system follows it to a fragment that
+   does not exist in the current file and silently does nothing.
+
+   A link whose chapter is gone is UNWRAPPED, not deleted: the anchor goes and
+   the words stay. Deleting the text would quietly remove a sentence the author
+   wrote; leaving a dead link would ship a defect. The editor has already drawn
+   it red, so this is the second half of a promise, not a surprise. */
+const INTERNAL_LINK_PREFIX = '#ch-';
+const INTERNAL_LINK_HEADING_SEP = '--h-';
+
+/* The chapter opening — a drop cap, optionally followed by small caps.
+
+   Spans, not ::first-letter. The pseudo-element is the obvious way to do this
+   and it is the wrong one: reading systems support it inconsistently, and the
+   recipe every ebook formatting guide gives is a floated span with an explicit
+   size and line-height. The editor draws the same thing with decorations, so
+   the canvas and the file are built the same way.
+
+   Applied at PACKAGE time rather than stored in the document, for the same
+   reason the editor uses decorations: the treatment is a property of the book,
+   and a paragraph that stops being first should stop being capped. */
+const OPENING_QUOTES = new Set(['"', '“', '‘', "'", '«', '—']);
+
+/* Only the FIRST paragraph of the chapter, and only when it is really the first
+   thing — a chapter that opens on a pull quote, an image or a list has no
+   opening sentence to cap, and reaching past them to find one would cap a
+   paragraph halfway down the page. */
+function applyChapterOpener(html: string, mode: 'none' | 'dropcap'): string {
+  if (mode === 'none') return html;
+  // The chapter's own <h2> title comes first and is skipped; the paragraph must
+  // be the next element after it.
+  const m = /^(\s*(?:<h2\b[^>]*>[\s\S]*?<\/h2>\s*)?)<p(\b[^>]*)>([\s\S]*?)<\/p>/i.exec(html);
+  if (!m) return html;
+  const [whole, lead, pAttrs, inner] = m;
+  // Markup before the first letter (a <strong>, a <span>) means the opening is
+  // already styled; capping into it would nest a float inside an inline and
+  // produce something neither we nor the reading system can predict.
+  if (/^\s*</.test(inner)) return html;
+  const text = inner;
+  const capLen = OPENING_QUOTES.has(text[0]) ? (text.length > 1 ? 2 : 0) : 1;
+  if (!capLen) return html;
+  const rebuilt = `<span class="book-dropcap">${text.slice(0, capLen)}</span>`;
+  return html.replace(whole, `${lead}<p${pAttrs}>${rebuilt}${text.slice(capLen)}</p>`);
+}
+
+function resolveInternalLinks(html: string, fileFor: Map<string, { name: string; index: number }>): string {
+  return html.replace(/<a\b([^>]*)\bhref="([^"]*)"([^>]*)>([\s\S]*?)<\/a>/gi, (whole, pre: string, href: string, post: string, inner: string) => {
+    if (!href.startsWith(INTERNAL_LINK_PREFIX)) return whole;
+    const rest = href.slice(INTERNAL_LINK_PREFIX.length);
+    const at = rest.indexOf(INTERNAL_LINK_HEADING_SEP);
+    const chapterId = at === -1 ? rest : rest.slice(0, at);
+    const ordinal = at === -1 ? null : Number(rest.slice(at + INTERNAL_LINK_HEADING_SEP.length));
+    const target = fileFor.get(chapterId);
+    if (!target) return inner;
+    const fragment = ordinal != null && Number.isFinite(ordinal)
+      ? `#${headingAnchorId(target.index, ordinal)}`
+      : '';
+    return `<a${pre}href="${target.name}${fragment}"${post}>${inner}</a>`;
+  });
 }
 
 /* Remote media needs declaring in the manifest or EPUBCheck rejects the file.
@@ -397,6 +489,64 @@ blockquote {
   font-style: italic;
   color: #52637A;
 }
+/* A quote carrying an attribution is a <figure> holding the quote and a
+   <figcaption> — the construction the HTML spec requires, since attribution
+   belongs outside the quoted words. The figure takes the indent so the quote
+   itself lands on the same measure either way. */
+/* A glossary. role="doc-glossary" is carried on the section by the editor's own
+   markup; this is only its look. Term above definition, which survives a narrow
+   reading column where a side-by-side arrangement clips. */
+.book-glossary { margin: 1.4em 0; }
+.book-glossary dl { margin: 0; padding: 0; }
+.book-glossary dt { font-weight: 700; color: ${theme.headingColor}; margin-top: .8em; }
+.book-glossary dt:first-child { margin-top: 0; }
+.book-glossary dd { margin: .15em 0 0; padding-left: 1em; border-left: 2px solid #E0E5EB; }
+/* Forms. Literal hex throughout — this stylesheet has no :root, so a
+   var(--color-…) from the editor resolves to nothing here.
+   Lines are in MILLIMETRES, where the editor's copy of these rules uses px: the
+   editor is drawing a page at its own 84.7px/in, while an export is read at the
+   reading system's scale, and 8.7mm is the researched workbook figure (8-10mm;
+   the 7.1mm college-ruled number is for continuous prose, not workbook writing). */
+.book-question, .book-choice { margin: 1.4em 0; }
+.book-question > p, .book-choice > p { margin: 0; }
+.book-question-rule { height: 8.7mm; line-height: 8.7mm; border-bottom: 1px solid #C7CDD5; }
+.book-question-n { font-size: .8em; color: #9AA3AE; }
+.book-question-box { border: 1px solid #C7CDD5; border-radius: 3px; }
+.book-choice-options ul { list-style: none; margin: 0; padding: 0; }
+.book-choice-options li { margin: 0 0 .5em; }
+.book-choice-options li p { margin: 0; display: inline; }
+/* An empty bordered ::before rather than a character: a box-drawing glyph is
+   exactly what a reading system substitutes a tofu box for. */
+.book-choice-options li::before { content: ''; display: inline-block; width: .8em; height: .8em; margin-right: .6em; vertical-align: -.1em; border: 1px solid #8C96A3; }
+.book-choice-options[data-marker="circle"] li::before { border-radius: 50%; }
+.book-choice-options[data-marker="box"] li::before { border-radius: 2px; }
+.book-choice-options[data-marker="scale"] li { display: inline-block; margin: 0 .6em 0 0; }
+.book-choice-options[data-marker="scale"] li::before { display: none; }
+.book-choice-options[data-marker="scale"] li p { display: inline-block; min-width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; border: 1px solid #8C96A3; border-radius: 50%; }
+/* The chapter opening. A floated span, deliberately — ::first-letter renders
+   inconsistently across reading systems, so the capital is a real element with
+   an explicit size and a line-height that sits its shoulders on the first line.
+   Reading systems that ignore the float simply show a large letter inline, which
+   is an acceptable degradation; nothing breaks. */
+.book-dropcap {
+  float: left;
+  font-size: 6.4em;
+  line-height: .74;
+  padding-right: .08em;
+  margin-top: .04em;
+  font-family: ${theme.headingFont};
+  color: ${theme.headingColor};
+}
+
+figure.book-quote-figure { margin: 1.2em 2.5em; }
+figure.book-quote-figure blockquote { margin: 0; }
+.book-quote-attribution {
+  margin-top: .5em;
+  font-style: normal;
+  font-size: .85em;
+  color: #6B7686;
+}
+.book-layout-quote-pull .book-quote-attribution { text-align: center; }
 /* Chapter layouts — the five the editor offers. A reading system reflows, so
    these carry the parts that survive reflow (emphasis, spacing, columns) and
    drop the parts that cannot (fixed heights). */
@@ -530,22 +680,12 @@ ${styleRules}
 .book-image-grid--3-1 .book-img-wrap:first-child { width: 74%; }
 .book-image-grid--3-1 .book-img-wrap:last-child { width: 24%; }
 
-.book-qr {
-  margin: 1em 0;
-  padding: .8em;
-  border: 1px solid #E0E5EB;
-  border-radius: 8px;
-  background: #fff;
-}
-/* The caption is the destination's host, as a link — see QrCodeBlock. It used to
-   be the whole URL, tracking parameters and all, on the same "show where it goes"
-   reasoning the button and video poster use. That reasoning does not transfer: a
-   QR on paper CAN be used, which is the entire point of printing one. What the
-   caption is actually for is the two things the symbol cannot do — be read by a
-   screen reader, and be followed in EPUB or the web version, where the reader is
-   holding the device that would have scanned it. A host does both, in one line. */
-.book-qr-url { display: block; margin-top: .5em; font-size: .82em; color: #6B7686; }
-.book-qr-url:link, .book-qr-url:visited { color: #6B7686; }
+.book-qr { margin: 1em 0; }
+/* The symbol is the link, and it prints nothing but itself — no caption, no card
+   around it. The code already carries its own 4-module white quiet zone, so a
+   border and padding were drawing a second frame around a frame. See QrCodeBlock
+   for why the destination is no longer printed beneath it. */
+.book-qr-link { display: inline-block; text-decoration: none; border: 0; }
 
 .book-jumbotron { margin: 1.5em 0; padding: 2em; border-radius: 10px; text-align: center; }
 .book-jumbotron-heading {
@@ -555,9 +695,18 @@ ${styleRules}
   margin-bottom: .4em;
 }
 .book-jumbotron-body { font-size: .95em; color: #52637A; margin-bottom: 1em; }
+/* The body is a real paragraph since the banner became a container; the class
+   above is only still here for books exported before that. */
+.book-jumbotron > p { font-size: .95em; color: #52637A; margin: 0 0 1em; text-indent: 0; }
+/* Dark fill, light text. Set on the container so an author's own colour, which
+   is written inline, still overrides it. */
+.book-jumbotron[data-ink="dark"] .book-jumbotron-heading { color: #FFFFFF; }
+.book-jumbotron[data-ink="dark"] > p { color: #D7DEE8; }
+.book-jumbotron[data-ink="dark"] .book-button-url { color: #AEBAC9; }
 .book-jumbotron-button {
   display: inline-block;
   font-size: .9em;
+  line-height: 1.2;
   font-weight: 700;
   color: #fff;
   background: ${theme.accentColor};
@@ -584,9 +733,14 @@ ${styleRules}
    fill, and buttonInkFor derives the text from it), so they are deliberately
    absent from this rule — only the shape and the metrics live here. */
 .book-button-wrap { margin: 1.3em 0; }
+/* font-size and padding here are the fallback for a button saved before the size
+   scale existed; every exported button carries its own pair inline, in em, from
+   BUTTON_SIZES. line-height is pinned so the rendered height is derivable from
+   the preset rather than from whichever font the reading system substitutes. */
 .book-button {
   display: inline-block;
   font-size: .9em;
+  line-height: 1.2;
   font-weight: 700;
   border-radius: 7px;
   padding: .65em 1.3em;
@@ -627,7 +781,6 @@ ${styleRules}
 /* The unconfigured state never reaches a reader — socialItems() emits no items
    without handles, so the row renders empty — but the class is styled anyway for
    the editor canvas, which does show the prompt. */
-.book-social-empty { font-size: .85em; color: #6B7686; }
 
 /* Footnotes. The marker carries epub:type="noteref" and each note
    epub:type="footnote" (see lib/footnotes.ts), which is what makes Kindle and
@@ -695,11 +848,21 @@ export function buildEpub(input: EpubInput): Uint8Array {
 
   const files: Zippable = {};
 
+  /* Which file each chapter becomes, worked out BEFORE any of them is written,
+     because an internal link in chapter 1 can point at chapter 9 and the
+     rewriter has to know chapter 9's filename to resolve it. */
+  const fileForChapter = new Map<string, { name: string; index: number }>();
+  chapters.forEach((chapter, i) => {
+    if (chapter.id) fileForChapter.set(chapter.id, { name: `chapter-${i + 1}.xhtml`, index: i });
+  });
+
   // Chapter documents
   const chapterFiles = chapters.map((chapter, i) => {
     const name = `chapter-${i + 1}.xhtml`;
     const withIds = addHeadingIds(chapter.html, i);
-    const body = extractImages(htmlToXhtml(relativiseLineHeight(withIds.html)), images);
+    const linked = resolveInternalLinks(withIds.html, fileForChapter);
+    const opened = applyChapterOpener(linked, input.chapterOpener ?? 'none');
+    const body = extractImages(htmlToXhtml(relativiseLineHeight(opened)), images);
     const layoutClass = chapter.layout ? ` book-layout-${chapter.layout}` : '';
     files[`OEBPS/${name}`] = strToU8(xhtmlDoc(
       chapter.title,
@@ -720,7 +883,7 @@ export function buildEpub(input: EpubInput): Uint8Array {
     }
   }
   const coverBody = coverImagePath
-    ? `<div class="cover"><img src="${coverImagePath}" alt="${esc(metadata.title)}" /></div>`
+    ? `<div class="cover"><img src="${coverImagePath}" alt="${esc(input.coverAlt?.trim() || metadata.title)}" /></div>`
     : `<div class="cover"><h1>${esc(input.coverTitle || metadata.title)}</h1>${input.coverSubtitle ? `<p>${esc(input.coverSubtitle)}</p>` : ''}${metadata.author ? `<p>${esc(metadata.author)}</p>` : ''}</div>`;
   files['OEBPS/cover.xhtml'] = strToU8(xhtmlDoc('Cover', lang, coverBody, dir));
 

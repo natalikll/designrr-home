@@ -52,6 +52,17 @@ const FA = {
    these are ordered by category and stay that way — InsertPanel takes runs of
    equal `sub` in array order rather than gathering them by name. */
 const LIBRARY = [
+  /* Arrows lead the library because they are what a button asks for. The set had
+     exactly one of them — `arrow-right`, filed under Tools next to the wrench —
+     so the Button inspector could not offer a direction, only a vocabulary of
+     nouns (cart, envelope, calendar). Eight directions and the two chevrons are
+     a closed family: the author picks a direction, not a metaphor. */
+  ['arrow-right', 'Arrow right', 'Arrows'], ['arrow-left', 'Arrow left', 'Arrows'],
+  ['arrow-up', 'Arrow up', 'Arrows'], ['arrow-down', 'Arrow down', 'Arrows'],
+  ['arrow-up-right', 'Arrow up-right', 'Arrows'], ['arrow-up-left', 'Arrow up-left', 'Arrows'],
+  ['arrow-down-right', 'Arrow down-right', 'Arrows'], ['arrow-down-left', 'Arrow down-left', 'Arrows'],
+  ['chevron-right', 'Chevron right', 'Arrows'], ['chevron-left', 'Chevron left', 'Arrows'],
+
   ['check', 'Check', 'Marks'], ['circle-check', 'Check circle', 'Marks'],
   ['x', 'Cross', 'Marks'], ['info', 'Info', 'Marks'],
   ['circle-alert', 'Warning', 'Marks'], ['circle-help', 'Question', 'Marks'],
@@ -101,7 +112,7 @@ const LIBRARY = [
   ['search', 'Search', 'Tools'], ['pencil', 'Pencil', 'Tools'],
   ['trash-2', 'Delete', 'Tools'], ['download', 'Download', 'Tools'],
   ['upload', 'Upload', 'Tools'], ['link', 'Link', 'Tools'],
-  ['external-link', 'External link', 'Tools'], ['arrow-right', 'Arrow', 'Tools'],
+  ['external-link', 'External link', 'Tools'],
   ['house', 'Home', 'Tools'], ['shield', 'Shield', 'Tools'],
 ];
 
@@ -113,6 +124,11 @@ const LIBRARY = [
    Where the two libraries disagree about what a thing is called, the left-hand
    name is the one this editor already shipped. */
 const FA_SOURCE = {
+  'arrow-right': 'arrow-right', 'arrow-left': 'arrow-left',
+  'arrow-up': 'arrow-up', 'arrow-down': 'arrow-down',
+  'arrow-up-right': 'arrow-up-right', 'arrow-up-left': 'arrow-up-left',
+  'arrow-down-right': 'arrow-down-right', 'arrow-down-left': 'arrow-down-left',
+  'chevron-right': 'chevron-right', 'chevron-left': 'chevron-left',
   check: 'check', 'circle-check': 'circle-check', x: 'xmark', info: 'circle-info',
   'circle-alert': 'circle-exclamation', 'circle-help': 'circle-question',
   star: 'star', heart: 'heart', bookmark: 'bookmark', flag: 'flag',
@@ -134,17 +150,15 @@ const FA_SOURCE = {
   sun: 'sun', moon: 'moon', cloud: 'cloud', leaf: 'leaf', flame: 'fire', droplet: 'droplet',
   settings: 'gear', wrench: 'wrench', key: 'key', lock: 'lock', search: 'magnifying-glass',
   pencil: 'pencil', 'trash-2': 'trash', download: 'download', upload: 'upload',
-  link: 'link', 'external-link': 'arrow-up-right-from-square', 'arrow-right': 'arrow-right',
+  link: 'link', 'external-link': 'arrow-up-right-from-square',
   house: 'house', shield: 'shield',
 };
 
-/* The button inspector's own short list — actions a CTA plausibly performs.
-   Names must exist in LIBRARY above; a button icon is a reinforcement of the
-   label, not a library to browse, so this stays small. */
-const BUTTON_ICONS = [
-  'arrow-right', 'external-link', 'download', 'play',
-  'shopping-cart', 'mail', 'calendar', 'book-open',
-];
+/* The Button inspector used to get its own eight-name shortlist here — one
+   library the author could browse for an Icon block and a different, shorter one
+   for a button. It is gone: the slot now opens the same searchable library as
+   everything else, with Arrows first, which is both fewer concepts and the only
+   version that can answer "but I want a different icon". */
 
 /* Brand marks for the social row. Simple Icons rather than FontAwesome's own
    brand set: Simple Icons is the canonical source, tracks rebrands faster, and
@@ -318,9 +332,6 @@ const faBuilt = (name, label, extra) => ({
 });
 
 const library = LIBRARY.map(([name, label, category]) => faBuilt(name, label, { category }));
-for (const n of BUTTON_ICONS) {
-  if (!library.some((i) => i.name === n)) throw new Error('button icon missing from LIBRARY: ' + n);
-}
 /* Brand marks are keyed `brand:x` so they cannot collide with a library name —
    `x` is a cross AND the X logo, and one map holds both. */
 const social = SOCIAL.map(([name, label, url, source]) => (source === 'brand'
@@ -355,14 +366,8 @@ const L = [
   '/** Brand marks and the two interface icons the social row offers. */',
   'export const SOCIAL_ICONS: readonly BookIcon[] = ' + JSON.stringify(social, null, 2) + ';',
   '',
-  '/** The short list the Button inspector offers, in order. */',
-  'export const BUTTON_ICON_NAMES: readonly string[] = ' + JSON.stringify(BUTTON_ICONS) + ';',
-  '',
   'export const BOOK_ICONS_BY_NAME: Readonly<Record<string, BookIcon>> =',
   '  Object.fromEntries([...BOOK_ICONS, ...SOCIAL_ICONS].map((i) => [i.name, i]));',
-  '',
-  'export const BUTTON_ICONS: readonly BookIcon[] =',
-  '  BUTTON_ICON_NAMES.map((n) => BOOK_ICONS_BY_NAME[n]).filter(Boolean);',
   '',
   '/* Falls back to the solid cut rather than drawing nothing: a brand mark has no',
   '   outline form, and it can still be asked for one. */',
