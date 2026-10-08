@@ -194,14 +194,32 @@ export function pageOfTop(top: number, g: PageGeometry): number {
   return Math.max(0, Math.floor(top / (g.h + PAGE_GAP)));
 }
 
-/** Room kept clear at the FOOT of each page for the footnotes whose markers
-    land on it, indexed by page. Empty for a chapter with no notes. */
+/** Room kept clear at the FOOT of each page — the footnotes whose markers land
+    on it, plus whatever the page's own design claims — indexed by page. Empty
+    for a chapter with no notes under a design that claims nothing. */
 export type PageReserve = readonly number[];
+
+/** Room kept clear at the HEAD of each page, indexed by page: a design that
+    sets its running text below a band or a photo card at the top of the sheet.
+    A reserve cannot express this — it shortens a page from the bottom — so the
+    two are separate arrays rather than one signed number.
+
+    Why it is per page at all: the sheet a style is picked for is the sheet it
+    applies to, and a chapter's sheets do not have to wear the same one. */
+export type PageInset = readonly number[];
 
 /** Where page `i`'s content band ends once its footnotes have taken their
     room. Every overflow test in this file goes through here. */
 function bandEnd(page: number, g: PageGeometry, reserve: PageReserve): number {
   return bandTop(page, g) + contentH(g) - (reserve[page] ?? 0);
+}
+
+/** Where page `i`'s content band STARTS. `bandTop` is the sheet's own top; this
+    is the first line's top once the page's design has had its head room. Every
+    "is this block at the top of its page" test and every spacer height goes
+    through here, so a page with no inset is arithmetically unchanged. */
+function bandStart(page: number, g: PageGeometry, inset: PageInset): number {
+  return bandTop(page, g) + (inset[page] ?? 0);
 }
 
 /** How tall a spacer has to be to carry the flow from the bottom of one page's
@@ -296,7 +314,7 @@ export function bandTop(i: number, g: PageGeometry): number { return i * (g.h + 
     the line rects have already been displaced by it, so re-adding its height
     double-counts and runs away — a spacer of 367,104px and a reflow that never
     settled. Deriving instead of correcting converges in a single pass. */
-function splitLines(b: FlowBlock, top: number, page: number, g: PageGeometry, reserve: PageReserve): { breaks: PageBreak[]; endPage: number } | null {
+function splitLines(b: FlowBlock, top: number, page: number, g: PageGeometry, reserve: PageReserve, inset: PageInset): { breaks: PageBreak[]; endPage: number } | null {
   const lh = b.lineHeight;
   const n = b.lineCount;
   if (b.pos == null || !lh || !n || n < 2) return null;
@@ -314,7 +332,7 @@ function splitLines(b: FlowBlock, top: number, page: number, g: PageGeometry, re
     if (at > 0 && n - at === 1) at -= 1;
     if (at < 1) return null;
     p++;
-    const height = Math.round(bandTop(p, g) - (top + at * lh) - added);
+    const height = Math.round(bandStart(p, g, inset) - (top + at * lh) - added);
     if (height <= 0) return null;
     out.push({ pos: b.pos, lineIndex: at, height });
     added += height;
@@ -337,7 +355,7 @@ function splitLines(b: FlowBlock, top: number, page: number, g: PageGeometry, re
     A continuation does NOT repeat the header row, so a break costs its spacer
     and nothing else. The header's height still matters for where the first
     break may fall — see `first` below. */
-function splitRows(b: FlowBlock, top: number, page: number, g: PageGeometry, reserve: PageReserve): { breaks: PageBreak[]; endPage: number } | null {
+function splitRows(b: FlowBlock, top: number, page: number, g: PageGeometry, reserve: PageReserve, inset: PageInset): { breaks: PageBreak[]; endPage: number } | null {
   const rows = b.rows;
   // rows holds one entry per row plus a closing bottom, so 3 entries is the
   // smallest table with anything to break BETWEEN.
@@ -359,7 +377,7 @@ function splitRows(b: FlowBlock, top: number, page: number, g: PageGeometry, res
        page to leave anything legal behind, so the caller moves it whole. */
     if (top + rows[j] + added > bandEnd(p, g, reserve)) return null;
     p++;
-    const height = Math.round(bandTop(p, g) - (top + rows[j] + added));
+    const height = Math.round(bandStart(p, g, inset) - (top + rows[j] + added));
     if (height <= 0) return null;
     out.push({ pos: b.pos, rowIndex: j, height });
     added += height;
@@ -387,11 +405,31 @@ function splitRows(b: FlowBlock, top: number, page: number, g: PageGeometry, res
     where it should be and where it currently is. The measurement runs again
     after each dispatch, so this converges rather than having to be right in one
     pass — and sameBreaks' 1px tolerance is what stops it oscillating. */
-export function measureBreaks(blocks: FlowBlock[], g: PageGeometry, reserve: PageReserve = []): Measured {
+export function measureBreaks(blocks: FlowBlock[], g: PageGeometry, reserve: PageReserve = [], inset: PageInset = []): Measured {
   const breaks: PageBreak[] = [];
   let page = 0;
+  let first = true;
 
   for (const b of blocks) {
+    /* Page 0's head inset, which is the one no break can carry. Every later
+       page gets its inset from the spacer that opens it; page 0 has nothing
+       above it, so the first block of the flow is pushed down here instead.
+
+       Idempotent exactly the way the forced branch below is: once the spacer
+       exists it arrives as `spacerBefore`, `b.top` has moved down by the same
+       amount, and the height recomputes to itself. `continue` for the same
+       reason too — the overflow tests would be reading the band this block is
+       being moved out of, and a block that still overruns is caught on the next
+       pass. */
+    if (first) {
+      first = false;
+      const start = bandStart(page, g, inset);
+      if (b.pos != null && start > bandTop(page, g) && b.top - b.spacerBefore < start) {
+        breaks.push({ pos: b.pos, height: Math.round(b.spacerBefore + (start - b.top)) });
+        continue;
+      }
+    }
+
     /* An authored break, taken before any measurement: this block opens a page
        because the author said so, not because the one above it ran out of room.
 
@@ -408,15 +446,15 @@ export function measureBreaks(blocks: FlowBlock[], g: PageGeometry, reserve: Pag
        computed against the band this block just left. A chapter title is one or
        two lines and cannot overrun the page it was just given; anything that
        somehow did would be caught on the next measurement pass. */
-    if (b.forced && b.pos != null && b.top > bandTop(page, g)) {
+    if (b.forced && b.pos != null && b.top > bandStart(page, g, inset)) {
       page++;
-      breaks.push({ pos: b.pos, height: Math.round(b.spacerBefore + (bandTop(page, g) - b.top)) });
+      breaks.push({ pos: b.pos, height: Math.round(b.spacerBefore + (bandStart(page, g, inset) - b.top)) });
       continue;
     }
 
     const end = bandEnd(page, g, reserve);
-    const tall = b.bottom - b.top > end - bandTop(page, g);
-    if (b.bottom <= end && !(tall && b.top > bandTop(page, g))) continue;
+    const tall = b.bottom - b.top > end - bandStart(page, g, inset);
+    if (b.bottom <= end && !(tall && b.top > bandStart(page, g, inset))) continue;
     if (b.pos == null) continue;
 
     /* Order matters here, and getting it wrong is what made long paragraphs
@@ -433,7 +471,7 @@ export function measureBreaks(blocks: FlowBlock[], g: PageGeometry, reserve: Pag
        and try again from the top of its new page. A block carries line
        geometry or row geometry, never both, so the two attempts are exclusive
        and the order between them doesn't matter. */
-    const s = splitLines(b, b.top, page, g, reserve) ?? splitRows(b, b.top, page, g, reserve);
+    const s = splitLines(b, b.top, page, g, reserve, inset) ?? splitRows(b, b.top, page, g, reserve, inset);
     if (s) { breaks.push(...s.breaks); page = s.endPage; continue; }
 
     /* Already at or above this page's top — a previous pass put it here, or it
@@ -441,18 +479,18 @@ export function measureBreaks(blocks: FlowBlock[], g: PageGeometry, reserve: Pag
        the page and is allowed to overrun; moving it would loop forever, since
        it overflows wherever it lands. Reaching here at all means it overran,
        so the page is spent either way. */
-    if (b.top <= bandTop(page, g)) { page++; continue; }
+    if (b.top <= bandStart(page, g, inset)) { page++; continue; }
 
     page++;
-    breaks.push({ pos: b.pos, height: Math.round(b.spacerBefore + (bandTop(page, g) - b.top)) });
+    breaks.push({ pos: b.pos, height: Math.round(b.spacerBefore + (bandStart(page, g, inset) - b.top)) });
     // A paragraph longer than a page still overruns after the move, so split
     // its tail from the top of the page it just landed on.
-    const after = splitLines(b, bandTop(page, g), page, g, reserve)
-      ?? splitRows(b, bandTop(page, g), page, g, reserve);
+    const after = splitLines(b, bandStart(page, g, inset), page, g, reserve, inset)
+      ?? splitRows(b, bandStart(page, g, inset), page, g, reserve, inset);
     if (after) { breaks.push(...after.breaks); page = after.endPage; continue; }
     // Unsplittable and still too tall for where it landed — measured against
     // the NEW page's band, whose footnote reserve is its own.
-    if (b.bottom - b.top > bandEnd(page, g, reserve) - bandTop(page, g)) page++;
+    if (b.bottom - b.top > bandEnd(page, g, reserve) - bandStart(page, g, inset)) page++;
   }
 
   return { breaks, pageCount: page + 1 };
