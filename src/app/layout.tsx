@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Nunito_Sans, Syne, Manrope, Newsreader, Fraunces, Source_Sans_3, Parisienne, Anton, Courier_Prime, EB_Garamond, Lora, Playfair_Display, Libre_Baskerville, Merriweather, Inter, Montserrat, Poppins, Bebas_Neue } from 'next/font/google';
+import { Nunito_Sans, Syne, Manrope, Newsreader, Fraunces, Source_Sans_3, Parisienne, Anton, Courier_Prime, EB_Garamond, Lora, Playfair_Display, Libre_Baskerville, Merriweather, DM_Sans, Inter, Inter_Tight, Montserrat, Poppins, Bebas_Neue, TASA_Explorer, TASA_Orbiter } from 'next/font/google';
 import './globals.css';
 
 const nunitoSans = Nunito_Sans({
@@ -76,6 +76,24 @@ const playfair = Playfair_Display({ variable: '--font-playfair-display', subsets
 const libreBaskerville = Libre_Baskerville({ variable: '--font-libre-baskerville', subsets: ['latin'], weight: ['400', '700'], style: ['normal', 'italic'] });
 const merriweather = Merriweather({ variable: '--font-merriweather', subsets: ['latin'], weight: ['400', '700'], style: ['normal', 'italic'] });
 const inter = Inter({ variable: '--font-inter', subsets: ['latin'], weight: ['400', '600', '700'] });
+/* Career Pathways (the Figma template) sets every heading, numeral and label in
+   Inter Tight — a genuinely different face from Inter, not a weight of it: the
+   narrower width is what lets an 82px cover title hold two words on one line.
+   Medium/SemiBold/Bold are the three the design actually uses. */
+const interTight = Inter_Tight({ variable: '--font-inter-tight', subsets: ['latin'], weight: ['400', '500', '600', '700'] });
+/* One glyph's worth, but it is the cover's own mark (the loop arrow, top right)
+   and the file names the face. */
+const dmSans = DM_Sans({ variable: '--font-dm-sans', subsets: ['latin'], weight: ['400', '500', '700'] });
+/* Lovable (the second Figma template) is set entirely in Local Remote's two
+   TASA faces — Explorer for every heading, numeral and label, Orbiter for
+   running text. They were drawn for the Taiwan Space Agency's rebrand, released
+   under the SIL Open Font License and are on Google Fonts, so they load here
+   like everything else rather than being approximated by a near-miss grotesque.
+
+   Figma names the body face "TASA Orbiter Deck", one of the family's three
+   optical sizes; Google ships the family under the one name. */
+const tasaExplorer = TASA_Explorer({ variable: '--font-tasa-explorer', subsets: ['latin'], weight: ['400', '500', '600', '700'] });
+const tasaOrbiter = TASA_Orbiter({ variable: '--font-tasa-orbiter', subsets: ['latin'], weight: ['400', '500', '700'] });
 const montserrat = Montserrat({ variable: '--font-montserrat', subsets: ['latin'], weight: ['400', '600', '700'] });
 const poppins = Poppins({ variable: '--font-poppins', subsets: ['latin'], weight: ['400', '600', '700'] });
 const bebasNeue = Bebas_Neue({ variable: '--font-bebas-neue', subsets: ['latin'], weight: '400' });
@@ -92,7 +110,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${nunitoSans.variable} ${syne.variable} ${manrope.variable} ${newsreader.variable} ${fraunces.variable} ${sourceSans3.variable} ${parisienne.variable} ${anton.variable} ${courierPrime.variable} ${ebGaramond.variable} ${lora.variable} ${playfair.variable} ${libreBaskerville.variable} ${merriweather.variable} ${inter.variable} ${montserrat.variable} ${poppins.variable} ${bebasNeue.variable} antialiased`}>
+      <body className={`${nunitoSans.variable} ${syne.variable} ${manrope.variable} ${newsreader.variable} ${fraunces.variable} ${sourceSans3.variable} ${parisienne.variable} ${anton.variable} ${courierPrime.variable} ${ebGaramond.variable} ${lora.variable} ${playfair.variable} ${libreBaskerville.variable} ${merriweather.variable} ${inter.variable} ${interTight.variable} ${dmSans.variable} ${tasaExplorer.variable} ${tasaOrbiter.variable} ${montserrat.variable} ${poppins.variable} ${bebasNeue.variable} antialiased`}>
         {children}
       </body>
     </html>

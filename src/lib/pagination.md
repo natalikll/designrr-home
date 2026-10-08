@@ -27,18 +27,19 @@ think in.
 
 | Our name | Spec term | What it is |
 |---|---|---|
-| band | fragmentainer | The usable strip of one page: `[bandTop(i), bandTop(i) + contentH]`, shortened by that page's reserve |
+| band | fragmentainer | The usable strip of one page: `[bandStart(i), bandTop(i) + contentH]`, pushed down by that page's inset and shortened by its reserve |
 | "moves whole" | monolithic | A block that cannot be broken across a boundary, so it moves down entire |
 | break | fragmentation break | One entry in `PageBreak[]`: a spacer, plus a line index when it splits a paragraph |
 | spacer | — | The rendered `div` a break becomes; carries no margins, so nothing collapses across one |
-| reserve | — | Room kept clear at the foot of a page for the footnotes whose markers land on it |
+| reserve | — | Room kept clear at the foot of a page: the footnotes whose markers land on it, plus whatever that page's design claims |
+| inset | — | Room kept clear at the head of a page, claimed by that page's design. A reserve cannot express it — a reserve shortens a page from the bottom |
 | stack | — | One chapter's sheets, drawn stacked with `PAGE_GAP` between them |
 | stuck | — | The forward-only record of which page each footnote was last assigned to |
 
 ## The contract
 
-`measureBreaks(blocks, geometry, reserve)` is a **pure function**. It takes the
-flow as it is rendered right now, and returns where the pages end.
+`measureBreaks(blocks, geometry, reserve, inset)` is a **pure function**. It takes
+the flow as it is rendered right now, and returns where the pages end.
 
 **In**
 
@@ -48,7 +49,11 @@ flow as it is rendered right now, and returns where the pages end.
 - `PageGeometry` — the trim box in canvas pixels. Read through a getter rather
   than captured, so changing trim size or margins repaginates every chapter
   without rebuilding the editors and losing caret, history and scroll.
-- `PageReserve` — footnote room per page, already clamped by the caller.
+- `PageReserve` — foot room per page, already clamped by the caller: the page
+  design's own claim plus its footnotes.
+- `PageInset` — head room per page, from the page design. Page 0's is paid by a
+  spacer before the first block; every later page's rides on the break that
+  opens it, so no page needs a second mechanism.
 
 **Out**
 
@@ -80,6 +85,10 @@ belongs in this return value rather than in a second measurement pass.
 - **Footnotes take their room first.** A note shortens the band of the page its
   marker lands on, so where a block ends up depends on what the notes have already
   claimed. The reserve is an input to the measurement, not a correction after it.
+- **A page's design claims its room per page, not per chapter.** Every sheet of a
+  chapter can wear a different page style, so the reserve and the inset are read
+  by page index. A style that claims nothing leaves both at 0, which is
+  arithmetically the engine as it was before per-sheet styles existed.
 
 ## Invariants
 
@@ -127,6 +136,13 @@ These are deliberate, not oversights. Each says what would have to change.
   notes stop taking room from the body, because a page still has to be a page.
   The clamp is applied by the `Pagination` plugin, not inside `measureBreaks` —
   the pure function trusts the reserve it is handed.
+- **A page's COLUMN COUNT cannot vary within a chapter.** The reserve and the
+  inset are per page, so a chapter's sheets can each wear their own page style —
+  but a multi-column chapter is laid out as one multi-column box with its sheets
+  as windows onto it, and the browser breaks those columns in a single pass. The
+  engine never sees them (`columns()` short-circuits the measure entirely).
+  Varying the count per sheet means laying each sheet out independently, which
+  means one editor per page, which is the trade the Overview above refuses.
 - **This model is screen-and-print only.** EPUB reflows in the reader and ignores
   it entirely; there is no PDF export in the prototype. Nothing here describes
   what a reader will show.
@@ -163,6 +179,9 @@ spacers. `top` may be the rendered one.
 | `table-continuation` | `table(0, headerH 30, 20 rows of 30)` | breaks before rows 6, 12 and 18, every `height` 88, `pageCount` 4 — evenly spaced, because a continuation pays for its spacer and nothing else |
 | `table-with-reserve` | `table(0, headerH 30, 8 rows)` with `reserve[0] = 60` | breaks earlier, before `rowIndex` 4, `height` 148 |
 | `reserve` | `para(0, 9)` with `reserve[0] = 60` | splits at `lineIndex` 7, `height` 128 — the same input with no reserve does not break at all |
+| `inset-p0` | `para(0, 5)` with `inset[0] = 60` | one `height` 60 break before the block, `pageCount` 1 — the flow starts 60 down page 0 |
+| `inset-p1` | `para(0, 20)` with `inset[1] = 60` | splits at `lineIndex` 10 `height` 128 and `lineIndex` 17 `height` 68, `pageCount` 3 — page 1 holds 7 lines, not 10 |
+| `inset-converges` | re-measure either of the above with its spacers applied | identical breaks; `sameBreaks` true on every further pass |
 | `converges` | re-measure `monolithic-move` with the spacer applied (`top` 268, `spacerBefore` 168) | identical breaks; `sameBreaks` true on every further pass |
 
 Every number above was produced by running `measureBreaks`, not derived on paper.

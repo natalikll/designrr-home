@@ -2,6 +2,7 @@
 
 import { useState, useRef, useReducer, useCallback, useEffect, useLayoutEffect, useMemo, createContext, useContext } from 'react';
 import { createPortal } from 'react-dom';
+import { useRouter } from 'next/navigation';
 import { useEditor, EditorContent, type Editor } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import { NodeSelection, TextSelection, Selection as PMSelection, Plugin, PluginKey, type EditorState } from '@tiptap/pm/state';
@@ -24,11 +25,12 @@ import TableCell from '@tiptap/extension-table-cell';
 import TableHeader from '@tiptap/extension-table-header';
 import { Node, Extension, mergeAttributes, textInputRule, type JSONContent } from '@tiptap/core';
 import QRCode from 'qrcode';
-import { useFlowStore, ownsPlan, combinedGenerationsUsed, manuscriptLimitFor, PLAN_LABELS } from '@/stores/flowStore';
+import { useFlowStore, ownsPlan, combinedGenerationsUsed, manuscriptLimitFor, PLAN_LABELS, type PlanId } from '@/stores/flowStore';
 import { buildEpub, downloadEpub, inlineExternalImages } from '@/lib/epub';
 import { parseVideoUrl, fetchVideoMeta, videoLinkLabel, withProtocol, videoLinkProblem, type VideoMeta } from '@/lib/videoEmbed';
 import { editsFor } from '@/lib/textTransforms';
 import { markdownToHtml } from '@/lib/markdownToBlocks';
+import { track } from '@/lib/analytics';
 import { readPdf, titleFromPdf } from '@/lib/importPdf';
 import { BOOK_ICONS, SOCIAL_ICONS, BOOK_ICONS_BY_NAME, bookIconSpec, bookIconHtml, socialUrl, cleanHandle } from '@/lib/bookIcons';
 import type { BookIconStyle } from '@/lib/bookIcons';
@@ -37,6 +39,23 @@ import type { BookIconStyle } from '@/lib/bookIcons';
 import { destinationHost } from '@/lib/qrLinks';
 import { isMediaRef, mediaUrl, putMedia, loadAllMedia, inlineUploadedMedia, stripSessionUrls } from '@/lib/mediaStore';
 import { FOOTNOTE_LIST_CLASS, applyFootnoteNumbering } from '@/lib/footnotes';
+import { CP_COLOR, CP_FONT, CP_FIELD, CP_TYPE, CP_METRIC, CP_PAGE_SIZE, CP_MARGINS, CP_W, CP_H, cp, cpf, cpX, cpY } from './templates/careerPathways';
+import {
+  CpContentSheet, CP_OPENERS, CP_ADD_PAGE_OPTIONS, CP_CONTENT_LAYOUTS, CP_WORKSHEET_LAYOUTS, CP_IMAGE_LAYOUTS, CP_TOC_LAYOUTS, CP_BACK_LAYOUTS, CP_COVER_LAYOUTS,
+  cpOpenerFor, type CpSheetVariant, type CpWorkbookKind, type CpAddPageKind,
+} from './templates/careerPathwaysChrome';
+import {
+  LV_COLOR, LV_FONT, LV_TYPE, LV_METRIC, LV_PAGE_SIZE, LV_MARGINS, LV_W, LV_H, lv, lvX, lvY,
+} from './templates/lovable';
+import {
+  LvContentSheet, LV_OPENERS, LV_CONTENT_LAYOUTS, LV_COVER_LAYOUTS, LV_TOC_LAYOUTS, LV_BACK_LAYOUTS,
+  LV_IMAGE_LAYOUTS, LV_CTA_LAYOUTS, LV_WORKSHEET_LAYOUTS, LV_ADD_PAGE_OPTIONS, LV_FOOT_RESERVE, LV_HEAD_INSET,
+  type LvSheetVariant, type LvCoverKind,
+} from './templates/lovableChrome';
+import {
+  lvPageElements, lvCoverElements, lvCoverBg, lvOpenerElements, LV_PAGE_BG, LV_QUOTE_CSS,
+  type LvPageKind, type LvStock,
+} from './templates/lovableElements';
 import {
   PAGE_W as DEFAULT_PAGE_W, PAGE_H as DEFAULT_PAGE_H,
   measureBreaks, sameBreaks, pageTop, stackHeight, bandTop, contentH, pageOfTop, PAGE_GAP,
@@ -47,6 +66,7 @@ import {
   type PageBreak, type FlowBlock, type PageGeometry, type PageMargins, type LengthUnit,
 } from '@/lib/pagination';
 import { TierBadge, shouldShowTierBadge, type GateTier } from '../ui/TierBadge';
+import { PUBLISH_FORMATS, FORMAT_NOTES, PublishFormatList, PublishStatsRow, PublishedPanel } from './publishFormats';
 import { UpgradePlanModal } from '../account/MyAccountView';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { AISparkleIcon, DuplicateIcon, TrashIcon } from '../presentation/presentationIcons';
@@ -84,6 +104,7 @@ const PANEL_BORDER = '#E8EBF2';
    exists nowhere in the design system (globals.css carried a third, #E8F1FF). */
 const INK_20 = 'var(--color-black-20)';
 const BLUE_97 = 'var(--color-primary-blue-97)';
+const BLUE_90 = 'var(--color-primary-blue-90)';
 // Quiet uppercase section-eyebrow color — distinct from SLATE, which stays for real
 // body/secondary text. Matches PresentationEditorView's label convention. Darkened
 // from the original #A8B3C4 (2.1:1 on white, failed WCAG AA) to ~5:1 — still visibly
@@ -3480,14 +3501,53 @@ function rowBreakContext(doc: PMNode, pos: number): { cols: number } | null {
    its editor is created. Reading it per measure keeps every chapter on the
    current page box without tearing down and rebuilding every editor in the
    book — which would lose the caret, the history and the scroll position. */
-const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geometry: () => PageGeometry }>({
+/** What a multi-column chapter's flow is laid out on, when it has one.
+
+    `lead` is the room taken by whatever sits above the running text on the
+    sheet the text starts on — a chapter title and its eyebrow. It is a block at
+    the head of the flow rather than padding on the box, because in a column
+    flow those are different things: padding would indent EVERY column, and the
+    title only sits above the first one. */
+export interface ColumnFlow {
+  cols: number; colW: number; gap: number; height: number; lead: number;
+  /** How many sheets stand in front of the running text and carry none of it —
+      a designed chapter opener is a whole page of its own. The flow knows
+      nothing about them, so the page count has to add them back on. */
+  startSheet: number;
+}
+
+const Pagination = Extension.create<{
+  onLayout: (pageCount: number) => void;
+  geometry: () => PageGeometry;
+  pageReserve: (page: number) => number;
+  pageInset: (page: number) => number;
+  columns: () => ColumnFlow | null;
+}>({
   name: 'pagination',
   addOptions() {
-    return { onLayout: () => {}, geometry: () => DEFAULT_GEOMETRY };
+    /* `pageReserve` and `pageInset` are room taken off the foot and the head of
+       ONE page before the flow is measured — the reserve is the mechanism
+       footnotes already use, exposed so a page design can claim space too, and
+       the inset is its mirror for a design that starts its text low. Career
+       Pathways' photo pages bleed a picture off a bottom corner and its band
+       pages set the text under a band at the top; text running through either is
+       not a layout, it is a collision.
+
+       Both take a PAGE INDEX, because a chapter's sheets do not have to wear the
+       same page style — pick one while looking at sheet 3 and sheet 3 is what
+       changes. Zero for every page of a chapter under a template that designs
+       nothing. */
+    return {
+      onLayout: () => {}, geometry: () => DEFAULT_GEOMETRY,
+      pageReserve: () => 0, pageInset: () => 0, columns: () => null,
+    };
   },
   addProseMirrorPlugins() {
     const notify = this.options.onLayout;
     const getGeometry = this.options.geometry;
+    const getPageReserve = this.options.pageReserve;
+    const getPageInset = this.options.pageInset;
+    const getColumns = this.options.columns;
     return [
       new Plugin<PaginationState>({
         key: paginationKey,
@@ -3507,7 +3567,25 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
         props: {
           decorations(state) {
             const { breaks, notes } = paginationKey.getState(state) ?? { breaks: [], notes: [] };
-            if (!breaks.length && !notes.length) return DecorationSet.empty;
+            /* A column flow's own spacer: the room the chapter title takes at the
+               head of the sheet the text starts on. It has to be INSIDE the flow
+               — the first thing in it — because a block at the top of a column
+               flow occupies the top of the FIRST column only, which is exactly
+               what a title does. Box padding would indent all of them, and
+               shortening the box would shorten every column. */
+            const flow = getColumns();
+            const lead = flow && flow.lead > 0
+              ? [Decoration.widget(0, () => {
+                  const el = document.createElement('div');
+                  el.dataset.columnLead = 'true';
+                  el.contentEditable = 'false';
+                  el.style.cssText = `height:${Math.round(flow.lead)}px;width:100%;user-select:none;pointer-events:none`;
+                  return el;
+                }, { side: -2, ignoreSelection: true, key: `lead-${Math.round(flow.lead)}` })]
+              : [];
+            if (!breaks.length && !notes.length) {
+              return lead.length ? DecorationSet.create(state.doc, lead) : DecorationSet.empty;
+            }
             /* Node decorations, not a re-render: the <li> stays the same
                ProseMirror node in the same place in the document and only its
                box moves, so the caret, typing, selection and undo inside a
@@ -3531,7 +3609,7 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                 }));
               }
             }
-            return DecorationSet.create(state.doc, placed.concat(breaks.flatMap((b) => {
+            return DecorationSet.create(state.doc, lead.concat(placed).concat(breaks.flatMap((b) => {
               /* A row break lands inside a <tbody>, where a <div> is not valid
                  markup: the browser hoists it out of the table and the page
                  silently overflows. So the spacer has to BE a row, and the
@@ -3606,6 +3684,37 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
             busy = true;
             try {
               const geo = getGeometry();
+              /* A column flow paginates ITSELF. The browser lays a multi-column
+                 box out as a strip of columns running left to right — when the
+                 box has a height and the content outruns it, the overflow does
+                 not spill, it starts another column — so the breaks this engine
+                 exists to compute have already been made, exactly, by the
+                 thing that does the line breaking. There is nothing to measure
+                 but how many columns came out, and nothing to insert: every
+                 spacer below would be a second opinion about a layout that is
+                 already decided, which is how the old two-column page ended up
+                 with text running off the foot of the sheet.
+
+                 `cols` per page, so the count divides down to pages. */
+              const flow = getColumns();
+              if (flow) {
+                const dom = view.dom as HTMLElement;
+                const total = Math.max(1, Math.round((dom.scrollWidth + flow.gap) / (flow.colW + flow.gap)));
+                /* Plus the sheets the flow does not occupy. A chapter whose
+                   opener is a whole designed page reported only its TEXT pages
+                   here, so the stack was drawn one sheet short — and the window
+                   for the last page, positioned past the end of its own stack,
+                   was painted over the top of the next chapter's opener. */
+                const pages = Math.max(1, flow.startSheet + Math.ceil(total / flow.cols));
+                const prev = paginationKey.getState(view.state);
+                if (!prev || prev.breaks.length || prev.notes.length || prev.pageCount !== pages) {
+                  view.dispatch(view.state.tr
+                    .setMeta(paginationKey, { breaks: [], notes: [], pageCount: pages })
+                    .setMeta('addToHistory', false));
+                }
+                if (pages !== lastNotified) { lastNotified = pages; notify(pages); }
+                return;
+              }
               /* Read the flow as if it had never been paginated, by subtracting
                  the spacers already in it rather than zeroing them. Zeroing
                  meant writing style and reading layout in the same pass, and
@@ -3621,7 +3730,25 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                  heading above the prose too. Falling back to the editor's own
                  top only matters before the stack has mounted. */
               const stack = view.dom.closest('[data-page-stack]') as HTMLElement | null;
-              const originTop = (stack ? stack.getBoundingClientRect().top + geo.padTop : view.dom.getBoundingClientRect().top);
+              /* Every rect below is read in SCREEN space, and the canvas carries
+                 a `transform: scale()` for zoom — while `geo`, `offsetHeight`
+                 and the computed line-height are all layout-space CSS pixels.
+                 Measuring the one against the other made the page count a
+                 function of the zoom control: at 150% every block measured half
+                 again as tall against a page that hadn't grown, so the flow
+                 broke a page early, and the break survived the trip back to
+                 100% because the measure only re-runs when something changes.
+                 The ratio is read off the editor's own box rather than the zoom
+                 state so that any transform between here and the viewport is
+                 accounted for, including none at all. */
+              const scale = view.dom.offsetWidth > 0
+                ? view.dom.getBoundingClientRect().width / view.dom.offsetWidth
+                : 1;
+              const px = (v: number) => (scale > 0 ? v / scale : v);
+              /* padTop is already layout-space, so it's added AFTER the
+                 conversion rather than folded into the screen-space origin. */
+              const originTop = (stack ? stack.getBoundingClientRect().top : view.dom.getBoundingClientRect().top);
+              const padOffset = stack ? geo.padTop : 0;
               const blocks: FlowBlock[] = [];
               // Screen-space line rects per block position, so a split break
               // can be turned back into a document position below.
@@ -3682,7 +3809,7 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                   const lh = parseFloat(window.getComputedStyle(el).lineHeight);
                   if (Number.isFinite(lh) && lh > 1) {
                     lineHeight = lh;
-                    lineCount = Math.max(1, Math.round((r.height - innerH) / lh));
+                    lineCount = Math.max(1, Math.round((px(r.height) - innerH) / lh));
                   }
                 }
                 if (splittable && pos != null) {
@@ -3736,8 +3863,8 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                     const tb = tr.getBoundingClientRect();
                     if (tr.dataset.pageBreak === 'true') { rowDrop += tb.height; continue; }
                     if (!head) head = tr;
-                    offs.push(Math.round(tb.top - r.top - rowDrop));
-                    lastBottom = Math.round(tb.bottom - r.top - rowDrop);
+                    offs.push(Math.round(px(tb.top - r.top - rowDrop)));
+                    lastBottom = Math.round(px(tb.bottom - r.top - rowDrop));
                   }
                   if (offs.length > 1) {
                     offs.push(lastBottom);
@@ -3745,7 +3872,7 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                     // A header row is one that holds <th>. The worksheet markup
                     // puts it in <tbody> like every other row, so the tag is
                     // the only thing that identifies it.
-                    headerH = head?.querySelector('th') ? Math.round(head.getBoundingClientRect().height) : 0;
+                    headerH = head?.querySelector('th') ? Math.round(px(head.getBoundingClientRect().height)) : 0;
                   }
                 }
                 /* The one measurement that isn't a measurement: the author said
@@ -3760,8 +3887,8 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                 blocks.push({
                   forced,
                   pos,
-                  top: r.top - originTop,
-                  bottom: r.bottom - originTop - rowDrop,
+                  top: px(r.top - originTop) - padOffset,
+                  bottom: px(r.bottom - originTop - rowDrop) - padOffset,
                   spacerBefore: pendingSpacer,
                   lineHeight,
                   lineCount,
@@ -3782,7 +3909,7 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
               if (noteList) {
                 for (const li of Array.from(noteList.children) as HTMLElement[]) {
                   const fid = li.getAttribute('data-fid');
-                  if (fid) noteH.set(fid, li.getBoundingClientRect().height);
+                  if (fid) noteH.set(fid, px(li.getBoundingClientRect().height));
                 }
               }
               const perPage = new Map<number, string[]>();
@@ -3790,20 +3917,37 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                 for (const ref of Array.from(view.dom.querySelectorAll<HTMLElement>('.book-footnote-ref'))) {
                   const fid = ref.getAttribute('data-fid');
                   if (!fid || !noteH.has(fid)) continue;
-                  const want = pageOfTop(ref.getBoundingClientRect().top - originTop, geo);
+                  const want = pageOfTop(px(ref.getBoundingClientRect().top - originTop) - padOffset, geo);
                   const page = Math.max(want, stuck.get(fid) ?? want);
                   stuck.set(fid, page);
                   const group = perPage.get(page);
                   if (group) group.push(fid); else perPage.set(page, [fid]);
                 }
               }
+              /* The page design's own claim comes first, page by page; a note's
+                 claim is added on top of its own page's, and only the note half
+                 is capped (footnoteReserveMax exists to stop notes eating a page,
+                 not to overrule the page's own design).
+
+                 One entry per page the flow could reach, because measureBreaks
+                 reads reserve[page] and inset[page] and an unset page would
+                 silently get neither. The bound is the unpaginated height plus
+                 slack, since shortening a band can only push content onto MORE
+                 pages — and a page style picked for sheet 5 of a four-sheet
+                 chapter has to be there when the chapter grows to reach it. */
+              const maxPage = pageOfTop(blocks.length ? blocks[blocks.length - 1].bottom : 0, geo) * 2 + 4;
               const reserve: number[] = [];
+              const inset: number[] = [];
+              for (let i = 0; i <= maxPage; i++) {
+                reserve[i] = Math.max(0, getPageReserve(i));
+                inset[i] = Math.max(0, getPageInset(i));
+              }
               for (const [page, fids] of perPage) {
                 const h = fids.reduce((sum, fid) => sum + (noteH.get(fid) ?? 0), 0);
-                reserve[page] = Math.min(h + FOOTNOTE_GAP, footnoteReserveMax(geo));
+                reserve[page] = (reserve[page] ?? 0) + Math.min(h + FOOTNOTE_GAP, footnoteReserveMax(geo));
               }
 
-              const measured = measureBreaks(blocks, geo, reserve);
+              const measured = measureBreaks(blocks, geo, reserve, inset);
               const pageCount = measured.pageCount;
               /* Temporary: `window.__pagedebug = true` in the console, then type
                  in the chapter, to see what the engine actually measured. */
@@ -3823,7 +3967,7 @@ const Pagination = Extension.create<{ onLayout: (pageCount: number) => void; geo
                  browser will actually resolve `top` against, so asking it is
                  exact whatever sits between the two. */
               const host = view.dom.offsetParent as HTMLElement | null;
-              const toCss = originTop - (host ? host.getBoundingClientRect().top : originTop);
+              const toCss = px(originTop - (host ? host.getBoundingClientRect().top : originTop)) + padOffset;
               const notes: NotePlacement[] = [];
               for (const [page, fids] of perPage) {
                 const h = fids.reduce((sum, fid) => sum + (noteH.get(fid) ?? 0), 0);
@@ -5604,6 +5748,44 @@ interface ChapterPage {
   /* Per-chapter overrides for the opener's accent rule — see OpenerRule. Absent
      means "whatever the theme says", exactly like ChapterOverrides. */
   openerRule?: Partial<OpenerRule>;
+  /* Which running-page style this chapter's sheets take, when the active
+     template offers more than one (see ThemeDef.pageDesign) — a plain page, two
+     columns, a bled photo, a band off the head or foot. Absent means the
+     template's own default, which is one column under both of them. A theme
+     with no page design ignores it.
+
+     Stored as a plain string, not as one template's union: every page design
+     names its own styles, and the design that reads this is the one that
+     validates it (see PageDesign.sheetStyles). The alternative was a second
+     field per template, which is the doubling the registry exists to avoid. */
+  sheetStyle?: string;
+  /* What each SHEET of this chapter wears, keyed by its index within the
+     chapter — the override the Layout panel writes when you pick a style while
+     looking at one page. A sheet with no entry falls back to `sheetStyle`, and
+     that to the template's default, so a chapter nobody has restyled per page
+     is the same object it always was.
+
+     Keyed by position, not by content: a page style is a property of the PAGE,
+     the way a page's background is, so adding a paragraph to sheet 1 moves the
+     text under a style rather than carrying the style along with it.
+
+     What this canNOT express is the column count. A chapter is one ProseMirror
+     editor, and a multi-column chapter is one multi-column box with its sheets
+     as windows onto it — the browser does the column breaking in a single pass,
+     so the count cannot change halfway down. Columns stay a property of the
+     chapter (see sheetColumns), and picking a style that changes them says so.
+     The room a style takes off the head or the foot of its sheet IS per sheet:
+     the paginator reads both by page index (see PageInset in lib/pagination). */
+  sheetStyles?: Record<number, string>;
+  /** Which of the template's opener designs this chapter wears. Unset cycles by chapter number. */
+  openerIndex?: number;
+  /* The objects on this chapter's OPENER — its ground, its band, its dash field,
+     its photo and its numeral. A chapter opener is a designed page like any
+     other (the file draws it as one), so it is a free canvas like any other, and
+     everything on it selects, moves and restyles through the same canvas the
+     cover uses. Only the opener sheet carries them; the running sheets after it
+     are flowing text. Absent on every theme that designs nothing. */
+  coverElements?: CoverElement[];
 }
 
 /* ── book metadata — EPUB 3.2 requires identifier, title and language; the rest is
@@ -5688,11 +5870,27 @@ interface CoverTextElement extends CoverElementBase {
   role: 'category' | 'title' | 'subtitle' | 'author' | 'custom';
   fontFamily: string; fontSize: number; color: string;
   fontWeight?: number; fontStyle?: 'italic'; textAlign?: 'left' | 'center' | 'right';
-  letterSpacing?: string; textTransform?: 'uppercase';
+  /* 'capitalize' joined 'uppercase' with the first template that sets a heading
+     in title case and means it — the contents page reads "Table Of Contents". */
+  letterSpacing?: string; textTransform?: 'uppercase' | 'capitalize';
   /* Unitless multiplier, percentage or px, exactly as typed — see
      parseTypeMetric. Absent means the browser's own default for the face, which
      is what every cover has had until now. */
   lineHeight?: string;
+  /* Where the words sit in the box. Absent means centred, which is what a cover
+     wants: its boxes are generous placeholders and the type should ride in the
+     middle of one. A designed page is the opposite — its boxes come off a
+     drawing, where a text frame's TOP is the measurement that was taken, so the
+     type has to start there and a box that outgrows its words must grow
+     downward. 'cap' goes one further and starts at the CAP HEIGHT, which is what
+     Figma's own text-box trim measures to, and is how this template places its
+     contents heading and its author credit. */
+  anchor?: 'top' | 'cap';
+  /* What this box says before anyone types in it. Only 'custom' needs it — the
+     four singleton roles each have one book-wide default (DEFAULT_COVER_TEXT),
+     but a custom box is whatever the template put there, and a template that
+     ships a mark or a strapline has no way to say so otherwise. */
+  defaultHtml?: string;
   /* Which TEXT_STYLES preset produced the five properties above, so the picker
      can show the current one instead of always rendering unselected. Cleared the
      moment any of those properties is set by hand — at that point the element no
@@ -5736,8 +5934,23 @@ interface CoverImageElement extends CoverElementBase {
      commands and repositioning as a gesture. Three products, three answers, so
      there is no "standard" to copy here; this follows the distinction that
      actually holds rather than any one of them. */
-  fit?: 'cover' | 'contain';
+  fit?: 'cover' | 'contain' | 'fill';
+  /* 'fill' is a third behaviour and deliberately NOT a third option in the
+     Fill/Fit picker. Those two are a choice about a PHOTOGRAPH — show all of it,
+     or crop it to the box — and both preserve its proportions because a
+     stretched photograph is a mistake, never an intent. A template's generated
+     vector is the opposite case: the artwork was drawn FOR the box it is placed
+     in (see lvBlockSrc, which builds each block at its own size), so it has to
+     stretch with it, and cropping it to a square-ish box shears the corners off
+     the shape. One is a property an author sets; this is a property of the
+     artwork, which is why the picker stays at two. */
   borderWidth?: number; borderColor?: string; borderSides?: string; borderPos?: string; borderStyle?: string;
+  /* Corner radius in px, the same property the body image node and the cover
+     SHAPE both already carry — a cover photo was the one box in the editor that
+     could not be rounded, which is also what made a circular author portrait
+     impossible to express as an element. Half the shorter side reads as a
+     circle, the way it does everywhere else. */
+  radius?: number;
 }
 interface CoverShapeElement extends CoverElementBase {
   type: 'shape'; shape: 'rectangle' | 'triangle' | 'circle' | 'rounded'; color: string;
@@ -5822,7 +6035,28 @@ function fieldKeyForCoverText(pageId: string, el: CoverTextElement): string {
 
 interface SimplePage {
   id: string;
-  type: 'cover' | 'toc' | 'backmatter';
+  /* 'cta' and 'workbook' arrive with a template that ships them (see
+     ThemeDef.pageDesign). They are whole designed pages with a fixed
+     arrangement — a call to action, a planner, a to-do list — not a free canvas
+     and not a flowing chapter, which is why they are their own types rather
+     than a chapter wearing a style. A book on a template that has none simply
+     never offers them. */
+  type: 'cover' | 'toc' | 'backmatter' | 'cta' | 'workbook' | 'image';
+  /** Which workbook sheet this is. Only meaningful when type === 'workbook'. */
+  workbook?: CpWorkbookKind;
+  /* Which design this page wears, per kind. All four are plain strings for the
+     same reason `sheetStyle` is: the ids belong to whichever page design is
+     active, and a union of one template's names would have to grow a second
+     arm for every template after it. The active design validates and defaults
+     them — see PageDesign.pageKindOf. */
+  /** Which image-page design this is. Only meaningful when type === 'image'. */
+  imageLayout?: string;
+  /** Which contents-page design this is. Only meaningful when type === 'toc'. */
+  tocLayout?: string;
+  /** Which back-page design this is. Only meaningful when type === 'backmatter'. */
+  backLayout?: string;
+  /** Which cover design this is, under a template that ships several. */
+  coverLayout?: string;
   title: string;
   /* Per-page background fill. Falls back to the theme's own bg when unset, so a
      book that never touches this looks exactly as it did — but the colour stops
@@ -5838,12 +6072,28 @@ interface SimplePage {
      the flow under the bio rather than being positioned. One per page, because a
      second one on an author page is a question nobody has asked. */
   backQr?: { url: string; color: string };
+  /* cta only — where the button goes. A plain address rather than the internal
+     link picker the body's own links use: a call to action at the back of a book
+     points out of the book, which is the whole point of it. */
+  ctaHref?: string;
   /* backmatter only — a real author photo for the About-the-Author panel, picked
      the same way as openerImage/cover images. Unset falls back to the drawn
      circle+body silhouette. */
   authorPhoto?: string;
 }
 type PageMeta = ChapterPage | SimplePage;
+
+/* What each non-chapter page is called when its own `title` is empty. Chapters
+   are named by their heading instead (see chapterTitleText), which is a live
+   field rather than a fixed string. */
+const PAGE_KIND_NAME: Record<SimplePage['type'], string> = {
+  cover: 'Cover',
+  toc: 'Contents',
+  backmatter: 'About the author',
+  cta: 'Call to action',
+  workbook: 'Worksheet',
+  image: 'Photo page',
+};
 
 /* ── Chapter start vs continuation ───────────────────────────────────────────
    A `type: 'chapter'` entry is a CONTAINER, not necessarily a chapter. It earns
@@ -5901,7 +6151,7 @@ const nextCoverElId = () => `cel-${++coverElId}`;
    collision would cross-wire two boxes onto one piece of text. */
 function reserveCoverElIds(pages: PageMeta[]): void {
   for (const p of pages) {
-    for (const el of (p.type === 'cover' ? p.coverElements ?? [] : [])) {
+    for (const el of (holdsObjects(p) ? p.coverElements ?? [] : [])) {
       const n = /^cel-(\d+)$/.exec(el.id);
       if (n) coverElId = Math.max(coverElId, Number(n[1]));
     }
@@ -5992,10 +6242,13 @@ interface CoverOverrides {
   /* The cover's own background. Same rule, one property: unset means the
      template decides, set means the author picked it and it travels. */
   bg?: string;
-  /* Slots the author deleted on purpose. A template that ships one is told not
-     to put it back — "this book has no subtitle" is a fact about the book, so it
-     outlives the layout that happened to offer the box. */
-  removed?: CoverSlotRole[];
+  /* There is deliberately no list of slots the author deleted. A deletion used
+     to outlive the template on the theory that "this book has no subtitle" is a
+     fact about the book — but a template supplies the whole design, so a box you
+     removed from one layout says nothing about the next one, and carrying the
+     removal forward meant a slot deleted once was missing from all forty
+     templates with no way back short of Undo. Deleting removes the element from
+     the page; applying a template rebuilds the page from the template. */
 }
 const EMPTY_COVER_OVERRIDES: CoverOverrides = { text: {} };
 
@@ -6017,16 +6270,13 @@ function pickCoverStyle(patch: Partial<CoverTextElement>): CoverTextStyle | null
   return found;
 }
 
-/** Lays the author's frozen properties back over a template's own slots, and
-    drops the slots they deleted on purpose. */
+/** Lays the author's frozen properties back over a template's own slots. */
 function applyCoverOverrides(els: CoverElement[], ov: CoverOverrides): CoverElement[] {
-  const removed = ov.removed ?? [];
-  if (!Object.keys(ov.text).length && !removed.length) return els;
-  return els.flatMap((el) => {
-    if (el.type !== 'text' || el.origin === 'author' || !isCoverSlotRole(el.role)) return [el];
-    if (removed.includes(el.role)) return [];
+  if (!Object.keys(ov.text).length) return els;
+  return els.map((el) => {
+    if (el.type !== 'text' || el.origin === 'author' || !isCoverSlotRole(el.role)) return el;
     const frozen = ov.text[el.role];
-    return [frozen ? { ...el, ...frozen } : el];
+    return frozen ? { ...el, ...frozen } : el;
   });
 }
 
@@ -6188,12 +6438,112 @@ function mergeCoverElements(current: CoverElement[], incoming: CoverElement[], o
   return [...slots, ...orphanPhoto, ...authored];
 }
 
+/* What the cover BECOMES under a given template. One function because three
+   callers have to agree exactly: applyTemplate, the gallery card, and the
+   canvas preview. The card promising one thing and the apply producing another
+   is the failure this prevents, and it used to be prevented by keeping two
+   copies of the same three steps in step by hand.
+
+   Pure, but not cheap: mergeCoverElements mints element ids, so callers that
+   run it on every render memoise it rather than burning a fresh batch per
+   keystroke. */
+/* Which pages hold placed objects. It was spelled `type === 'cover'` in nine
+   places, from when the cover was the only free canvas in the book — a template
+   that designs a contents page, a back page, a call to action or a workbook
+   sheet makes every one of them a canvas too, and a guard naming one page type
+   would have let those pages RENDER their objects while silently refusing every
+   drag, resize and delete. A chapter is the exception and stays one: it is a
+   flowing document, and its page boxes are produced by the paginator. */
+function holdsObjects(p: PageMeta): boolean { return p.type !== 'chapter' || p.layout === 'opener'; }
+
+function coverPageForTemplate(
+  page: SimplePage,
+  tpl: ThemeDef,
+  outgoing: ThemeDef,
+  fieldContent: Record<string, string>,
+  coverOverrides: CoverOverrides,
+): SimplePage {
+  return {
+    ...page,
+    // A hand-picked cover background outranks the template's, the same way a
+    // hand-set colour does — see CoverOverrides.
+    bg: coverOverrides.bg ?? tpl.coverBg,
+    /* Order matters. Auto-place fills the roles the template has no slot for,
+       THEN applyCoverOverrides runs — so a frozen colour still reaches a derived
+       slot, and a slot the author deliberately deleted is dropped again rather
+       than helpfully resurrected by the placer. */
+    coverElements: applyCoverOverrides(
+      autoPlaceCoverText(
+        mergeCoverElements(page.coverElements ?? [], tpl.coverElements, outgoing.coverElements),
+        tpl, page.id, fieldContent,
+      ),
+      coverOverrides,
+    ),
+  };
+}
+
+/* Every page of a book under a given template. `coverPageForTemplate` above
+   answers the same question for the cover alone, and that used to be the whole
+   of it: previewing a template re-drew the cover and left the contents page, the
+   back page and every chapter opener wearing the OLD template's objects, so a
+   Lovable preview showed Lovable's cover in front of Career Pathways' black
+   dash-field openers. The preview and the apply now walk the same three
+   branches, because a preview that isn't what applying produces is worse than no
+   preview.
+
+   `chapterNumberOf` and `isChapterStart` are passed in rather than imported into
+   scope here: both need the page list and the field content, and the apply has
+   them to hand already. */
+function pagesForTemplate(
+  pages: PageMeta[],
+  tpl: ThemeDef,
+  outgoing: ThemeDef,
+  fieldContent: Record<string, string>,
+  coverOverrides: CoverOverrides,
+): PageMeta[] {
+  const design = pageDesignOf(tpl);
+  const layout = chapterLayoutOf(tpl);
+  return pages.map((p) => {
+    if (p.type === 'cover') return coverPageForTemplate(p as SimplePage, tpl, outgoing, fieldContent, coverOverrides);
+    /* The contents and back pages exist in every book, so they are the two the
+       template has to be able to hand back as well as take over. A template that
+       designs them seeds their objects; one that doesn't strips them, or the
+       next theme inherits a black page it never asked for. */
+    if (p.type === 'toc' || p.type === 'backmatter') {
+      if (!design) return cpStripPage(p as SimplePage);
+      const kind = p.type === 'toc' ? design.defaults.toc : design.defaults.back;
+      const field = p.type === 'toc' ? { tocLayout: kind } : { backLayout: kind };
+      return design.seedPage({ ...(p as SimplePage), ...field }, kind);
+    }
+    /* A chapter's opener is a designed page too. The author's own additions
+       survive either way; the opener INDEX is dropped with the template that
+       named it, since four designs in one template are not the same four in the
+       next. */
+    if (p.type === 'chapter') {
+      const authored = (p.coverElements ?? []).filter((el) => el.origin === 'author');
+      if (!design) {
+        const stripped = authored.length === (p.coverElements?.length ?? 0)
+          ? p
+          : { ...p, coverElements: authored.length ? authored : undefined };
+        return stripped.layout === layout ? stripped : { ...stripped, layout };
+      }
+      if (!isChapterStart(p, fieldContent)) return p;
+      const num = chapterNumberOf(pages, fieldContent, p.id);
+      return {
+        ...p, layout, openerIndex: undefined,
+        coverElements: [...design.openerElements(num, undefined, p.openerImage), ...authored],
+      };
+    }
+    return p;
+  });
+}
+
 /* ── templates — one bundled thing, not two: a template is a cover layout AND the
    chapter/TOC/back-matter color+font that goes with it, applied together. Cover
    layout and chapter theming used to be two separate systems (a cover-only gallery,
    and this array as a chapter-color-only "Theme" swap) — they're merged here so
    picking a template actually changes the whole book, not just one page. */
-type ThemeId = 'statement-lettering' | 'academic-clean' | 'vintage-literary' | 'gradient-tech' | 'pastel-wellness' | 'forgotten-memories' | 'hand-illustrated' | 'collage-maximalist' | 'growth';
+type ThemeId = 'statement-lettering' | 'academic-clean' | 'vintage-literary' | 'gradient-tech' | 'pastel-wellness' | 'forgotten-memories' | 'hand-illustrated' | 'collage-maximalist' | 'growth' | 'career-pathways' | 'lovable';
 interface ThemeDef {
   id: ThemeId;
   name: string;
@@ -6222,6 +6572,41 @@ interface ThemeDef {
      from here when the template is applied. Unset means "the book's own bg". */
   coverBg?: string;
   requiredPlan?: GateTier;
+  /* The trim size and margins the template was DRAWN for, applied along with it.
+     Most themes have none: they are a palette and a type pairing, and they sit
+     correctly on whatever sheet the book already uses. A template that is a real
+     page design does have one — its bands, bleeds and photo panels are placed
+     against a particular proportion, and drawn on another sheet they stretch.
+     This is what Vellum's styles and Canva's templates both carry, and the user
+     can still change it afterwards in Book settings. */
+  pageSize?: string;
+  margins?: PageMargins;
+  /* How this template sets the page number, when it has an opinion. It is a real
+     tool with its own inspector, so the template configures it rather than
+     drawing its own folio — which would have been a number you could see and not
+     click. Only the properties stated are applied; the rest stay the book's. */
+  pageNumbers?: Partial<PageNumberSettings>;
+  /* Named page design. A theme without one renders in the editor's own chrome
+     (the eyebrow-rule opener, the plain TOC, the two-column author page) wearing
+     the theme's colours and fonts. A theme WITH one replaces that chrome with
+     the design's own — see the `cp-*` renderers. */
+  pageDesign?: 'career-pathways' | 'lovable';
+  /* ── gallery metadata. Nothing in the editor reads these: they are what the
+     create wizard's "Choose a template" step filters and sorts by, and they live
+     on the template itself because the wizard and the editor now show ONE set of
+     templates. They used to show two — the wizard had twelve flat-colour covers
+     of its own that existed nowhere else, so the design an author picked while
+     creating the book was never the design the editor opened.
+
+     `subjects` is in the live product's own theme vocabulary (ALL_THEMES in
+     EbookCreateFlow). Plain strings rather than a shared union because the
+     vocabulary is the wizard's UI copy — emoji and all — and importing it here
+     would point the dependency the wrong way round. */
+  subjects?: string[];
+  /** Publication date, for the gallery's Newest sort. */
+  createdAt?: string;
+  /** Admin rank for Recommended; a template without one sorts after every one that has. */
+  sortOrder?: number;
   coverElements: CoverElement[];
 }
 /* Full replacement set (2026-09-15) — the original 7 stock-photo/color-block themes
@@ -6245,6 +6630,20 @@ interface ThemeDef {
 /** The layout a new chapter takes from the active theme. */
 function chapterLayoutOf(theme: ThemeDef): LayoutId { return theme.chapterLayout ?? 'opener'; }
 
+/* The photo a Career Pathways opener shows before the author has picked one.
+   Two of the four openers are built around a bled photo, so an empty frame would
+   not be "no photo chosen yet" — it would be a different design. Indexed by
+   chapter so consecutive openers don't repeat the same picture. */
+/* The back page's author photo before one has been picked — same reasoning as
+   CP_OPENER_STOCK: the design has a face in that circle, and an empty disc is a
+   different design, not an unfinished one. */
+const CP_BACK_STOCK = STOCK_IMAGES.find((s) => s.label === 'Smiling portrait')?.src ?? STOCK_IMAGES[0].src;
+const CP_OPENER_STOCK = [
+  STOCK_IMAGES.find((s) => s.label === 'Desk workspace')?.src ?? STOCK_IMAGES[0].src,
+  STOCK_IMAGES.find((s) => s.label === 'Team meeting')?.src ?? STOCK_IMAGES[0].src,
+  STOCK_IMAGES.find((s) => s.label === 'Smiling portrait')?.src ?? STOCK_IMAGES[0].src,
+  STOCK_IMAGES.find((s) => s.label === 'Reading a book')?.src ?? STOCK_IMAGES[0].src,
+];
 const CHART_COVER_IMAGE = STOCK_IMAGES.find((s) => s.label === 'Data chart')?.src ?? STOCK_IMAGES[0].src;
 const DESK_COVER_IMAGE = STOCK_IMAGES.find((s) => s.label === 'Desk workspace')?.src ?? STOCK_IMAGES[0].src;
 const SKYLINE_COVER_IMAGE = STOCK_IMAGES.find((s) => s.label === 'City skyline')?.src ?? STOCK_IMAGES[0].src;
@@ -6255,6 +6654,7 @@ const THEMES: ThemeDef[] = [
   // works for nearly any nonfiction/business subject, which is why it's the default.
   {
     id: 'statement-lettering', name: 'Statement Lettering',
+    subjects: ['Self Development', 'Business', 'Writing Non-Fiction', 'Author', 'Other'], createdAt: '2026-09-15', sortOrder: 10,
     headingFont: "'Nunito Sans', sans-serif", bodyFont: "'Source Sans 3', sans-serif", headingColor: '#111111', accentColor: '#006EFE', bg: '#FFFFFF', bodyColor: '#2B2B2B',
     coverElements: [
       { id: 'cat', type: 'text', role: 'category', x: 10, y: 12, w: 80, h: 5, fontFamily: "'Nunito Sans', sans-serif", fontSize: 11, fontWeight: 700, color: '#6B7280', textAlign: 'center', textTransform: 'uppercase', letterSpacing: '0.14em' },
@@ -6279,6 +6679,7 @@ const THEMES: ThemeDef[] = [
   // uppercase serif type below. Two-thirds of the cover is still bare white.
   {
     id: 'academic-clean', name: 'Academic Clean',
+    subjects: ['Education', 'Training and Development', 'Writing Non-Fiction'], createdAt: '2026-09-15', sortOrder: 40,
     headingFont: "'Newsreader', Georgia, serif", bodyFont: "'Newsreader', Georgia, serif", headingColor: '#0B2545', accentColor: '#0B2545', bg: '#FFFFFF', bodyColor: '#2B3A4A',
     coverElements: [
       { id: 'photo', type: 'image', x: 0, y: 0, w: 100, h: 32, src: DESK_COVER_IMAGE },
@@ -6303,6 +6704,7 @@ const THEMES: ThemeDef[] = [
   // gold line itself needs to BE the cover's edge, not float inside a cream margin.
   {
     id: 'vintage-literary', name: 'Vintage Literary', requiredPlan: 'pro',
+    subjects: ['Writing Fiction', 'Author', 'Spiritual Self Development'], createdAt: '2026-09-15', sortOrder: 70,
     headingFont: "'Fraunces', Georgia, serif", bodyFont: 'Georgia, serif', headingColor: '#3E2723', accentColor: '#A9812F', bg: '#F5EDE0', bodyColor: '#3A2E28',
     coverElements: [
       { id: 'frame-top', type: 'shape', shape: 'rectangle', x: 0, y: 0, w: 100, h: 0.4, color: '#A9812F' },
@@ -6327,6 +6729,7 @@ const THEMES: ThemeDef[] = [
   // 2025-26 tech covers lean on, left-aligned bold title.
   {
     id: 'gradient-tech', name: 'Gradient Tech', requiredPlan: 'pro',
+    subjects: ['Digital Marketing', 'E-Commerce', 'Business Development / Sales'], createdAt: '2026-09-15', sortOrder: 50,
     headingFont: "'Nunito Sans', sans-serif", bodyFont: "'Nunito Sans', sans-serif", headingColor: '#0A1128', accentColor: '#FF6B4A', bg: '#FAFAFA', bodyColor: '#33394A',
     coverElements: [
       { id: 'shape-circle', type: 'shape', shape: 'circle', x: 66, y: 6, w: 30, h: 23, color: '#2DD4BF', opacity: 0.85 },
@@ -6343,6 +6746,7 @@ const THEMES: ThemeDef[] = [
   // archetype real cover galleries lean on instead of hard-edged blocks.
   {
     id: 'pastel-wellness', name: 'Pastel Wellness', requiredPlan: 'pro',
+    subjects: ['Health & wellness', 'Life coaching', 'Spiritual Self Development'], createdAt: '2026-09-15', sortOrder: 60,
     headingFont: "'Nunito Sans', sans-serif", bodyFont: "'Source Sans 3', sans-serif", headingColor: '#B5657A', accentColor: '#5B8266', bg: '#FFFBF8', bodyColor: '#5B4A4E',
     coverElements: [
       { id: 'circle1', type: 'shape', shape: 'circle', x: 26, y: 30, w: 40, h: 31, color: '#DCEEE0' },
@@ -6365,6 +6769,7 @@ const THEMES: ThemeDef[] = [
   // than faked.
   {
     id: 'forgotten-memories', name: 'Forgotten Memories',
+    subjects: ['Writing Fiction', 'Blogging', 'Author'], createdAt: '2026-09-15', sortOrder: 80,
     headingFont: "'Nunito Sans', sans-serif", bodyFont: "'Source Sans 3', sans-serif", headingColor: '#241C14', accentColor: '#D24E2C', bg: '#FBF3E7', bodyColor: '#4A3B2E',
     coverElements: [
       { id: 'photo', type: 'image', x: 10, y: 6, w: 80, h: 36, src: '/assets/stock-canoe.jpg' },
@@ -6380,6 +6785,7 @@ const THEMES: ThemeDef[] = [
   // as the dominant surface rather than a busy illustrated scene.
   {
     id: 'hand-illustrated', name: 'Hand-Illustrated', requiredPlan: 'pro',
+    subjects: ['Blogging', 'Life coaching', 'Self Development'], createdAt: '2026-09-15', sortOrder: 90,
     headingFont: "'Nunito Sans', sans-serif", bodyFont: "'Source Sans 3', sans-serif", headingColor: '#E2725B', accentColor: '#3D8C82', bg: '#FFF8ED', bodyColor: '#5B4636',
     coverElements: [
       { id: 'sun', type: 'shape', shape: 'circle', x: 66, y: 10, w: 20, h: 15.6, color: '#E2725B', opacity: 0.85 },
@@ -6397,6 +6803,7 @@ const THEMES: ThemeDef[] = [
   // accents plus one photo corner on a white ground, not a busy full-bleed collage.
   {
     id: 'collage-maximalist', name: 'Collage Maximalist', requiredPlan: 'pro',
+    subjects: ['Advertising', 'Marketing coaching', 'Copywriting', 'Blogging'], createdAt: '2026-09-15', sortOrder: 100,
     headingFont: "'Nunito Sans', sans-serif", bodyFont: "'Source Sans 3', sans-serif", headingColor: '#15191F', accentColor: '#FF3D8A', bg: '#FFFFFF', bodyColor: '#2A303A',
     coverElements: [
       { id: 'c1', type: 'shape', shape: 'circle', x: 6, y: 6, w: 22, h: 17.2, color: '#FF3D8A', opacity: 0.85 },
@@ -6424,6 +6831,7 @@ const THEMES: ThemeDef[] = [
   // here the same way Hand-Illustrated approximates its sun-over-hills scene.
   {
     id: 'growth', name: 'Growth',
+    subjects: ['Business', 'Business Development / Sales', 'Network Marketing'], createdAt: '2026-09-20', sortOrder: 30,
     headingFont: "'Nunito Sans', sans-serif", bodyFont: "'Source Sans 3', sans-serif", headingColor: '#15191F', accentColor: '#0E8FA8', bg: '#FFFFFF', bodyColor: '#2B2B2B',
     coverBg: '#0B0F14',
     coverElements: [
@@ -6443,7 +6851,701 @@ const THEMES: ThemeDef[] = [
       { id: 'auth', type: 'text', role: 'author', x: 44, y: 91, w: 48, h: 5, fontFamily: "'Nunito Sans', sans-serif", fontSize: 12, fontWeight: 700, color: '#FFFFFF', textAlign: 'right' },
     ],
   },
+  /* 10. Career Pathways — the Figma template (file "Designerr templates by Max",
+     node 2168:4642 and its siblings), reproduced rather than approximated: it is
+     the first entry here that ships a whole BOOK design — cover, eight content
+     layouts, four chapter openers, a TOC, a back page, a CTA and four workbook
+     sheets — instead of a cover plus two colours. That is what `pageDesign` and
+     `pageSize` above exist for; every number it uses lives in
+     templates/careerPathways.ts, in the design's own A4 points.
+
+     The cover is black to its own edge, with a white band across the foot
+     carrying the subtitle and the author, the title at 82pt across the head, and
+     the dash field — the motif the whole template is built on — filling the
+     middle. */
+  {
+    id: 'career-pathways', name: 'Career Pathways',
+    subjects: ['Training and Development', 'Education', 'Business'], createdAt: '2026-09-30', sortOrder: 20,
+    headingFont: CP_FONT.heading, bodyFont: CP_FONT.body,
+    headingColor: CP_COLOR.ink, accentColor: CP_COLOR.accent, bg: CP_COLOR.paper, bodyColor: CP_COLOR.body,
+    coverBg: CP_COLOR.page,
+    pageSize: CP_PAGE_SIZE, margins: CP_MARGINS, pageDesign: 'career-pathways',
+    /* Bottom right, in the heading face at the design's own 12pt — the folio on
+       every content page in the file. */
+    pageNumbers: { position: 'footer-right', fontFamily: CP_FONT.heading, fontSize: cp(CP_TYPE.folio.size), color: CP_COLOR.body },
+    coverElements: [
+      /* Figma 44.8,208 · 507.3 × 453.04 — the field is inset from both side
+         margins and stops short of the white band, so the black ground reads
+         around it on all four sides. */
+      { id: 'cp-field', type: 'image', x: cpX(44.8), y: cpY(208), w: cpX(507.3), h: cpY(453.04), src: CP_FIELD.cover, decorative: true },
+      { id: 'cp-band', type: 'shape', shape: 'rectangle', x: 0, y: cpY(CP_METRIC.coverBandY), w: 100, h: cpY(CP_METRIC.coverBandH), color: CP_COLOR.paper },
+      { id: 'title', type: 'text', role: 'title', x: cpX(39), y: cpY(40), w: cpX(365), h: cpY(130),
+        fontFamily: CP_FONT.heading, fontSize: cp(CP_TYPE.coverTitle.size), fontWeight: CP_TYPE.coverTitle.weight,
+        lineHeight: CP_TYPE.coverTitle.lineHeight, color: CP_COLOR.paper, textAlign: 'left' },
+      { id: 'sub', type: 'text', role: 'subtitle', x: cpX(40), y: cpY(758), w: cpX(200), h: cpY(42),
+        fontFamily: CP_FONT.heading, fontSize: cp(CP_TYPE.coverSubtitle.size), fontWeight: CP_TYPE.coverSubtitle.weight,
+        lineHeight: CP_TYPE.coverSubtitle.lineHeight, color: CP_COLOR.ink, textAlign: 'left' },
+      { id: 'auth', type: 'text', role: 'author', x: cpX(355), y: cpY(784), w: cpX(200), h: cpY(15),
+        fontFamily: CP_FONT.heading, fontSize: cp(CP_TYPE.coverAuthor.size), fontWeight: CP_TYPE.coverAuthor.weight,
+        lineHeight: CP_TYPE.coverAuthor.lineHeight, color: CP_COLOR.page, textAlign: 'right' },
+      /* The loop-arrow mark, top right. A real text element rather than baked
+         into the artwork, so it can be retyped or deleted like anything else. */
+      { id: 'cp-mark', type: 'text', role: 'custom', x: cpX(500), y: cpY(40), w: cpX(62), h: cpY(15),
+        fontFamily: CP_FONT.mark, fontSize: cp(CP_TYPE.coverMark.size), fontWeight: CP_TYPE.coverMark.weight,
+        lineHeight: CP_TYPE.coverMark.lineHeight, color: CP_COLOR.paper, textAlign: 'right', defaultHtml: '<p>\u21AC</p>' },
+    ],
+  },
+  /* 11. Lovable — the second Figma template (same file, section 3540:4702,
+     "Template - Lovable"), and the second to ship a whole BOOK design rather
+     than a cover plus two colours: four covers, five content layouts, four
+     chapter openers, three contents pages, four back pages, two image pages,
+     two calls to action and four worksheets. Every number lives in
+     templates/lovable.ts, in the design's own A4 points.
+
+     Where Career Pathways is a dash field on black, this is one motif and one
+     motif only: a rounded rectangle with a second copy extruded behind it, in
+     six colours, outlined on paper or filled with an orange→violet gradient.
+     The cover sets the title at 80pt across the head, the standfirst opposite
+     it, and the byline INSIDE the black block — the one place in the template
+     where type rides on the motif rather than beside it. */
+  {
+    id: 'lovable', name: 'Lovable',
+    subjects: ['Digital Marketing', 'Business', 'E-Commerce', 'Copywriting'], createdAt: '2026-10-02', sortOrder: 25,
+    headingFont: LV_FONT.heading, bodyFont: LV_FONT.body,
+    headingColor: LV_COLOR.display, accentColor: LV_COLOR.violetPage, bg: LV_COLOR.paper, bodyColor: LV_COLOR.body,
+    pageSize: LV_PAGE_SIZE, margins: LV_MARGINS, pageDesign: 'lovable',
+    /* Bottom right, in the heading face at the design's own 12pt. Max alternates
+       the folio's corner across a spread — right on a recto, left on a verso —
+       and the page-number tool has no mirrored position to ask for, so this
+       takes the recto corner for every page. Worth adding as a real setting on
+       the tool rather than as a thing this template paints itself. */
+    pageNumbers: { position: 'footer-right', fontFamily: LV_FONT.heading, fontSize: lv(LV_TYPE.folio.size), color: LV_COLOR.body },
+    /* The theme's own cover is the first of the four designs (frame 3540:5289,
+       the one Max set as the main cover). Picking another in Layout re-seeds
+       these — see lvCoverElements. */
+    coverElements: lvCoverElements('cover-outline', '', '', ''),
+  },
 ];
+
+
+/* ── Career Pathways — the designed pages, as objects ────────────────────────
+   Every page this template ships is a free canvas of the editor's own elements,
+   not a drawing: each band is a shape, each dash field is a photo, each rule is
+   a 0.5pt bar, each title and label is a text field. Which means all of it
+   selects, moves, resizes, restyles, reorders and deletes through the same
+   canvas the cover has always used — nothing on these pages is decoration you
+   can see but not touch.
+
+   Positions are in the design's own A4 points and converted once (cpX/cpY to
+   percentages of the sheet, cp() to canvas px for type), so this reads against
+   the Figma board without arithmetic. */
+type CpCoverKind = 'cover-band' | 'cover-head' | 'cover-photo' | 'cover-plain';
+type CpPageKind = 'toc' | 'toc-panel' | 'toc-stack' | 'back' | 'back-right' | 'back-photo' | 'cta' | 'img-card' | 'img-bleed' | 'wb-planner' | 'wb-summary' | 'wb-todo' | 'wb-goals';
+
+/** A dash field, or any other picture, as a photo element. */
+function cpImg(id: string, x: number, y: number, w: number, h: number, src: string, extra: Partial<CoverImageElement> = {}): CoverImageElement {
+  /* No `fit` override. Setting the dash fields to `fit: 'fill'` was tried and
+     measured: it moves nothing, because every CP_FIELD svg carries
+     `preserveAspectRatio="none"` and so is ALREADY stretched to its box before
+     object-fit has anything to crop. So the fields really are being distorted,
+     not cropped — a field placed at a non-native aspect has its dashes stretched
+     long and thin rather than tiled, and matching Max there needs the field
+     exported per placement, which no CSS property substitutes for. */
+  return { id, type: 'image', x: cpX(x), y: cpY(y), w: cpX(w), h: cpY(h), src, decorative: true, ...extra };
+}
+/** A band, a rule or a box — all one primitive at different proportions. */
+function cpShape(id: string, x: number, y: number, w: number, h: number, color: string, extra: Partial<CoverShapeElement> = {}): CoverShapeElement {
+  return { id, type: 'shape', shape: 'rectangle', x: cpX(x), y: cpY(y), w: cpX(w), h: cpY(h), color, ...extra };
+}
+/** A 0.5pt hairline. A shape, because that is what a rule is. */
+function cpLine(id: string, x: number, y: number, w: number, color: string = CP_COLOR.rule, weight = 0.5): CoverShapeElement {
+  return cpShape(id, x, y, w, weight, color);
+}
+/** A text field. `t` is a row from CP_TYPE, so the size and leading come from
+    the one table the whole template is set from. */
+function cpTextEl(
+  id: string, x: number, y: number, w: number, h: number, html: string,
+  t: { size: number; weight: number; lineHeight: string; letterSpacing?: string },
+  extra: Partial<CoverTextElement> = {},
+): CoverTextElement {
+  return {
+    id, type: 'text', role: 'custom',
+    x: cpX(x), y: cpY(y), w: cpX(w), h: cpY(h),
+    fontFamily: CP_FONT.heading, fontSize: cp(t.size), fontWeight: t.weight,
+    /* A leading stated in px is a LENGTH and has to be scaled with the sheet; a
+       unitless one is a multiplier and must not be. Left unscaled, a 20pt leading
+       sat inside a 21px font and clipped its own ascenders. */
+    lineHeight: t.lineHeight.endsWith('px') ? `${cpf(parseFloat(t.lineHeight)).toFixed(2)}px` : t.lineHeight,
+    letterSpacing: t.letterSpacing ? `${cpf(parseFloat(t.letterSpacing)).toFixed(3)}px` : undefined,
+    color: CP_COLOR.page, textAlign: 'left',
+    defaultHtml: html,
+    ...extra,
+  };
+}
+
+/** A ruled writing band: `lines` hairlines on a 32pt step from `first`. */
+function cpWritingLines(prefix: string, y: number, lines: number, first: number): CoverElement[] {
+  return Array.from({ length: lines }, (_, i) =>
+    cpLine(`${prefix}-${i}`, CP_METRIC.lineInset, y + first + i * CP_METRIC.lineGap, CP_W - CP_METRIC.lineInset * 2));
+}
+
+/** The seven-day grid: six verticals, six horizontals and seven day names. No
+    outer frame — the design draws none. */
+function cpWeekGridElements(): CoverElement[] {
+  const days = ['Mon', 'Tues', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const x = 40, y = 144, w = CP_METRIC.measure, h = 381;
+  const colW = w / days.length;
+  const rowH = h / 7;
+  return [
+    /* The cells are white, which only shows where the grid crosses the tinted
+       head band — but that is the header row, so without it the weekday names
+       sit on the tint instead of on paper. */
+    cpShape('cp-grid-bg', x, y, w, h, CP_COLOR.paper),
+    ...days.slice(1).map((_, i) => cpShape(`cp-grid-v${i}`, x + (i + 1) * colW, y, 1, h, CP_COLOR.page)),
+    ...Array.from({ length: 6 }, (_, r) => cpShape(`cp-grid-h${r}`, x, y + (r + 1) * rowH, w, 1, CP_COLOR.page)),
+    ...days.map((d, c) => cpTextEl(`cp-grid-d${c}`, x + c * colW, y, colW, rowH, `<p>${d}</p>`, CP_TYPE.workbookDay, {
+      fontFamily: CP_FONT.body, fontWeight: 800, textAlign: 'center', textTransform: 'uppercase',
+    })),
+  ];
+}
+
+/** The to-do rows: a rounded outline and a rule, eleven times. */
+function cpChecklistElements(): CoverElement[] {
+  const top = 167 + 34.5;
+  return Array.from({ length: 11 }, (_, i) => {
+    const rowY = top + i * 50;
+    return [
+      cpShape(`cp-todo-box${i}`, CP_METRIC.lineInset, rowY, 18, 18, 'transparent', {
+        shape: 'rounded', radius: cp(6), borderWidth: 1, borderColor: CP_COLOR.page,
+      }),
+      cpLine(`cp-todo-line${i}`, CP_METRIC.lineInset + 42, rowY + 18, 469),
+    ];
+  }).flat();
+}
+
+/** Every designed page's objects. Seeded when the page is created and when the
+    template is applied; from then on they are the author's to move. */
+function cpPageElements(kind: CpPageKind): CoverElement[] {
+  switch (kind) {
+    /* TOC 29 — no panel, the list straight on the dark ground, a rule under it.
+       This is the one the template shipped with. */
+    case 'toc':
+      return [
+        cpImg('cp-toc-field', 448, 5, 143, 203, CP_FIELD.toc),
+        cpTextEl('cp-toc-heading', CP_METRIC.margin, 181, 400, 36, '<p>Table of Contents</p>', CP_TYPE.tocHeading, {
+          color: CP_COLOR.paper, anchor: 'cap', textTransform: 'capitalize',
+        }),
+        cpLine('cp-toc-rule', CP_METRIC.margin, 631, CP_METRIC.measure, 'rgba(255,255,255,0.25)'),
+      ];
+    /* TOC 27 — a paper panel from y=214 to the foot, so the list sits on white and
+       only the heading stays on the dark. No rule: the panel's own top edge is the
+       line that separates them. */
+    case 'toc-panel':
+      return [
+        /* The panel is the page's own GROUND (see CP_PAGE_BG) and the dark head is
+           the shape drawn on it — the inverse of how the frame reads. Drawing the
+           white panel as an element instead put it on top of the entries, which
+           are rendered separately because their rows are the book's chapters, and
+           the list vanished under it. */
+        cpShape('cp-toc-head', 0, 0, CP_W, 214, CP_COLOR.accent),
+        cpImg('cp-toc-field', 448, 5, 143, 203, CP_FIELD.toc),
+        cpTextEl('cp-toc-heading', CP_METRIC.margin, 89, 400, 36, '<p>Table of Contents</p>', CP_TYPE.tocHeading, {
+          color: CP_COLOR.paper, anchor: 'cap', textTransform: 'capitalize',
+        }),
+      ];
+    /* TOC 28 — the same panel, with the heading set narrow (150pt) so it stacks on
+       to two lines, and a second crop of the field above it. */
+    case 'toc-stack':
+      return [
+        /* BLACK here, accent on toc-panel. The two differ in exactly that and in
+           how the heading is set — same panel, same list, opposite head. */
+        cpShape('cp-toc-head', 0, 0, CP_W, 214, CP_COLOR.page),
+        /* One block across the right half, not two crops with a gap between
+           them: the field runs unbroken from the midline to the trim. */
+        cpImg('cp-toc-field', 305, 0, 290, 214, CP_FIELD.toc),
+        cpTextEl('cp-toc-heading', CP_METRIC.margin, 77, 150, 72, '<p>Table of Contents</p>', CP_TYPE.tocHeading, {
+          color: CP_COLOR.paper, anchor: 'cap', textTransform: 'capitalize',
+        }),
+      ];
+    case 'back':
+      return [
+        cpShape('cp-back-half', 0, 0, 308, CP_H, CP_COLOR.paper),
+        cpImg('cp-back-field-top', 321, 12, 264, 408, CP_FIELD.tallTop),
+        cpImg('cp-back-field-bottom', 322, 425, 264, 408, CP_FIELD.tallBottom),
+        cpTextEl('cp-back-title', CP_METRIC.margin, 86, 240, 84, '<p>The Back Page Title</p>', CP_TYPE.display, {
+          color: CP_COLOR.ink, anchor: 'top',
+        }),
+        cpTextEl('cp-back-bio', CP_METRIC.margin, 192, 248, 230, '<p>Add a short author bio here.</p>', CP_TYPE.body, {
+          fontFamily: CP_FONT.body, color: CP_COLOR.body, anchor: 'top',
+        }),
+        cpLine('cp-back-rule', 43, 683, 226, '#111111'),
+        cpImg('cp-back-photo', 43, 707, 80, 80, CP_BACK_STOCK, { radius: cp(40), decorative: false, alt: 'The author' }),
+        cpTextEl('cp-back-credit', 163, 709, 130, 20, '<p>Author Name</p>', CP_TYPE.credit, { color: CP_COLOR.page, anchor: 'cap' }),
+      ];
+    /* Back 34 — the mirror of Back 35: the paper half on the RIGHT, so the fields
+       move to the left edge and every x is measured from 287 instead of 0. */
+    case 'back-right':
+      return [
+        cpShape('cp-back-half', 287, 0, 308, CP_H, CP_COLOR.paper),
+        cpImg('cp-back-field-top', 10, 12, 264, 408, CP_FIELD.tallTop),
+        cpImg('cp-back-field-bottom', 11, 425, 264, 408, CP_FIELD.tallBottom),
+        cpTextEl('cp-back-title', 327, 86, 240, 84, '<p>The Back Page Title</p>', CP_TYPE.display, {
+          color: CP_COLOR.ink, anchor: 'top',
+        }),
+        cpTextEl('cp-back-bio', 327, 192, 248, 230, '<p>Add a short author bio here.</p>', CP_TYPE.body, {
+          fontFamily: CP_FONT.body, color: CP_COLOR.body, anchor: 'top',
+        }),
+        cpLine('cp-back-rule', 324, 683, 226, '#111111'),
+        cpImg('cp-back-photo', 330, 707, 80, 80, CP_BACK_STOCK, { radius: cp(40), decorative: false, alt: 'The author' }),
+        cpTextEl('cp-back-credit', 450, 709, 130, 20, '<p>Author Name</p>', CP_TYPE.credit, { color: CP_COLOR.page, anchor: 'cap' }),
+      ];
+    /* Back 33 — paper half on the right again, but the author is a PHOTO BLED off
+       the bottom-left corner rather than a disc beside their name, which frees the
+       name to be set large under the bio. */
+    case 'back-photo':
+      return [
+        /* The left column is the ACCENT, not the dark ground the other two sit on
+           — the field reads as pale strokes on blue here, and the portrait bleeds
+           off the bottom of it. */
+        cpShape('cp-back-ground', 0, 0, 287, CP_H, CP_COLOR.accent),
+        cpShape('cp-back-half', 287, 0, 308, CP_H, CP_COLOR.paper),
+        cpImg('cp-back-field-top', 10, 0, 277, 541, CP_FIELD.tallTop),
+        cpImg('cp-back-photo', 0, 541, 288, 301, CP_FIELD.authorPhoto, { decorative: false, alt: 'The author' }),
+        cpTextEl('cp-back-title', 327, 86, 240, 84, '<p>The Back Page Title</p>', CP_TYPE.display, {
+          color: CP_COLOR.ink, anchor: 'top',
+        }),
+        cpTextEl('cp-back-bio', 327, 192, 248, 230, '<p>Add a short author bio here.</p>', CP_TYPE.body, {
+          fontFamily: CP_FONT.body, color: CP_COLOR.body, anchor: 'top',
+        }),
+        cpLine('cp-back-rule', 330, 751, 226, '#111111'),
+        /* A 56pt box, which is what makes the byline stack onto two lines — the
+           frame sets it narrow deliberately, it is not a long name overflowing. */
+        cpTextEl('cp-back-credit', 328, 770, 56, 25, '<p>Author Name</p>', CP_TYPE.credit, {
+          color: CP_COLOR.ink, anchor: 'cap',
+        }),
+      ];
+    /* Image pages — the file draws two, both on the dark ground. "Image" sets the
+       photo in a paper card with the caption under it; "Image 20" bleeds the photo
+       into the bottom-right quarter with the caption alone in the top-left and the
+       dash field filling the other two quarters. Measurements straight off frames
+       2168:4964 and 2168:4972. */
+    case 'img-card':
+      return [
+        cpImg('cp-img-field', 237, 722, 201, 179, CP_FIELD.chapter1, { decorative: true }),
+        cpShape('cp-img-card', 54, 99, 474, 604, CP_COLOR.paper),
+        cpImg('cp-img-photo', 71, 113, 441, 483, CP_OPENER_STOCK[0], { decorative: false, alt: 'Image' }),
+        cpTextEl('cp-img-caption', 71, 610, 439, 54,
+          '<p>By approaching your career with intention and adaptability, you\u2019ll be well-equipped to thrive.</p>',
+          CP_TYPE.body, { fontFamily: CP_FONT.body, color: CP_COLOR.ink, anchor: 'top' }),
+      ];
+    case 'img-bleed':
+      return [
+        cpImg('cp-imgb-field-a', 301, 0, 294, 418, CP_FIELD.chapter2, { decorative: true }),
+        cpImg('cp-imgb-field-b', 30, 425, 264, 417, CP_FIELD.chapter3, { decorative: true }),
+        cpImg('cp-imgb-photo', 301, 426, 265, 407, CP_OPENER_STOCK[1] ?? CP_OPENER_STOCK[0], { decorative: false, alt: 'Image' }),
+        cpTextEl('cp-imgb-caption', 40, 168, 248, 80,
+          '<p>These real-life examples will inspire you and provide practical insights that you can apply to your own exciting journey.</p>',
+          CP_TYPE.body, { fontFamily: CP_FONT.body, color: CP_COLOR.paper, anchor: 'top' }),
+      ];
+    case 'cta':
+      return [
+        cpImg('cp-cta-field-top', 184, 10, 264, 408, CP_FIELD.tallTop),
+        cpImg('cp-cta-field-bottom', 147, 422, 264, 408, CP_FIELD.ctaBottom),
+        cpShape('cp-cta-panel', 174, 40, 247, 762, CP_COLOR.paper),
+        cpTextEl('cp-cta-heading', 188, 191, 215, 84, '<p>CTA Header</p>', CP_TYPE.display, {
+          color: CP_COLOR.ink, textAlign: 'center', anchor: 'top',
+        }),
+        cpTextEl('cp-cta-body', 192, 301, 210, 240,
+          '<p>Say what the reader gets, and why it is worth their next click.</p>', CP_TYPE.body, {
+            fontFamily: CP_FONT.body, textAlign: 'center', anchor: 'top',
+          }),
+        cpShape('cp-cta-button', 192, 752, 212, 34, CP_COLOR.accent),
+        cpTextEl('cp-cta-label', 192, 752, 212, 34, '<p>Learn More</p>', CP_TYPE.credit, {
+          color: CP_COLOR.paper, textAlign: 'center',
+        }),
+      ];
+    case 'wb-planner':
+      return [
+        cpShape('cp-wb-band', 0, 0, CP_W, 198, CP_COLOR.tint),
+        cpImg('cp-wb-mark', 487, 5, 104, 93, CP_FIELD.workbookTall),
+        cpTextEl('cp-wb-title', CP_METRIC.margin, 58, 400, 50, '<p>Weekly Planner</p>', CP_TYPE.workbookTitle, { anchor: 'top' }),
+        ...cpWeekGridElements(),
+        cpTextEl('cp-wb-notes', CP_METRIC.margin, 561, CP_METRIC.measure, 22, '<p>Notes</p>', CP_TYPE.workbookPrompt, {
+          fontSize: cp(18), textAlign: 'center', anchor: 'top',
+        }),
+        ...cpWritingLines('cp-wb-line', 590, 5, 31.5),
+      ];
+    case 'wb-summary':
+      return [
+        cpImg('cp-wb-mark', CP_METRIC.margin, 3, 104, 30.5, CP_FIELD.workbook),
+        cpTextEl('cp-wb-title', CP_METRIC.margin, 58, 400, 50, '<p>Summary</p>', CP_TYPE.workbookTitle, { anchor: 'top' }),
+        cpTextEl('cp-wb-note', 342, 64, 200, 40, '<p>After reading this,<br />i feel right now:</p>', CP_TYPE.workbookNote, {
+          fontFamily: CP_FONT.body, textAlign: 'right', anchor: 'top',
+        }),
+        ...cpWritingLines('cp-wb-a', 133, 5, 32),
+        ...cpWritingLines('cp-wb-b', 325, 5, 32),
+        ...cpWritingLines('cp-wb-c', 517, 5, 32),
+      ];
+    case 'wb-todo':
+      return [
+        cpShape('cp-wb-panel', 0, 167, CP_W, 587, CP_COLOR.paper),
+        cpImg('cp-wb-mark', CP_METRIC.margin, 3, 104, 30.5, CP_FIELD.workbook),
+        cpTextEl('cp-wb-title', CP_METRIC.margin, 58, 400, 50, '<p>To-do list</p>', CP_TYPE.workbookTitle, { anchor: 'top' }),
+        cpTextEl('cp-wb-note', 355, 61, 200, 40, '<p>Start planning<br />your goals</p>', CP_TYPE.workbookNote, {
+          textAlign: 'right', letterSpacing: `${cpf(-0.32).toFixed(3)}px`, anchor: 'top',
+        }),
+        ...cpChecklistElements(),
+      ];
+    case 'wb-goals':
+      return [
+        cpImg('cp-wb-mark', 487, 5, 104, 93, CP_FIELD.workbookTall),
+        cpTextEl('cp-wb-title', CP_METRIC.margin, 58, 400, 50, '<p>Goals</p>', CP_TYPE.workbookTitle, { anchor: 'top' }),
+        cpTextEl('cp-wb-p1', CP_METRIC.margin, 180, CP_METRIC.measure, 20, '<p>What do I want to accomplish?</p>', CP_TYPE.workbookPrompt, {
+          fontSize: cp(18), textAlign: 'center', letterSpacing: `${cpf(-0.36).toFixed(3)}px`, anchor: 'top',
+        }),
+        ...cpWritingLines('cp-wb-a', 226, 6, 40),
+        cpTextEl('cp-wb-p2', CP_METRIC.margin, 476, CP_METRIC.measure, 20, '<p>Why is it important to me?</p>', CP_TYPE.workbookPrompt, {
+          fontSize: cp(18), textAlign: 'center', letterSpacing: `${cpf(-0.36).toFixed(3)}px`, anchor: 'top',
+        }),
+        ...cpWritingLines('cp-wb-b', 508, 6, 40),
+      ];
+  }
+}
+
+/* A designed page, seeded with its objects. Anything the author added by hand
+   survives (see CoverElementBase.origin) — the template owns the arrangement it
+   ships, not a shape someone drew on top of it. Element ids are the stable ones
+   from cpPageElements rather than freshly minted, because a custom text field is
+   keyed by its element id (fieldKeyForCoverText) and re-minting would orphan
+   every word already typed into one. */
+function cpSeedPage(page: SimplePage, kind: CpPageKind): SimplePage {
+  const authored = (page.coverElements ?? []).filter((el) => el.origin === 'author');
+  return { ...page, bg: CP_PAGE_BG[kind], coverElements: [...cpPageElements(kind), ...authored] };
+}
+
+/** The reverse: a template with no page design leaves the shared pages plain. */
+function cpStripPage(page: SimplePage): SimplePage {
+  const authored = (page.coverElements ?? []).filter((el) => el.origin === 'author');
+  return { ...page, bg: undefined, coverElements: authored.length ? authored : undefined };
+}
+
+
+/* The template's four cover arrangements, as objects — the same shape as
+   cpOpenerElements, and for the same reason: a cover's design IS its objects, so
+   switching one re-seeds them and from then on they are ordinary things you can
+   move. Measured off frames 2168:4649 (cover), 4632 (cover2), 4624 (cover3) and
+   4642 (cover 79, the one the theme ships).
+
+   This sits beside the theme rather than inside it because ThemeDef holds exactly
+   one `coverElements` array, and every other template genuinely has one cover.
+   Giving the whole type named arrangements to serve one template would be the
+   tail wagging the dog. */
+/* Max set every cover around "Career Pathways" — two short words at 82pt. A real
+   title is whatever the author typed, so the rule is: keep the designed size when
+   it fits, and step down only as far as the overflow actually requires.
+
+   MEASURED, not estimated. Two earlier versions guessed a character width — first
+   `length / charsPerLine`, then a greedy wrap at 0.5em a character — and both were
+   far too pessimistic for this grotesque, which actually sets around 0.38em. A
+   title that fits at 82pt was coming out at 52. The browser has the real answer in
+   a canvas 2D context, and this now runs at render where that is available; the
+   constant is kept only as the server-side fallback, where nothing is painted. */
+/* Tracking and case are part of the measurement, not decoration on top of it:
+   an uppercase cover title is materially wider than the string it came from, and
+   0.14em of letter-spacing on a 40-character line is nearly six extra ems. A fit
+   that measured the raw string would call both of those "fits" and then paint
+   them past the edge. */
+type TextMetrics = {
+  weight: number; family: string;
+  tracking: string | undefined; transform: string | undefined;
+  /* A cap-trimmed box (see .cp-trim) is shorter than its line boxes: the first
+     line starts at its cap height and the last ends on its baseline, so a single
+     line occupies about a cap rather than a full leading. Measuring it as full
+     line boxes made a one-line byline look like an overflow and shrank it. */
+  trimmed: boolean;
+};
+
+/* Cap height as a fraction of the em. The three faces this file sets covers in
+   (Nunito Sans, Inter Tight, Newsreader) all sit within a couple of percent of
+   this, and the number is only ever used to decide whether a box overflows —
+   not to place anything, which is what text-box-trim does in the browser. */
+const CAP_RATIO = 0.72;
+
+function measureCase(text: string, transform: string | undefined): string {
+  return transform === 'uppercase' ? text.toUpperCase() : text;
+}
+
+/* Letter-spacing as px at a given font size. CSS applies it after every glyph,
+   including the last, which is why the cover's own right-set numeral has to pull
+   its box in by exactly this much (see cpOpenerElements). */
+function trackingPx(tracking: string | undefined, px: number): number {
+  if (!tracking) return 0;
+  const m = METRIC_RE.exec(tracking.trim());
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return 0;
+  if (m[2] === 'px') return n;
+  if (m[2] === '%') return (n / 100) * px;
+  return n * px; // em, and a bare number stored by parseTypeMetric is already em
+}
+
+/* The line box as a multiple of the font size, so a fit can reason about both in
+   the same unit. A px line height is the exception and genuinely doesn't scale
+   with the type, so it comes back as a fixed height the caller uses as-is. */
+function lineBox(lineHeight: string | undefined, px: number): number {
+  if (!lineHeight) return px * 1.2;
+  const m = METRIC_RE.exec(String(lineHeight).trim());
+  if (!m) return px * 1.2;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return px * 1.2;
+  if (m[2] === 'px') return n;
+  if (m[2] === '%') return (n / 100) * px;
+  return n * px; // em or the bare multiplier
+}
+
+/* Measured in the DOM, not on a canvas 2D context.
+   The canvas was wrong, quietly: every face here is a VARIABLE font, and a
+   canvas asked for `500 36px 'Inter Tight'` snaps to the nearest named instance
+   while CSS interpolates the axis — so it measured a weight-500 chapter title
+   about 6% narrow, the fit believed a four-line title was three lines, and the
+   fourth line drew over the artwork. At weight 600 the two happened to agree,
+   which is why the cover looked fine and the opener did not.
+
+   Measured ONCE per word at a reference size and scaled: text advance is linear
+   in font-size for a given face, so one hidden-span measurement answers every
+   step of the fit's walk instead of fifty reflows. */
+const MEASURE_PX = 200;
+const measureCache = new Map<string, number>();
+let measureSpan: HTMLSpanElement | null = null;
+
+function measureAt200(text: string, m: TextMetrics): number {
+  const key = `${m.weight}|${m.family}|${m.transform ?? ''}|${text}`;
+  const hit = measureCache.get(key);
+  if (hit !== undefined) return hit;
+  if (typeof document === 'undefined') return text.length * MEASURE_PX * 0.42;
+  if (!measureSpan) {
+    measureSpan = document.createElement('span');
+    measureSpan.setAttribute('aria-hidden', 'true');
+    measureSpan.style.cssText = 'position:absolute;left:-9999px;top:-9999px;visibility:hidden;white-space:pre;padding:0;margin:0;border:0;';
+    document.body.appendChild(measureSpan);
+  }
+  measureSpan.style.font = `${m.weight} ${MEASURE_PX}px ${m.family}`;
+  measureSpan.style.textTransform = m.transform ?? 'none';
+  measureSpan.textContent = text;
+  const w = measureSpan.getBoundingClientRect().width;
+  measureCache.set(key, w);
+  return w;
+}
+
+/* A webfont that arrives after a measurement would make every cached number
+   wrong — and a cover title measured against Arial and then painted in Inter
+   Tight is exactly the overflow this is here to prevent. */
+if (typeof document !== 'undefined' && document.fonts) {
+  document.fonts.ready.then(() => measureCache.clear());
+}
+
+function cpTextWidth(text: string, px: number, m: TextMetrics): number {
+  const track = trackingPx(m.tracking, px) * measureCase(text, m.transform).length;
+  return (measureAt200(text, m) * px) / MEASURE_PX + track;
+}
+
+/* Break opportunities, not words: the browser also breaks AFTER a hyphen, which is
+   the whole reason "Anti-Portfolio" fits a 365pt measure at full size and a
+   split-on-whitespace model said it could not. */
+function cpBreakParts(t: string): string[] {
+  return t.trim().split(/(?<=-)|\s+/).filter(Boolean);
+}
+
+function cpFitSize(text: string, boxW: number, boxH: number, size: number, lineHeight: string | undefined, m: TextMetrics): number {
+  const t = text.trim();
+  if (!t) return size;
+  const parts = cpBreakParts(t);
+  /* Widths at the reference size, so the walk below is arithmetic rather than
+     fifty more measurements. A joined line is its parts plus the spaces between
+     them — kerning across a word space is below the pixel this decides on. */
+  const partW = parts.map((w) => measureAt200(w, m));
+  const spaceW = measureAt200(' ', m);
+  const fits = (px: number) => {
+    const k = px / MEASURE_PX;
+    const track = trackingPx(m.tracking, px);
+    const wordAt = (i: number) => partW[i] * k + track * parts[i].length;
+    const gapBefore = (i: number) => (i <= 0 || parts[i - 1].endsWith('-') ? 0 : spaceW * k + track);
+    if (Math.max(...parts.map((_, i) => wordAt(i))) > boxW) return false;
+    let lines = 1;
+    let started = false;  // whether anything is on the current line yet
+    let curW = 0;
+    for (let i = 0; i < parts.length; i++) {
+      const gap = started ? gapBefore(i) : 0;
+      /* The space AFTER this word counts toward the line it ends, because every
+         surface here sets `white-space: break-spaces` (ProseMirror's own base
+         rule) — under which a trailing space is not hung past the measure, it
+         occupies it. Eight pixels, and it is the whole reason the fit believed a
+         four-line chapter title was three lines and let the fourth draw over the
+         artwork. Verified against the rendered line boxes: "Section 4:" measures
+         162 and its line box is 170. */
+      const trail = i < parts.length - 1 ? gapBefore(i + 1) : 0;
+      const next = curW + gap + wordAt(i);
+      if (started && next + trail > boxW) { lines += 1; curW = wordAt(i); } else { started = true; curW = next; }
+    }
+    const line = lineBox(lineHeight, px);
+    return (m.trimmed ? (lines - 1) * line + px * CAP_RATIO : lines * line) <= boxH;
+  };
+  if (fits(size)) return size;
+  const floor = Math.max(8, size * 0.45);
+  for (let px = size - 1; px >= floor; px -= 1) if (fits(px)) return px;
+  return floor;
+}
+
+function cpCoverBg(kind: CpCoverKind, themeCoverBg: string | undefined): string | undefined {
+  return kind === 'cover-plain' ? CP_COLOR.accent : themeCoverBg;
+}
+
+function cpCoverElements(kind: CpCoverKind, title: string, subtitle: string, author: string): CoverElement[] {
+  const t = (
+    id: string, x: number, y: number, w: number, h: number, html: string,
+    spec: { size: number; weight: number; lineHeight: string; letterSpacing?: string },
+    extra: Partial<CoverTextElement> = {},
+  ) => cpTextEl(id, x, y, w, h, `<p>${escapeHtml(html)}</p>`, spec, extra);
+  switch (kind) {
+    /* cover 79 — the shipped one: the band across the foot, the field reaching in
+       from the right edge, the byline set to the right of the subtitle. */
+    case 'cover-band':
+      return [
+        cpImg('cp-cv-field', 44.8, 208, 507, 453, CP_FIELD.cover, { decorative: true }),
+        cpShape('cp-cv-band', 0, CP_METRIC.coverBandY, CP_W, CP_METRIC.coverBandH, CP_COLOR.paper),
+        t('cp-cv-title', 39, 40, 480, 200, title, CP_TYPE.coverTitle, { color: CP_COLOR.paper, anchor: 'cap' }),
+        /* The small mark in the top-right corner — frame 2168:4648. Present on
+           this cover and on the photo one, absent from the other two. */
+        t('cp-cv-mark', 537, 40, 25, 18, '\u21ac', CP_TYPE.credit, { color: CP_COLOR.accent, anchor: 'cap' }),
+        t('cp-cv-subtitle', 40, 758, 168, 42, subtitle, CP_TYPE.coverSubtitle, { color: CP_COLOR.ink, anchor: 'top' }),
+        t('cp-cv-author', 437, 784, 118, 20, author, CP_TYPE.coverAuthor, { color: CP_COLOR.page, anchor: 'cap', textAlign: 'right' }),
+      ];
+    /* cover — the band at the HEAD instead, deep enough to carry both the title
+       and the subtitle, with the byline on an accent plate at the foot. */
+    case 'cover-head':
+      return [
+        cpShape('cp-cv-band', 0, 0, CP_W, 281, CP_COLOR.paper),
+        /* The field stops short of the byline's column. In Max's render the dashes
+           run to about x=375 and "Author Name" sits at 413 on clear ground — at the
+           frame's full 498 width the pattern runs straight under the name. */
+        cpImg('cp-cv-field', 54, 310, 330, 470, CP_FIELD.cover, { decorative: true }),
+        /* 161pt of room, not the frame's 130: the band runs to 281 and the subtitle
+           sits at 201, so that gap is what the title may actually use. */
+        t('cp-cv-title', 39, 40, 480, 155, title, CP_TYPE.coverTitle, { color: CP_COLOR.ink, anchor: 'cap' }),
+        t('cp-cv-subtitle', 40, 201, 326, 16, subtitle, CP_TYPE.coverSubtitle, { color: CP_COLOR.ink, anchor: 'cap' }),
+        /* No plate. Max's frame for this one is NAMED "text with blue bg" and does
+           not have one — the byline is white straight on the dark ground, bottom
+           right. Built from the layer name the first time, which is exactly the
+           mistake the accent ground on cover3 was: read the render. */
+        t('cp-cv-author', 413, 772, 118, 20, author, CP_TYPE.coverAuthor, { color: CP_COLOR.paper, anchor: 'cap' }),
+      ];
+    /* cover2 — a full-bleed photograph with the foot band over it, and the
+       subtitle and byline each on their own paper plate so they stay legible
+       whatever the picture is doing underneath. */
+    case 'cover-photo':
+      return [
+        /* Bled past the trim on every side, which is how the frame places it
+           (-28,-49 at 698x898 on a 595x842 page). Fitted exactly to the page it
+           reads as a different crop of the same photograph — the subject sits
+           lower and tighter — and on a full-bleed cover that is most of the
+           pixels, which is what the diff was seeing. */
+        cpImg('cp-cv-photo', -28, -49, 698, 898, CP_FIELD.coverPhoto, { decorative: false, alt: 'Cover' }),
+        cpShape('cp-cv-band', 0, 671, CP_W, 171, CP_COLOR.paper),
+        cpImg('cp-cv-field', 54, 695, 498, 104, CP_FIELD.bandTop, { decorative: true }),
+        t('cp-cv-title', 39, 40, 480, 200, title, CP_TYPE.coverTitle, { color: CP_COLOR.paper, anchor: 'cap' }),
+        t('cp-cv-mark', 537, 40, 25, 18, '\u21ac', CP_TYPE.credit, { color: CP_COLOR.accent, anchor: 'cap' }),
+        cpShape('cp-cv-plate-sub', 54, 752, 179, 51, CP_COLOR.paper),
+        t('cp-cv-subtitle', 54, 756, 168, 42, subtitle, CP_TYPE.coverSubtitle, { color: CP_COLOR.ink, anchor: 'top' }),
+        cpShape('cp-cv-plate-author', 441, 772, 114, 31, CP_COLOR.paper),
+        t('cp-cv-author', 441, 780, 114, 20, author, CP_TYPE.coverAuthor, { color: CP_COLOR.ink, anchor: 'cap', textAlign: 'center' }),
+      ];
+    /* cover3 — no band, and not the dark ground either: the whole page is the
+       template's ACCENT. Nothing is set large here — the title is a heading in the
+       right-hand column rather than the 82pt display the other three use, which is
+       why it takes three lines in 97pt without being fitted down. The field is one
+       shape stepped across the lower half in three crops. */
+    default:
+      return [
+        /* The field is an L, measured off the render rather than off the vectors'
+           bounding boxes (which report rotated-path extents and put one crop at
+           y=799 with a height of 178, i.e. past the trim): a full-measure band
+           across 437-620, then the left column only, 620-800. The bottom-right
+           quadrant stays clear, which is what gives the byline its ground. */
+        cpImg('cp-cv-field-a', 40, 437, 516, 183, CP_FIELD.cover, { decorative: true }),
+        cpImg('cp-cv-field-b', 40, 620, 260, 180, CP_FIELD.cover, { decorative: true }),
+        t('cp-cv-title', 308, 76, 222, 97, title, CP_TYPE.cover3Title, { color: CP_COLOR.paper, anchor: 'cap' }),
+        t('cp-cv-subtitle', 308, 250, 180, 54, subtitle, CP_TYPE.coverSubtitle, { color: 'rgba(255,255,255,0.72)', anchor: 'top' }),
+        t('cp-cv-author', 308, 781, 160, 19, author, CP_TYPE.cover3Author, { color: CP_COLOR.paper, anchor: 'cap' }),
+      ];
+  }
+}
+
+/* A chapter opener's objects. The file draws chapters 1-4 as a set and a fifth
+   starts the cycle again (see CP_OPENERS), so which one a chapter takes is its
+   number — but once seeded these are ordinary objects on an ordinary canvas, and
+   moving the numeral or swapping the photo is the same gesture as on the cover.
+
+   The numeral's text is the one thing NOT stored: it is the chapter's number, and
+   reordering two chapters has to move both. It is recomputed at render — see the
+   `elements` override on CoverCanvasEditable. */
+function cpOpenerElements(chapterNumber: number, photo: string | undefined): CoverElement[] {
+  const spec = cpOpenerFor(chapterNumber);
+  /* Two of the four opener designs are built around a bled photograph, and the
+     element was only added when the chapter already had one — so picking those
+     designs on a chapter that had never been given an image drew the ground, the
+     band and the numeral and simply left the photo out. The stock the running
+     pages already fall back to stands in until the author replaces it, which is
+     what `cpSheetPhoto` has always done for the content pages. */
+  /* The design's own photograph, not the generic opener stock. Openers 1 and 3
+     are the two that carry one (2 and 4 have none), and each is drawn around a
+     specific image — exported from frames 2168:4733 and 2168:4725. The stock is
+     still the fallback for an opener index outside that pair. */
+  const designShot = chapterNumber === 1 ? CP_FIELD.openerPhoto1
+    : chapterNumber === 3 ? CP_FIELD.openerPhoto3
+      : CP_OPENER_STOCK[(Math.max(1, chapterNumber) - 1) % CP_OPENER_STOCK.length];
+  const shot = photo ?? designShot;
+  const n = CP_TYPE.chapterNumber;
+  return [
+    cpShape('cp-op-ground', 0, 0, CP_W, CP_H, spec.pageBg),
+    cpShape('cp-op-band', 0, spec.band.y, CP_W, spec.band.h, spec.band.color),
+    cpImg('cp-op-field', spec.field.x, spec.field.y, spec.field.w, spec.field.h, spec.field.src),
+    ...(spec.photo
+      ? [cpImg('cp-op-photo', spec.photo.side === 'left' ? 0 : CP_W - spec.photo.w, spec.photo.y, spec.photo.w, spec.photo.h, shot, {
+          decorative: false, alt: 'Chapter opener',
+        })]
+      : []),
+    ...(spec.title.plate
+      ? [cpShape('cp-op-plate', spec.title.x, spec.title.y, spec.title.plate.w, spec.title.plate.h, CP_COLOR.paper)]
+      : []),
+    /* The box is pulled in by the tracking on a right-set numeral: CSS applies
+       letter-spacing after the LAST glyph too, so -9.76pt of it hangs that far
+       past the box's own right edge. */
+    cpTextEl('cp-op-number', spec.numeral.x, spec.numeral.y,
+      spec.numeral.align === 'right' ? spec.numeral.w - 9.76 : spec.numeral.w, 82,
+      `<p>${chapterNumber}</p>`, n, {
+        color: spec.numeral.color, textAlign: spec.numeral.align,
+        anchor: spec.numeral.trim ? 'cap' : 'top',
+      }),
+    ...(spec.rule ? [cpLine('cp-op-rule', CP_METRIC.margin, CP_METRIC.footRuleY, CP_METRIC.measure, '#111111')] : []),
+  ];
+}
+
+/** The page fill each designed page sits on. */
+const CP_PAGE_BG: Record<CpPageKind, string> = {
+  'back-right': CP_COLOR.page,
+  'back-photo': CP_COLOR.page,
+  'toc-panel': CP_COLOR.paper,
+  'toc-stack': CP_COLOR.paper,
+  'img-card': CP_COLOR.page,
+  'img-bleed': CP_COLOR.page,
+  toc: CP_COLOR.page,
+  back: CP_COLOR.page,
+  cta: CP_COLOR.page,
+  'wb-planner': CP_COLOR.paper,
+  'wb-summary': CP_COLOR.paper,
+  'wb-todo': CP_COLOR.tint,
+  'wb-goals': CP_COLOR.paper,
+};
 
 const INITIAL_PAGES: PageMeta[] = [
   // A cover with no artwork isn't a real cover — every reference screenshot shows
@@ -7148,7 +8250,7 @@ const GRID_IMGS = STOCK_IMAGES.filter((s) => s.label !== 'Minimalist desk (defau
    read in a list of tools). Same styles either way — only the sample copy
    changes, so the preview still can't promise a look the insert won't deliver.
    Tiles without one preview their real html. */
-interface InsertTile { id: string; label: string; icon: string; group: 'Text' | 'Shapes' | 'Icons' | 'Layout' | 'Interactive' | 'Worksheets' | 'Forms' | 'Charts' | 'Media' | 'TextStyles' | 'TextTemplates'; sub?: string; requiredPlan?: GateTier; html: string; specimen?: string; color?: string; outline?: boolean;
+interface InsertTile { id: string; label: string; icon: string; group: 'Text' | 'Shapes' | 'Icons' | 'Blocks' | 'Interactive' | 'Worksheets' | 'Forms' | 'Charts' | 'Media' | 'TextStyles' | 'TextTemplates'; sub?: string; requiredPlan?: GateTier; html: string; specimen?: string; color?: string; outline?: boolean;
   /* Raw SVG for the tile's well, where the mark itself is the preview and no
      single `d` path can stand in for it. Icons are drawn from several
      primitives (Lucide strokes a lightbulb as three separate paths), so the
@@ -7205,11 +8307,11 @@ const WELL_PAGE = '#FFFFFF';
    per-tile badges, because one header pill would then be lying about the tiles
    that aren't gated. */
 /* Display names for the section headers. The group ids double as headings
-   everywhere else, but three of them read wrong on their own: 'Layout' is
-   singular under a rail tab called Layouts, 'TextStyles' isn't a phrase, and
-   'TextTemplates' collides with the rail's whole-book Templates tab. */
+   everywhere else, but two of them read wrong on their own: 'TextStyles' isn't a
+   phrase, and 'TextTemplates' collides with the rail's whole-book Templates tab.
+   'Blocks' needs no override — the Elements category it sits under is spelt the
+   same way, which is the point of the rename. */
 const GROUP_HEADINGS: Partial<Record<InsertTile['group'], string>> = {
-  Layout: 'Layouts',
   TextStyles: 'Text styles',
   /* Not "Text templates": the rail's own Templates tab swaps the WHOLE BOOK, and
      two unrelated things called templates — one nested two levels inside the
@@ -7234,9 +8336,19 @@ function groupGate(group: InsertTile['group']): GateTier | null {
    sample copy ("Second column.") rather than one sentence spread across the
    cells — the sample has to demonstrate the thing the block now does, which is
    keep what you type where you put it. */
-function splitColumnsHtml(n: number): string {
+function splitColumnsHtml(n: number, body?: string): string {
   const words = ['First', 'Second', 'Third', 'Fourth'];
-  const cells = Array.from({ length: n }, (_, i) => `<td><p>${words[i]} column.</p></td>`).join('');
+  /* With a body, this is a CONVERSION rather than an insert — a page design
+     being applied to a page somebody has already written. The existing copy
+     goes into column one and the rest open empty: there is no right answer to
+     where a written page should break between columns, and guessing one would
+     move the author's words without being asked. Losing them is not an option
+     either, which is what the sample copy would do. */
+  const cells = Array.from({ length: n }, (_, i) => (
+    body != null
+      ? `<td>${i === 0 ? body : '<p></p>'}</td>`
+      : `<td><p>${words[i]} column.</p></td>`
+  )).join('');
   return `<table class="book-split-columns"><tbody><tr>${cells}</tr></tbody></table>`;
 }
 
@@ -7395,17 +8507,17 @@ const INSERT_TILES: InsertTile[] = [
      The node itself stays registered and styled: books already holding a
      columnsBlock keep rendering and reflowing exactly as before. Only the way to
      make a NEW one is gone. */
-  { id: 'columns-2', label: '2 columns', icon: ICONS.columns, group: 'Layout', sub: 'Columns', html: splitColumnsHtml(2) },
-  { id: 'columns-3', label: '3 columns', icon: ICONS.columns, group: 'Layout', sub: 'Columns', html: splitColumnsHtml(3) },
-  { id: 'columns-4', label: '4 columns', icon: ICONS.columns, group: 'Layout', sub: 'Columns', html: splitColumnsHtml(4) },
+  { id: 'columns-2', label: '2 columns', icon: ICONS.columns, group: 'Blocks', sub: 'Columns', html: splitColumnsHtml(2) },
+  { id: 'columns-3', label: '3 columns', icon: ICONS.columns, group: 'Blocks', sub: 'Columns', html: splitColumnsHtml(3) },
+  { id: 'columns-4', label: '4 columns', icon: ICONS.columns, group: 'Blocks', sub: 'Columns', html: splitColumnsHtml(4) },
   // The uneven pair. Same table, one extra class that sets the width ratio —
   // which is the other thing column-count could never express, since a CSS
   // multicol's columns are equal by definition.
-  { id: 'columns-1-3', label: '2 columns (1:3)', icon: ICONS.columns, group: 'Layout', sub: 'Columns', html: '<table class="book-split-columns book-split-columns--1-3"><tbody><tr><td><p>Narrower column.</p></td><td><p>Wider column, for the main flow of text.</p></td></tr></tbody></table>' },
-  { id: 'columns-3-1', label: '2 columns (3:1)', icon: ICONS.columns, group: 'Layout', sub: 'Columns', html: '<table class="book-split-columns book-split-columns--3-1"><tbody><tr><td><p>Wider column, for the main flow of text.</p></td><td><p>Narrower column.</p></td></tr></tbody></table>' },
-  { id: 'image-grid-2', label: '2 photos', icon: ICONS.imageGrid, group: 'Layout', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="2" class="book-image-grid book-image-grid--2">${gridFig(GRID_IMGS[0])}${gridFig(GRID_IMGS[1])}</div>` },
-  { id: 'image-grid-3', label: '3 photos', icon: ICONS.imageGrid, group: 'Layout', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="3" class="book-image-grid book-image-grid--3">${gridFig(GRID_IMGS[0])}${gridFig(GRID_IMGS[1])}${gridFig(GRID_IMGS[2])}</div>` },
-  { id: 'image-grid-4', label: '4 photos', icon: ICONS.imageGrid, group: 'Layout', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="4" class="book-image-grid book-image-grid--4">${gridFig(GRID_IMGS[0])}${gridFig(GRID_IMGS[1])}${gridFig(GRID_IMGS[2])}${gridFig(GRID_IMGS[3])}</div>` },
+  { id: 'columns-1-3', label: '2 columns (1:3)', icon: ICONS.columns, group: 'Blocks', sub: 'Columns', html: '<table class="book-split-columns book-split-columns--1-3"><tbody><tr><td><p>Narrower column.</p></td><td><p>Wider column, for the main flow of text.</p></td></tr></tbody></table>' },
+  { id: 'columns-3-1', label: '2 columns (3:1)', icon: ICONS.columns, group: 'Blocks', sub: 'Columns', html: '<table class="book-split-columns book-split-columns--3-1"><tbody><tr><td><p>Wider column, for the main flow of text.</p></td><td><p>Narrower column.</p></td></tr></tbody></table>' },
+  { id: 'image-grid-2', label: '2 photos', icon: ICONS.imageGrid, group: 'Blocks', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="2" class="book-image-grid book-image-grid--2">${gridFig(GRID_IMGS[0])}${gridFig(GRID_IMGS[1])}</div>` },
+  { id: 'image-grid-3', label: '3 photos', icon: ICONS.imageGrid, group: 'Blocks', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="3" class="book-image-grid book-image-grid--3">${gridFig(GRID_IMGS[0])}${gridFig(GRID_IMGS[1])}${gridFig(GRID_IMGS[2])}</div>` },
+  { id: 'image-grid-4', label: '4 photos', icon: ICONS.imageGrid, group: 'Blocks', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="4" class="book-image-grid book-image-grid--4">${gridFig(GRID_IMGS[0])}${gridFig(GRID_IMGS[1])}${gridFig(GRID_IMGS[2])}${gridFig(GRID_IMGS[3])}</div>` },
   /* The uneven pair, in the same order and with the same labels as the text
      splits above — a feature photo with a supporting one beside it, which is the
      one photo arrangement the equal grids can't express. Named the way Columns
@@ -7416,8 +8528,8 @@ const INSERT_TILES: InsertTile[] = [
      ratio on top, not a third column count: it IS a two-up, just not a 50/50
      one, and everything keyed to the count (the Columns control, the EPUB
      float widths, setGridColumns' cell bookkeeping) keeps working untouched. */
-  { id: 'image-grid-1-3', label: '2 photos (1:3)', icon: ICONS.imageGrid, group: 'Layout', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="2" data-ratio="1-3" class="book-image-grid book-image-grid--2 book-image-grid--1-3">${gridFig(GRID_IMGS[1])}${gridFig(GRID_IMGS[0])}</div>` },
-  { id: 'image-grid-3-1', label: '2 photos (3:1)', icon: ICONS.imageGrid, group: 'Layout', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="2" data-ratio="3-1" class="book-image-grid book-image-grid--2 book-image-grid--3-1">${gridFig(GRID_IMGS[0])}${gridFig(GRID_IMGS[1])}</div>` },
+  { id: 'image-grid-1-3', label: '2 photos (1:3)', icon: ICONS.imageGrid, group: 'Blocks', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="2" data-ratio="1-3" class="book-image-grid book-image-grid--2 book-image-grid--1-3">${gridFig(GRID_IMGS[1])}${gridFig(GRID_IMGS[0])}</div>` },
+  { id: 'image-grid-3-1', label: '2 photos (3:1)', icon: ICONS.imageGrid, group: 'Blocks', sub: 'Photo grids', html: `<div data-image-grid="true" data-cols="2" data-ratio="3-1" class="book-image-grid book-image-grid--2 book-image-grid--3-1">${gridFig(GRID_IMGS[0])}${gridFig(GRID_IMGS[1])}</div>` },
   /* A photo and a paragraph side by side, as ONE block where neither runs under
      the other. The editor already has the other arrangement — an image with
      `wrap: left/right` floats it and the prose flows around and beneath it — and
@@ -7430,8 +8542,8 @@ const INSERT_TILES: InsertTile[] = [
      33/67, not 50/50: an equal split gives a book page a photo as wide as its
      text column and a paragraph too narrow to read. The only choice worth a tile
      is which side the photo takes. */
-  { id: 'text-photo-left', label: 'Photo left', icon: ICONS.imageGrid, group: 'Layout', sub: 'Photo and text', html: `<table class="book-split-columns book-split-columns--1-3"><tbody><tr><td>${gridFig(GRID_IMGS[0])}</td><td><p>Text beside the photo, in its own column.</p></td></tr></tbody></table>` },
-  { id: 'text-photo-right', label: 'Photo right', icon: ICONS.imageGrid, group: 'Layout', sub: 'Photo and text', html: `<table class="book-split-columns book-split-columns--3-1"><tbody><tr><td><p>Text beside the photo, in its own column.</p></td><td>${gridFig(GRID_IMGS[0])}</td></tr></tbody></table>` },
+  { id: 'text-photo-left', label: 'Photo left', icon: ICONS.imageGrid, group: 'Blocks', sub: 'Photo and text', html: `<table class="book-split-columns book-split-columns--1-3"><tbody><tr><td>${gridFig(GRID_IMGS[0])}</td><td><p>Text beside the photo, in its own column.</p></td></tr></tbody></table>` },
+  { id: 'text-photo-right', label: 'Photo right', icon: ICONS.imageGrid, group: 'Blocks', sub: 'Photo and text', html: `<table class="book-split-columns book-split-columns--3-1"><tbody><tr><td><p>Text beside the photo, in its own column.</p></td><td>${gridFig(GRID_IMGS[0])}</td></tr></tbody></table>` },
   /* Was two tiles: "Call to action" (a Pro-gated `<p><strong>…→</strong></p>` —
      bold text and a typed arrow) and "Inline CTA". The first is gone; see the
      ButtonBlock header for why bold text with an arrow was not a feature, and
@@ -8131,6 +9243,11 @@ interface AiMessage {
   role: 'user' | 'ai';
   text: string;
   pills?: string[];
+  /** Fill the pills from the live context at render time instead of carrying a
+      fixed list. Only the welcome message sets it: a suggestion written when
+      the panel opened would still be offering "Rewrite this" ten minutes after
+      the author selected a photo. */
+  contextual?: boolean;
   /** Markdown. Never raw text for the document — it goes through markdownToHtml. */
   draft?: string;
   inserted?: boolean;
@@ -8394,10 +9511,50 @@ function ImportPanel({ onAdd, busy, error, onDismissError, destinationLabel }: {
   );
 }
 
+/* What Wordgenie can see.
+
+   The panel used to know one thing about the book — which chapter had focus —
+   and everything it said was built from that: "this chapter", "about four
+   pages", a fixed set of suggestion pills. None of it was wrong exactly, but
+   none of it was checkable either, and nothing in the panel told the author
+   what the assistant was looking at, so an answer about the wrong chapter read
+   exactly like an answer about the right one.
+
+   This is that question answered once. The chip above the composer prints it,
+   the suggestion pills are chosen from it, and the replies quote its numbers,
+   so all three agree by construction rather than by three authors remembering
+   to keep them in step. */
+interface AiContext {
+  /** The page the caret or the selection is on. null when nothing is focused. */
+  pageId: string | null;
+  /** What that page is called: a chapter's heading, or 'Cover', 'Contents'. */
+  pageTitle: string;
+  /** The owning chapter's heading, when the caret is in chapter text at all.
+      Absent on the cover and the contents page, which is what makes a reply
+      about "this chapter" safe to write. */
+  chapterTitle?: string;
+  /** The folio the book would print here. null on a page it doesn't number. */
+  pageNumber: number | null;
+  /** The selected object's own name — 'Photo', 'Table'. null for a caret. */
+  objectLabel: string | null;
+  /** Words inside the live text selection; 0 for a caret. */
+  selectedWords: number;
+  chapterWords: number;
+  chapterPages: number;
+  bookWords: number;
+  chapterCount: number;
+  /** The breadcrumb the chip prints, broad to narrow. */
+  label: string;
+}
+
 const AI_WELCOME: AiMessage = {
   role: 'ai',
-  text: 'Ask me to rewrite a paragraph, change the tone, or draft new content for the current chapter.',
-  pills: ['Rewrite this paragraph', 'Fix grammar', 'Make it more concise', 'Suggest a title'],
+  text: 'Ask me to rewrite what you have selected, change its tone, or draft something new for where you are in the book.',
+  /* No pills of its own — the panel fills them from the live context (see
+     aiPills), because which suggestions are honest depends on what is
+     selected when you read them, not on what was selected when the message
+     was written. */
+  contextual: true,
 };
 
 const DRAFT_VERBS = /\b(write|draft|expand|outline|continue|add|create|give me|list|suggest|rewrite|summari[sz]e)\b/i;
@@ -8418,15 +9575,48 @@ function draftPreview(markdown: string): string {
     .trim();
 }
 
-function mockAiReply(prompt: string, chapterTitle: string | undefined): { text: string; draft?: string } {
+function mockAiReply(prompt: string, ctx: AiContext): { text: string; draft?: string } {
   if (!DRAFT_VERBS.test(prompt)) {
+    /* Answered from what the editor has actually measured — the chapters' own
+       word counts and the paginator's sheet counts — rather than from the two
+       invented sentences this returned before. A number the author can check
+       against the status bar is the difference between an assistant that is
+       looking at the book and one that is describing a book. */
+    if (ctx.selectedWords > 0) {
+      const where = ctx.pageNumber ? `, on page ${ctx.pageNumber}` : '';
+      return { text: `You have ${ctx.selectedWords} ${ctx.selectedWords === 1 ? 'word' : 'words'} selected${where}. I can rewrite it, shorten it, or change its tone.` };
+    }
+    if (ctx.chapterTitle) {
+      return {
+        text: `“${ctx.chapterTitle}” runs to about ${ctx.chapterWords.toLocaleString()} words — ${ctx.chapterPages} ${ctx.chapterPages === 1 ? 'page' : 'pages'} at your current page size.`,
+      };
+    }
+    return { text: `Your book is about ${ctx.bookWords.toLocaleString()} words across ${ctx.chapterCount} ${ctx.chapterCount === 1 ? 'chapter' : 'chapters'}.` };
+  }
+  const subject = ctx.chapterTitle ? `“${ctx.chapterTitle}”` : 'this book';
+  /* A caption, a title and a bio are short, specific jobs, and the long essay
+     below is a wrong answer to all three — it was what "Suggest a title"
+     returned. The pills now offer these by name wherever they apply, which
+     makes answering them properly the difference between a suggestion and a
+     trick. */
+  if (/\bcaption\b/i.test(prompt)) {
     return {
-      text: chapterTitle
-        ? `This chapter runs to about 1,200 words — roughly four pages at your current page size.`
-        : `Your book is about 7,400 words across four chapters.`,
+      text: ctx.objectLabel ? `A caption for the ${ctx.objectLabel.toLowerCase()}.` : 'A caption for this photo.',
+      draft: 'The desk at the end of a week of saying no — fewer things on it, and every one of them chosen.',
     };
   }
-  const subject = chapterTitle ? `"${chapterTitle}"` : 'this book';
+  if (/\btitles?\b/i.test(prompt)) {
+    return {
+      text: 'Three titles, shortest first.',
+      draft: ['- The Cost of Yes', '- What Saying No Buys You', '- **Attention Is the Only Budget**'].join('\n'),
+    };
+  }
+  if (/\bbio\b|about the author/i.test(prompt)) {
+    return {
+      text: 'A short author bio — third person, which is the convention on a back page.',
+      draft: 'She writes about attention, focus and the quiet arithmetic of commitment. This is her second book.',
+    };
+  }
   /* Deliberately includes a heading, a list and bold — the three things the old
      editor's panel renders as literal `###`, `-` and `**`. If the parser ever
      regresses, the very first draft shows it. */
@@ -8524,7 +9714,7 @@ function imageNodeAtPoint(editor: Editor, clientX: number, clientY: number): { p
 
 
 type MediaPickerKind = 'image' | 'video' | 'audio';
-type ElementsCategory = 'Shapes' | 'Icons' | 'Charts' | 'Worksheets' | 'Forms' | 'Interactive';
+type ElementsCategory = 'Blocks' | 'Shapes' | 'Icons' | 'Charts' | 'Worksheets' | 'Forms' | 'Interactive';
 
 /* What a source hands back once something has actually been chosen. `poster` and
    `title` are video-only and resolved when the link is pasted, not when the block
@@ -8615,6 +9805,25 @@ function blockInsertPos(doc: PMNode, pos: number): number {
   for (let d = $at.depth; d > 0; d -= 1) {
     if (CLOSED_BLOCK_TYPES.has($at.node(d).type.name)) return $at.after(d);
   }
+  /* A block tile aimed mid-sentence goes AFTER the paragraph, never into it.
+     Inserting at the raw caret is what ProseMirror does by default, and it
+     splits the textblock wherever the caret happens to be — including inside a
+     word, so clicking Rectangle with the caret in "week" left "...for a w",
+     the shape, then "eek? Yes." as a second paragraph. Notion, Craft and Google
+     Docs all place a block after the current one rather than breaking it; the
+     alternative convention (Medium, Ghost) only offers the insert on an empty
+     line, which doesn't fit a tile palette that is always clickable.
+
+     Depth, not depth 1: a paragraph inside a column or a table cell inserts
+     after itself and stays in its container, the same rule the closed-block
+     walk above keeps.
+
+     An EMPTY textblock is filled rather than pushed down — otherwise clicking a
+     tile on the blank line you just made leaves that line stranded above the
+     block you asked for. */
+  if ($at.depth > 0 && $at.parent.isTextblock) {
+    return $at.parent.content.size === 0 ? $at.before($at.depth) : $at.after($at.depth);
+  }
   return pos;
 }
 
@@ -8647,8 +9856,896 @@ function insertMediaAt(editor: Editor, at: number, kind: MediaPickerKind, src: s
 
 /* ── one TipTap editor instance per chapter — one real document tree per
    chapter, not fragmented per-paragraph editors ──────────────────────────── */
+/* relativeLuminance slices #RRGGBB and hands back NaN for anything else, and
+   NaN > 0.5 is false — which would put the dark-page tint on a white sheet.
+   Anything unparseable is treated as light paper, which is what it nearly always
+   is. */
+function bandTintFor(bg: string): string {
+  const light = !/^#[0-9a-f]{6}$/i.test(bg) || relativeLuminance(bg) > 0.5;
+  return light ? 'rgba(15,25,40,0.04)' : 'rgba(255,255,255,0.07)';
+}
+
+/* Everything the book's CONTENT looks like — prose, blocks, tables, callouts,
+   text styles — as opposed to the affordances for editing it. It lived inside
+   ChapterEditor, which meant it existed only while a chapter editor was mounted:
+   every read-only render of the book (version history, the template preview, the
+   Preview overlay reached with no editor behind it) drew buttons, callouts and QR
+   codes as unstyled HTML — a blue box with the label hanging out of it, a default
+   red QR. Rendered as its own component so both paths can mount it.
+
+   Still `global`, and still unscoped by chapter, so a book whose chapters carry
+   different font overrides gets whichever instance mounted last. That is how it
+   already behaved; splitting the file is not the moment to change it. */
+function BookProseStyles({ theme, bodyFont, bodyColor, headingColor, bandTint }: {
+  theme: ThemeDef;
+  bodyFont: string;
+  bodyColor: string;
+  headingColor: string;
+  // Table banding reads the PAGE's own background, which is why it is passed in
+  // rather than derived from the theme here — see where it is computed.
+  bandTint: string;
+}) {
+  const editorPrefs = useContext(EditorPrefsContext);
+  const geo = useContext(PageGeometryContext);
+  /* A template that ships a page design sets its running text too — the measure,
+     the size and the leading are part of the design, not decoration on top of
+     it. Career Pathways sets its body at 14/20pt on a 515pt measure, which is
+     markedly tighter than the editor's own 15.5px/1.7 default; without this the
+     content pages would carry the template's chrome around somebody else's
+     text. */
+  const design = pageDesignOf(theme);
+  const cpScale = design ? geo.w / design.w : 1;
+  const bodySize = design ? `${(design.prose.size * cpScale).toFixed(2)}px` : '15.5px';
+  const bodyLead = design ? design.prose.lead.toFixed(4) : '1.7';
+  /* One blank line between paragraphs, which is exactly how both designs set
+     them — not the editor's own 0.9em. */
+  const bodyGap = design ? `${(design.prose.gap * cpScale).toFixed(2)}px` : `${editorPrefs.paragraphSpace / 100}em`;
+  /* The design's own column gutter — 21pt in one, 20 in the other. */
+  const colGap = design ? `${(design.prose.colGap * cpScale).toFixed(2)}px` : '28px';
+  return (
+  <style jsx global>{`
+    .book-drag-handle { opacity: 0.7; transition: opacity .12s ease, background .12s ease, border-color .12s ease; }
+    .book-drag-handle:hover { opacity: 1; background: #F3F8FF; border-color: ${BLUE}; color: ${BLUE}; }
+    .book-drag-handle:active { cursor: grabbing; }
+    .book-chapter-prose { font-family: ${bodyFont}; font-size: ${bodySize}; line-height: ${bodyLead}; color: ${bodyColor}; outline: none; border-radius: 6px; }
+    /* Same issue as the :hover dashed box above, just for :focus — one ring
+       around the WHOLE contentEditable (every paragraph, plus any embedded
+       image/shape/etc, all together) regardless of which specific block is
+       actually being worked on. Removed rather than scoped: unlike an atom
+       object (which gets its own outline via ProseMirror-selectednode only
+       while IT specifically is selected), plain flowing text has no
+       equivalent per-paragraph "you are here" affordance to fall back on —
+       nor does it need one; the native caret already is that indicator, the
+       same way Word/Docs/Notion show no box around the paragraph you're
+       typing in. Still need an explicit override, not just deleting the
+       rule that used to be here — globals.css's own unscoped
+       [contenteditable]:focus underneath applies the same whole-container
+       box-shadow regardless, exactly like its :hover sibling above. */
+    .book-chapter-prose[contenteditable]:focus { box-shadow: none; outline: none; }
+    /* globals.css's [contenteditable]:hover dashed outline is meant for a
+       single plain field — applied unscoped here it drew ONE dashed box
+       around the entire chapter body (every paragraph plus any embedded
+       image together), reading as if they shared one container instead of
+       each being its own block. Killed the same way .book-simple-editable
+       already was for cover text fields. */
+    .book-chapter-prose[contenteditable]:hover { outline: none; background: none; }
+    /* Size, weight and margins are restated here because Tailwind's preflight
+       resets every heading to \`font-size: inherit; font-weight: inherit\` and
+       strips its margins, and nothing put them back. An inserted Heading came
+       out at body size in body weight — the only thing telling it apart from
+       the paragraph above was the family — and Subheading, the one level that
+       did carry a size (1.02em), rendered LARGER than the Heading it sits
+       under. The hierarchy was inverted.
+       The numbers are kept identical to lib/epub.ts, so the editor can't show
+       one hierarchy while the exported book ships another — change them in
+       one place and the other has to follow.
+       The first pass took the export's own 1.15em/1.02em and inherited its
+       problem: against 15.5px body that put a subheading at 15.81px and a
+       paragraph at 15.5px, a third of a pixel apart, so the two levels were
+       separated by weight alone and the longer paragraph line actually read
+       as the larger of the two. The ramp is now ~1.4 / ~1.15 / 1 — one that
+       survives being glanced at. */
+    /* A chapter title in the flow. Sized above h3 for the same reason it
+       sits above it in the Style list — it opens a chapter, h3 opens a
+       section inside one. The top margin collapses to nothing on a title
+       that starts its own page, where the page's own top margin is already
+       doing that job and a second one would push the chapter down the
+       sheet. */
+    .book-chapter-prose h2[data-chapter-title] { font-family: ${theme.headingFont}; color: ${headingColor}; font-size: 1.85em; font-weight: 700; line-height: 1.2; margin: 1.6em 0 .6em; }
+    .book-chapter-prose h2[data-chapter-title]:not([data-break-before="false"]) { margin-top: 0; }
+    .book-chapter-prose h3 { font-family: ${theme.headingFont}; color: ${headingColor}; font-size: 1.4em; font-weight: 700; line-height: 1.25; margin: 1.3em 0 .45em; }
+    /* Smaller than h3 and not a ToC entry (deriveSubheadings reads h3 only) —
+       two ToC levels is what an ebook wants; a third turns the contents page
+       into an index. h4 is the level you break a long section with. */
+    .book-chapter-prose h4 { font-family: ${theme.headingFont}; color: ${headingColor}; font-size: 1.15em; font-weight: 700; line-height: 1.3; margin: 1.2em 0 .4em; }
+    /* A heading opening a chapter has nothing above it to be separated from. */
+    .book-chapter-prose > h3:first-child, .book-chapter-prose > h4:first-child { margin-top: 0; }
+    ${editorPrefs.paragraphStyle === 'indented' ? `
+    /* Printed-book paragraphs — see ParagraphStyle. Direct children only, so
+       a paragraph inside a list item, an info box or a table cell isn't
+       indented by a rule meant for running body text. A first paragraph has
+       nothing to be separated from, so the chapter's opening one and any
+       that follows a heading stay flush. */
+    .book-chapter-prose > p { margin: 0 0 ${bodyGap}; text-indent: ${editorPrefs.paragraphIndent / 100}em; }
+    .book-chapter-prose > p:first-child,
+    .book-chapter-prose > h2 + p, .book-chapter-prose > h3 + p,
+    .book-chapter-prose > h4 + p, .book-chapter-prose > hr + p { text-indent: 0; }
+    ` : `
+    .book-chapter-prose p { margin: 0 0 ${bodyGap}; }
+    `}
+    /* ProseMirror's own base stylesheet sets overflow-wrap: break-word. That
+       is right for a document body and wrong for a title that is doing design
+       work: a cover title missing its measure by four pixels came out as
+       "Breakthroug / h". The words on a cover and on a chapter opener ARE the
+       design, so breaking one is never the answer — they are fitted to their box
+       instead (fitCoverElements, fitOpenerTitleSize), and anything those two
+       somehow fail to catch overflows where it can be seen and dealt with rather
+       than being silently mangled. */
+    .ProseMirror.book-no-word-break { overflow-wrap: normal; word-break: normal; hyphens: none; }
+    .book-chapter-prose ul { list-style: disc; margin: 0 0 14px; padding-left: 22px; }
+    .book-chapter-prose ol { list-style: decimal; margin: 0 0 14px; padding-left: 22px; }
+    .book-chapter-prose li { margin-bottom: 4px; }
+    .book-chapter-prose li p { margin: 0; }
+    /* The spacer that carries the flow from one page to the next. It has
+       no appearance of its own — the page sheets behind it are what you
+       see through the gap. */
+    .book-chapter-prose .book-page-break { width: 100%; user-select: none; pointer-events: none; }
+    /* Tailwind's preflight resets <a> to inherit both colour and
+       decoration, so a link in the body was indistinguishable from the text
+       around it — you could only find one by clicking.
+
+       Fixed blue/purple rather than theme.accentColor: blue-then-purple is
+       the one piece of web typography every reader already knows, and a
+       themed link colour would make "visited" mean something different in
+       every template. Browsers only allow a handful of properties on
+       :visited (colour is one), which is why the rule is colour-only. */
+    .book-chapter-prose a { color: ${LINK_COLOR}; text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; cursor: pointer; }
+    /* Visited only in the reader view. In the editor a link's colour would
+       otherwise depend on the author's own browsing history — you'd paste a
+       link you use every day and watch it come out purple in your own
+       manuscript, which tells you nothing about the book. */
+    .book-chapter-prose:not([contenteditable="true"]) a:visited { color: ${LINK_VISITED_COLOR}; }
+    /* A quotation is set by indenting it and sizing it down — not by a fill,
+       a border or a coloured bar down its side, all of which are web and
+       magazine conventions that arrived here by way of CSS defaults.
+       Butterick's Practical Typography gives the whole recipe for a block
+       quotation as "reduce the point size and line spacing slightly" and
+       "indent the text block between half an inch and a full inch on the
+       left side, and optionally the same on the right" — no rule, no tint —
+       and The Book Designer's nonfiction guidance is that "in nonfiction
+       books, pull quotes are usually just in black … this is different from
+       magazines, where they are often colorful". The tinted box also never
+       survived export (epub.ts has never carried it), so the canvas was
+       showing something no reader would ever see.
+
+       The pull-quote layout is the same rule set louder: bigger, in the
+       heading face, upright. Indentation carries both. */
+    .book-chapter-prose blockquote {
+      margin: 18px 34px; padding: 0; color: ${bodyColor}; font-style: italic; font-size: 0.95em;
+    }
+    /* Its own rule, not a conditional block interpolated into the one above.
+       styled-jsx parses this CSS and re-emits it, and an interpolation
+       sitting mid-declaration-list comes back out AFTER the static
+       declarations that followed it in source — so font-style:normal here
+       lost to the font-style:italic above, and a pull-quote rendered italic
+       no matter what this said. A sibling rule of equal specificity, later in the
+       sheet, cascades the way the source reads. */
+    .book-chapter-prose.book-layout-quote-pull blockquote {
+      font-size: 22px; font-family: ${theme.headingFont}; font-style: normal; color: ${headingColor};
+    }
+    /* A glossary. The term sits above its definition, which is what a <dl>
+       does by default and what survives a narrow column — the side-by-side
+       arrangement the old editor uses is the one that clips a long term
+       mid-word, which theirs visibly does.
+       The empty rows are labelled by CSS, not by seeded words: an empty
+       glossary has to read as a glossary, and a placeholder written into the
+       document would be text somebody has to delete. :empty matches only a
+       genuinely empty node, so the label vanishes the moment you type. */
+    .book-chapter-prose .${GLOSSARY_CLASS} { margin: 20px 0; }
+    .book-chapter-prose .${GLOSSARY_CLASS} dl { margin: 0; padding: 0; }
+    .book-chapter-prose .${GLOSSARY_CLASS} dt {
+      font-weight: 700; color: ${headingColor}; margin-top: 12px;
+    }
+    .book-chapter-prose .${GLOSSARY_CLASS} dt:first-child { margin-top: 0; }
+    .book-chapter-prose .${GLOSSARY_CLASS} dd {
+      margin: 2px 0 0; padding: 0 0 0 16px; border-left: 2px solid ${BORDER};
+    }
+    /* Two selectors for one state. :empty is the honest test and is what
+       matches in Preview and the page thumbnails, which render plain HTML —
+       but it never matches in the live editor, because ProseMirror puts a
+       trailing <br> inside every empty text block, so the node has a child
+       and stops being :empty. The :has() rule catches exactly that shape. */
+    .book-chapter-prose .${GLOSSARY_CLASS} dt:empty::before,
+    .book-chapter-prose .${GLOSSARY_CLASS} dt:has(> br.ProseMirror-trailingBreak:only-child)::before {
+      content: 'Term'; color: #9AA5B4; font-weight: 400;
+    }
+    .book-chapter-prose .${GLOSSARY_CLASS} dd:empty::before,
+    .book-chapter-prose .${GLOSSARY_CLASS} dd:has(> br.ProseMirror-trailingBreak:only-child)::before {
+      content: 'What it means'; color: #9AA5B4;
+    }
+    /* The drop cap. A floated span, NOT ::first-letter — the pseudo-element
+       is unreliable across reading systems, and the float-a-span recipe is
+       what every ebook formatting guide gives, so the canvas is built the
+       same way the exported file is rather than a prettier way that would
+       not survive. line-height:0.8 and the small negative top are what sit
+       the cap's shoulders on the first line instead of pushing it below.
+       Three lines tall: the conventional depth, and the one that still fits
+       when a paragraph is only four lines long. */
+    .book-chapter-prose .${DROPCAP_CLASS} {
+      float: left;
+      font-family: ${theme.headingFont};
+      font-size: 6.4em;
+      line-height: 0.74;
+      padding-right: 0.08em;
+      margin-top: 0.04em;
+      color: ${headingColor};
+    }
+    /* A link whose chapter has been deleted. Red and struck through, which
+       is Vellum's treatment and the only one that works here: an internal
+       link is styled like every other link, so without this it still LOOKS
+       live and only fails for the reader. It is also dropped from the export,
+       so this is a warning rather than a defect you can ship. */
+    .book-chapter-prose .${BROKEN_LINK_CLASS} {
+      color: #B91C1C; text-decoration: line-through; text-decoration-color: #B91C1C;
+    }
+    /* The figure takes the blockquote's own left/right indent and the quote
+       inside it drops to zero, so a quote with an attribution sits on exactly
+       the same measure as one without — the attribution should not be able to
+       move the quote. */
+    .book-chapter-prose figure.${QUOTE_FIGURE_CLASS} { margin: 18px 34px; }
+    .book-chapter-prose figure.${QUOTE_FIGURE_CLASS} blockquote { margin: 0; }
+    /* Upright and a size down from the quote: it is the source line, not part
+       of the quotation, and setting it in the same italic would read as a
+       continuation of the sentence above it. */
+    .book-chapter-prose .${QUOTE_ATTRIBUTION_CLASS} {
+      margin-top: 8px; font-style: normal; font-size: 0.85em; color: ${SLATE};
+    }
+    .book-chapter-prose.book-layout-quote-pull .${QUOTE_ATTRIBUTION_CLASS} {
+      font-family: ${theme.bodyFont}; text-align: center;
+    }
+    /* The Divider tile drops a bare <hr>, which had no rule of its own here and
+       so came out as the browser's default inset 3D groove — and no selected
+       state either, so clicking one (the only way to reach it) gave no sign it
+       had worked. Selected, the line itself turns blue: a 1px rule is too thin
+       for the outline ring the other objects use to read as a selection. */
+    /* What an AI action just changed — see the ChangeFlash plugin.
+       Held at full strength long enough to find on the page, then faded out
+       over about the same again: a flash that vanishes before the eye gets
+       there is the same as no flash, and one that lingers becomes a
+       highlight the author has to wonder about. Green rather than the
+       editor's blue, because blue in this canvas already means selection.
+       Nothing here affects layout — only the background moves, so the
+       paragraph can't reflow as it fades. */
+    @keyframes bookChangeFlash {
+      0%, 45%  { background-color: rgba(22, 163, 74, 0.20); }
+      100%     { background-color: rgba(22, 163, 74, 0); }
+    }
+    @keyframes bookChangeTick {
+      0%, 45%  { opacity: 1; }
+      100%     { opacity: 0; }
+    }
+    /* Scoped to the editor you are actually working in. The page navigator
+       renders each chapter again as a read-only thumbnail, and a thumbnail
+       that picks up the highlight either flashes green in the rail for no
+       reason or — worse — restarts the animation whenever it is rebuilt,
+       long after the edit it belonged to. The feedback is about the
+       paragraph under the author's cursor, so it only draws there. */
+    .book-chapter-prose[contenteditable='true'] .${CHANGE_FLASH_CLASS} {
+      border-radius: 2px;
+      animation: bookChangeFlash 1900ms ease-out forwards;
+    }
+    /* A deletion's marker. Zero width, so it sits between two characters
+       without pushing them apart — the words either side must not move, or
+       the flash becomes an edit of its own.
+       Drawn as a short horizontal dash rather than the upright tick it
+       started as: upright, 2px and dark it was indistinguishable from the
+       text caret sitting in the same paragraph, which made the one action
+       that deletes look like it had merely moved the cursor. A dash across
+       the join is the strikethrough gesture, and nothing else in the editor
+       looks like it. */
+    .book-chapter-prose[contenteditable='true'] .${CHANGE_TICK_CLASS} {
+      display: inline-block; position: relative; width: 0; height: 1em;
+      vertical-align: text-bottom;
+      animation: bookChangeTick 1900ms ease-out forwards;
+    }
+    .book-chapter-prose[contenteditable='true'] .${CHANGE_TICK_CLASS}::after {
+      content: ''; position: absolute; left: 50%; top: 0.42em;
+      width: 7px; height: 2px; margin-left: -3.5px; border-radius: 1px;
+      background: rgba(22, 163, 74, 0.75);
+    }
+    /* The fade is decoration in the strict sense: it carries information the
+       highlight itself already carries, so it is safe to simply stop. */
+    @media (prefers-reduced-motion: reduce) {
+      .book-chapter-prose[contenteditable='true'] .${CHANGE_FLASH_CLASS},
+      .book-chapter-prose[contenteditable='true'] .${CHANGE_TICK_CLASS} { animation-duration: 1ms; }
+    }
+    .book-chapter-prose hr { border: none; height: 1px; background: ${BORDER}; margin: 26px 0; }
+    /* A divider is 1px tall, and that was also the whole of its hit area:
+       clicking one selected it only if the pointer landed on that exact row
+       of pixels — one px either side missed — so in practice a divider
+       could not be selected at all. Padding grows the box to 23px while
+       background-clip keeps the paint on the rule, and the margin drops by
+       the same amount so nothing on the page moves: 15 + 11 either side is
+       the 26 it always was.
+
+       Here rather than in Divider's renderHTML, and !important to beat that
+       node's inline style, because renderHTML's output is what gets stored
+       and exported — and this trick leans on background-clip, which a
+       reading system may not implement. Where it isn't implemented the rule
+       paints across the whole padded box, so an exported divider would come
+       out a thick bar. Confining it to the canvas keeps the export exactly
+       as it was. box-sizing is spelled out because the app sets border-box
+       globally, under which 1px of height and 11px of padding collapse the
+       content box to nothing and the rule vanishes.
+
+       (A ::before overlay was the tidier idea and doesn't work: it renders
+       on an hr but takes no part in hit-testing.) */
+    .book-chapter-prose hr {
+      box-sizing: content-box !important;
+      padding: 11px 0 !important;
+      margin-top: 15px !important;
+      margin-bottom: 15px !important;
+      background-clip: content-box !important;
+    }
+    /* background-COLOR, not the shorthand: the shorthand resets
+       background-clip to border-box, which spread the blue across all 23px
+       and turned a selected divider into a solid bar. No outline-offset —
+       the padding is already clear space, so the ring lands on the edge of
+       the box you actually click. */
+    .book-chapter-prose hr.ProseMirror-selectednode { background-color: ${BLUE} !important; outline: ${RING}; outline-offset: 0; }
+    /* The read-only render's two columns. It is not paginated — one tall sheet
+       that grows with the chapter — so the columns balance across whatever
+       height that comes to, which is the right answer for a thumbnail, a Layout
+       tile and a device frame alike.
+
+       column-count is a CEILING here, not a quota: paired with a column-width the
+       browser drops to one column as soon as two would not fit, which is what a
+       two-column page has to do in Preview's phone and tablet frames — at the
+       sheet's own width the two columns are around 280px each, and at 320px they
+       came out near 130px, about fifteen characters a line. 16em rather than a
+       pixel figure so the threshold tracks the book's own body size. */
+    .book-chapter-prose.is-two-col { columns: 16em 2; column-gap: ${colGap}; orphans: 2; widows: 2; }
+    /* The LIVE canvas's column flow. The box — its measure, its gutter, its
+       height — is written straight onto the editor's root by the chapter,
+       because every one of those figures is this book's trim and margins rather
+       than a house style. What is left for a stylesheet is the part that is the
+       same on any page: what a column break is not allowed to cut in half.
+
+       This used not to exist, and the reason it did not is worth keeping. The
+       page engine paginates by reading each block's top and bottom down a
+       stacked flow, and in a multicol box the second column's blocks are back at
+       the top of the box — fed those numbers it produced page counts and spacers
+       that put body text on top of the page above it. The answer was not to
+       teach it to read columns; it was to notice that a column flow has already
+       BEEN paginated, by the browser, exactly. See the column branch in
+       Pagination's measure, which counts the columns that came out instead of
+       deciding where they should have been. */
+    .book-chapter-prose.book-col-flow { orphans: 2; widows: 2; }
+    .book-chapter-prose.book-col-flow figure,
+    .book-chapter-prose.book-col-flow .book-img-wrap,
+    .book-chapter-prose.book-col-flow table,
+    .book-chapter-prose.book-col-flow blockquote,
+    .book-chapter-prose.book-col-flow hr { break-inside: avoid; }
+    /* A heading at the foot of a column with its own first line overleaf is what
+       keep-with-next exists to prevent, and a column boundary is a page boundary
+       half the time. */
+    .book-chapter-prose.book-col-flow h2,
+    .book-chapter-prose.book-col-flow h3,
+    .book-chapter-prose.book-col-flow h4 { break-after: avoid; }
+    /* The sheet the Layout panel is acting on. An INSET shadow, so it cannot shift
+       the stack by its own width and is clipped by the sheet exactly as the page
+       design is — a border or an outline would do neither. */
+    [data-page-sheet].is-layout-target { box-shadow: inset 0 0 0 2px ${BLUE}; }
+    .book-img-wrap { margin: 0; border-radius: 8px; }
+    .book-img-wrap img { display: block; width: 100%; border-radius: 8px; }
+    /* 13px, not 12.5 — the Caption panel reports the unset size as a whole
+       number, and a field that says 13 over text set at 12.5 makes the
+       first nudge look like it did nothing. 13px is also what the EPUB
+       stylesheet's .82em already comes out at against a 16px base, so the
+       two renderings agree. */
+    .book-img-wrap figcaption { font-family: ${bodyFont}; font-size: ${CAPTION_DEFAULT_SIZE}px; color: ${CAPTION_DEFAULT_COLOR}; text-align: center; line-height: 1.4; margin-top: 6px; outline: none; }
+    /* The canvas keeps a figcaption on every image so there is always
+       somewhere to click, but an uncaptioned image must not reserve a blank
+       line for it. It collapses unless the image is selected or the caption
+       itself has focus — which is exactly when someone might add one. The
+       reader view never selects anything, so there it simply never shows. */
+    .book-img-wrap figcaption:empty { display: none; }
+    .book-img-wrap.book-img-capt-open figcaption:empty,
+    .book-img-wrap figcaption:empty:focus { display: block; }
+    .book-img-wrap figcaption:empty::before { content: 'Add a caption'; color: #A6B0BD; }
+    .book-img-wrap--inline { display: block; max-width: 100%; margin: 16px auto; }
+    .book-img-wrap--left { float: left; max-width: 46%; margin: 4px 18px 10px 0; }
+    .book-img-wrap--right { float: right; max-width: 46%; margin: 4px 0 10px 18px; }
+    /* image-led: the first image in the chapter body bleeds to the page's own
+       edge (canceling the 55px/63px page padding) regardless of which wrap
+       style the user picked, instead of a full-bleed variant being something
+       they have to remember to choose by hand. */
+    .book-chapter-prose.is-image-led > .book-img-wrap:first-child,
+    .book-chapter-prose.is-image-led > p:first-child > .book-img-wrap:only-child {
+      display: block; float: none; width: calc(100% + 126px); max-width: none;
+      margin: -55px -63px 24px; border-radius: 0;
+    }
+    .book-chapter-prose.is-image-led > .book-img-wrap:first-child img,
+    .book-chapter-prose.is-image-led > p:first-child > .book-img-wrap:only-child img { border-radius: 0; }
+    .book-chapter-prose p.is-editor-empty:first-child::before { color: currentColor; opacity: 0.5; content: attr(data-placeholder); float: left; pointer-events: none; height: 0; }
+    /* Tint plus a bar down the left edge, and nothing else. The 1px surround
+       it used to carry was doing no work the fill wasn't already doing —
+       the fill is what separates the box from the page, the bar is what
+       colours it — and the two together drew the same boundary twice, in
+       two different strengths. It's also the dominant convention in the
+       systems that ship this component (Bootstrap/CoreUI's callout sets its
+       left border to 4x the others; Supabase's admonition is a tinted panel
+       with a 4px left accent). Square against the bar, rounded away from
+       it, so the bar reads as an edge rather than a cropped outline. */
+    .book-chapter-prose .book-callout { background: #EAF2FF; border: none; border-left: 3px solid #2563EB; border-radius: 0 6px 6px 0; padding: 4px 18px; margin: 18px 0; }
+    ${CALLOUT_TYPES.map((c) => `
+    .book-chapter-prose .book-callout--${c.id} { background: ${c.tint}; border-left-color: ${c.accent}; }`).join('')}
+    .book-chapter-prose .book-callout p:last-child { margin-bottom: 0; }
+    /* Forms. Every colour here is a LITERAL hex, not a token: these rules are
+       mirrored into lib/epub.ts, which has no :root, so a var() would resolve
+       to nothing in EPUB and Kindle. See the same note on the button's ink. */
+    .book-chapter-prose .book-question, .book-chapter-prose .book-choice { margin: 18px 0; }
+    .book-chapter-prose .book-question > p, .book-chapter-prose .book-choice > p { margin: 0; }
+    /* A guide, not a rule: light grey at hairline weight, because at ink
+       strength a stack of five competes with the question above them. */
+    .book-chapter-prose .book-question-rule { height: ${QUESTION_LINE_PX}px; line-height: ${QUESTION_LINE_PX}px; border-bottom: 1px solid #C7CDD5; }
+    .book-chapter-prose .book-question-n { font-size: 12px; color: #9AA3AE; }
+    .book-chapter-prose .book-question-box { border: 1px solid #C7CDD5; border-radius: 3px; }
+    .book-chapter-prose .book-choice-options ul { list-style: none; margin: 0; padding: 0; }
+    .book-chapter-prose .book-choice-options li { margin: 0 0 8px; }
+    /* Inline so the marker and the first line of a long option sit on one
+       baseline instead of the text starting a line below the box. */
+    .book-chapter-prose .book-choice-options li p { margin: 0; display: inline; }
+    /* An empty ::before with a border, never generated CONTENT: a character
+       marker is the thing reading systems substitute or drop. */
+    .book-chapter-prose .book-choice-options li::before { content: ''; display: inline-block; width: 13px; height: 13px; margin-right: 10px; vertical-align: -2px; border: 1px solid #8C96A3; }
+    .book-chapter-prose .book-choice-options[data-marker="circle"] li::before { border-radius: 50%; }
+    .book-chapter-prose .book-choice-options[data-marker="box"] li::before { border-radius: 2px; }
+    /* A scale puts the number INSIDE the ring and runs across the page —
+       ringing a 7 is one gesture, and a vertical list of ten numbers is a
+       different question. The ::before is dropped rather than restyled, or
+       every number would carry an empty circle beside its own. */
+    .book-chapter-prose .book-choice-options[data-marker="scale"] li { display: inline-block; margin: 0 10px 0 0; }
+    .book-chapter-prose .book-choice-options[data-marker="scale"] li::before { display: none; }
+    .book-chapter-prose .book-choice-options[data-marker="scale"] li p { display: inline-block; min-width: 26px; height: 26px; line-height: 26px; text-align: center; border: 1px solid #8C96A3; border-radius: 50%; }
+    .book-chapter-prose table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 14px; }
+    /* Column resizing. The handle is absolutely positioned inside a cell,
+       so the cells have to be a positioning context — without this it
+       anchors to the page and lands somewhere else entirely. */
+    .book-chapter-prose th, .book-chapter-prose td { position: relative; }
+    .book-chapter-prose .column-resize-handle { position: absolute; right: -1px; top: 0; bottom: 0; width: 2px; background: ${BLUE}; pointer-events: none; z-index: 5; }
+    /* prosemirror-tables puts this class on the editor while the pointer is
+       over a column edge, which is the only hint that the edge is grabbable. */
+    .ProseMirror.book-chapter-prose.resize-cursor { cursor: col-resize; }
+    .book-chapter-prose th, .book-chapter-prose td { border: var(--book-tbl-bw, 1px) solid var(--book-tbl-bc, ${BORDER}); padding: var(--book-cell-pad, 8px) calc(var(--book-cell-pad, 8px) * 1.5); text-align: left; }
+    /* Cell selection. prosemirror-tables has always put this class on the
+       cells you drag across — there was simply no rule for it, so selecting
+       a range did nothing visible and every control that could act on one
+       looked broken. An ::after overlay rather than a background, so a cell
+       carrying its own fill still shows it underneath. */
+    .book-chapter-prose .selectedCell { position: relative; }
+    .book-chapter-prose .selectedCell::after {
+      content: ''; position: absolute; inset: 0; pointer-events: none;
+      background: ${hexToRgba(BLUE, 0.13)};
+    }
+    .book-chapter-prose th { background: #F4F6F9; font-weight: 600; }
+    /* The 'of :not([data-page-break])' is load-bearing, not a flourish: a table
+       that splits across pages has two extra <tr>s decorated into it at the
+       break (the spacer and the repeated header, below), and a plain
+       nth-child would count those and put every stripe after the break on
+       the wrong row. Odd rather than even so a header row — always row 1,
+       and made of th, which this rule doesn't touch — leaves the first body
+       row untinted; a table with no header tints its rows from the first,
+       the way a spreadsheet's alternating colours do. */
+    /* Derived from the page it sits on, not a fixed grey. #F7F9FB was a
+       cool light tint hardcoded against white paper: on a dark or warm
+       theme it read as a bright band across the table rather than a quiet
+       stripe. A translucent ink tint darkens a light page and a translucent
+       white lifts a dark one, so one rule covers every theme — and it
+       follows a page background the author sets later, which a fixed hex
+       could never do. */
+    .book-chapter-prose table[data-table-style="striped"] tr:nth-child(odd of :not([data-page-break])) > td { background: var(--book-tbl-tint, ${bandTint}); }
+    /* Minimal: horizontal rules only. The convention every book and journal
+       typesets tables with — verticals are the thing that makes a table
+       look like a spreadsheet dropped into a page. */
+    .book-chapter-prose table[data-table-style="minimal"] th,
+    .book-chapter-prose table[data-table-style="minimal"] td { border-left: none; border-right: none; }
+    .book-chapter-prose table[data-table-style="minimal"] th { border-bottom-width: 2px; }
+    /* A page break inside a table is a row rather than a div — a div in a
+       <tbody> gets hoisted out of the table by the parser. It has to paint
+       nothing at all: a border here would draw straight across the page
+       gap, which is the very thing that keeps other boxes monolithic. */
+    .book-chapter-prose tr.book-tr-spacer td { border: none; padding: 0; background: transparent; }
+    /* A bare superscript numeral — no brackets. That's the book
+       convention (Chicago, Word, Vellum, Atticus all produce it); square
+       brackets are a Wikipedia/IEEE citation idiom and read as a reference
+       list, not a note. Line-height 0 keeps the superscript from opening up
+       the line it sits on.
+
+       But a 6px numeral is a poor target and easy to mistake for a real
+       superscript ("1st", "x²"), so in the EDITOR it also gets a tint, a
+       radius and padding: there it's a control, and it should look like
+       one. The preview and the exported book get the plain numeral in body
+       colour, which is what a typeset footnote looks like. Scoped on
+       contenteditable because PreviewPage reuses this same class. */
+    .book-chapter-prose .book-footnote-ref { font-size: 0.72em; line-height: 0; vertical-align: super; font-weight: 700; }
+    .book-chapter-prose[contenteditable="true"] .book-footnote-ref {
+      color: #006EFE; background: #EAF2FF; border-radius: 3px; padding: 1px 3px; margin: 0 1px; cursor: pointer;
+    }
+    .book-chapter-prose[contenteditable="true"] .book-footnote-ref:hover { background: #D6E6FF; }
+    .book-chapter-prose[contenteditable="true"] .book-footnote-ref.ProseMirror-selectednode { background: #BBD6FF; outline: none; }
+    .book-chapter-prose ol.book-footnotes { margin: 30px 0 0; padding: 14px 0 0 20px; border-top: 1px solid ${BORDER}; font-size: 12.5px; color: ${SLATE}; }
+    .book-chapter-prose ol.book-footnotes li { margin: 5px 0; }
+    .book-chapter-prose ol.book-footnotes p { margin: 0; }
+    /* Placed: the pagination plugin has worked out which page each note
+       belongs to, so the list stops being a block at the end of the
+       chapter and becomes nothing — its items are positioned one page at a
+       time against the wrapper the prose sits in. The rule and the space
+       above it move onto whichever note opens a page's group, since that's
+       the one that has to separate itself from the body text; the room for
+       all of it was taken out of that page's text band before the flow was
+       measured, so nothing is overlapping anything. */
+    .book-chapter-prose ol.book-footnotes.book-fn-paged { margin: 0; padding: 0; border-top: none; height: 0; }
+    /* list-style-position:inside, with a hanging indent built from
+       text-indent + padding, is the only way to keep the number in the
+       column: an absolutely positioned item establishes its own box, so an
+       outside marker is laid out to the LEFT of that box and the numbers
+       hung out in the page margin instead of lining up with the text. */
+    .book-chapter-prose ol.book-footnotes.book-fn-paged > li.book-fn-placed {
+      position: absolute; left: 0; right: 0; margin: 0;
+      list-style-position: inside; padding-left: 20px; text-indent: -20px;
+    }
+    .book-chapter-prose ol.book-footnotes.book-fn-paged > li.book-fn-placed p { display: inline; }
+    .book-chapter-prose ol.book-footnotes.book-fn-paged > li.book-fn-first {
+      border-top: 1px solid ${BORDER}; padding-top: 10px; margin-top: 0;
+    }
+    .book-chapter-prose th { background: #F7F8FA; font-weight: 700; color: ${INK}; }
+    /* position:relative so the handle layer has something to sit against,
+       and the art fills the box so a stretched shape stretches. */
+    .book-shape { display: inline-block; position: relative; margin: 8px 12px 8px 0; vertical-align: top; }
+    .book-shape .book-shape-art { width: 100%; height: 100%; display: block; }
+    .book-shape .book-shape-art svg { display: block; }
+    .book-embed { margin: 18px 0; border-radius: 8px; overflow: hidden; background: #F0F2F5; }
+    .book-embed--video { position: relative; aspect-ratio: 16/9; background: #0E1218; }
+    .book-embed--video .book-embed-link { position: absolute; inset: 0; display: block; text-decoration: none; }
+    /* Same reasoning the iframe needed before it: a click on the poster is a
+       click on a link, which would navigate away instead of selecting the
+       block, so Properties and the floating bar could never be reached by
+       clicking the one thing you'd actually click. pointer-events:none means
+       the first click selects the wrapper; once selected (ProseMirror's own
+       selectednode class, already used for the other atom outlines below) a
+       second click opens the video to check it's the right one. */
+    .book-embed--video .book-embed-link { pointer-events: none; }
+    .book-chapter-prose .ProseMirror-selectednode .book-embed--video .book-embed-link { pointer-events: auto; }
+    /* An uploaded file gets a real player, filling the same 16:9 box the
+       poster does. Its controls take clicks for the same reason the link does,
+       so they follow the same rule: the first click selects the block, and
+       only once selected do the controls become usable. */
+    .book-embed--video .book-embed-video { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+    .book-chapter-prose .ProseMirror-selectednode .book-embed--video .book-embed-video { pointer-events: auto; }
+    .book-embed-poster { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .book-embed-badge {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 54px; height: 54px; border-radius: 50%; background: rgba(12,16,22,0.68);
+      border: 2px solid rgba(255,255,255,0.9);
+    }
+    /* A CSS triangle rather than an SVG: this markup is serialised straight
+       into the EPUB, and a border triangle needs no namespace declaration and
+       no extra packaged file to render in a reading system. Nudged right of
+       centre because an optical centre for a triangle isn't its bounding box. */
+    .book-embed-badge::after {
+      content: ''; position: absolute; left: 54%; top: 50%; transform: translate(-50%, -50%);
+      border-style: solid; border-width: 9px 0 9px 15px;
+      border-color: transparent transparent transparent #fff;
+    }
+    .book-embed-caption {
+      position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 12px 10px;
+      color: #fff; font-size: 12.5px; font-weight: 600; line-height: 1.35;
+      background: linear-gradient(180deg, rgba(10,13,18,0) 0%, rgba(10,13,18,0.82) 62%);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .book-embed--audio { padding: 14px; }
+    .book-embed--audio audio { width: 100%; display: block; }
+    .book-author-name { font-family: ${bodyFont}; font-style: italic; letter-spacing: 0.02em; color: ${bodyColor}; text-align: center; }
+    .book-display-text { font-family: ${theme.headingFont}; font-size: 30px; text-align: center; color: ${headingColor}; margin: 24px 0; }
+    ${TEXT_STYLES.map((s) => `
+    .book-textstyle--${s.id} {
+      font-family: ${s.fontFamily}; font-size: ${s.fontSize}px; color: ${s.color}; text-align: center; margin: 18px 0;
+      ${s.fontWeight ? `font-weight: ${s.fontWeight};` : ''}
+      ${s.fontStyle ? `font-style: ${s.fontStyle};` : ''}
+      ${s.letterSpacing ? `letter-spacing: ${s.letterSpacing};` : ''}
+      ${s.textTransform ? `text-transform: ${s.textTransform};` : ''}
+    }`).join('')}
+    .book-textstyle--gilded {
+      text-decoration: underline; text-decoration-color: #C9A94A; text-decoration-thickness: 1.5px; text-underline-offset: 6px;
+    }
+    .book-columns { column-gap: 28px; margin: 18px 0; }
+    .book-columns--2 { column-count: 2; }
+    .book-columns--3 { column-count: 3; }
+    .book-columns--4 { column-count: 4; }
+    /* Two genuinely independent cells, not one flowing stream like .book-columns
+       above — reuses the plain table's own border/th/td rules by default, so
+       these strip that chrome back down to a bare two-pane layout. */
+    /* table-layout: fixed is what makes the cells equal without a class per
+       count — and it's also what keeps the uneven ratios honest, since an
+       auto table lets a long word in the narrow cell widen it back out. */
+    .book-chapter-prose .book-split-columns { border: none; margin: 18px 0; width: 100%; table-layout: fixed; }
+    /* A gutter between every pair, not just the one between two cells, so
+       three and four columns get the same 14px gap the pair always had. */
+    .book-chapter-prose .book-split-columns td { border: none; padding: 0 7px; vertical-align: top; }
+    .book-chapter-prose .book-split-columns td:first-child { padding-left: 0; }
+    .book-chapter-prose .book-split-columns td:last-child { padding-right: 0; }
+    .book-chapter-prose .book-split-columns--1-3 td:first-child { width: 33.333%; }
+    .book-chapter-prose .book-split-columns--1-3 td:last-child { width: 66.667%; }
+    .book-chapter-prose .book-split-columns--3-1 td:first-child { width: 66.667%; }
+    .book-chapter-prose .book-split-columns--3-1 td:last-child { width: 33.333%; }
+    /* A photo in a split cell starts level with the text beside it. The
+       figure's own 16px top margin is right when it sits in the flow of a
+       paragraph and wrong here, where the cell edge is already the gap —
+       it left the Photo and text block starting its two halves a line apart. */
+    .book-chapter-prose .book-split-columns td > .book-img-wrap:first-child { margin-top: 0; }
+    .book-chapter-prose .book-split-columns td > .book-img-wrap:last-child { margin-bottom: 0; }
+    .book-image-grid { display: grid; gap: 12px; margin: 20px 0; }
+    .book-image-grid--2 { grid-template-columns: repeat(2, 1fr); }
+    .book-image-grid--3 { grid-template-columns: repeat(3, 1fr); }
+    .book-image-grid--4 { grid-template-columns: repeat(4, 1fr); }
+    .book-image-grid--1-3 { grid-template-columns: 1fr 3fr; }
+    .book-image-grid--3-1 { grid-template-columns: 3fr 1fr; }
+    /* The wide cell alone keeps the 4:3 box and so sets the row's height;
+       the narrow one drops its own aspect and stretches to match. Leaving
+       both on 4:3 is what an uneven split can't do — a quarter-width cell
+       would be a quarter as tall, and the pair would sit top-aligned with a
+       ragged gap under the small one instead of reading as one band. The
+       narrow photo is then cropped tall by Fill, which is the point of the
+       layout: a feature image with a portrait beside it. */
+    .book-image-grid--1-3 > figure:first-child,
+    .book-image-grid--3-1 > figure:last-child { aspect-ratio: auto; height: 100%; }
+    .book-image-grid .book-img-wrap--inline { margin: 0; }
+    /* Cells are equal boxes and photos fill them. Without this each figure
+       kept its own natural aspect, so a grid of a landscape and a portrait
+       shot came out ragged — which is the one thing a grid is supposed to
+       avoid. aspect-ratio degrades gracefully: a reader too old to support
+       it just falls back to natural heights, i.e. the old behaviour. */
+    .book-image-grid > figure { aspect-ratio: 4 / 3; overflow: hidden; }
+    /* When the grid is given an explicit height the cells share it instead
+       of each keeping the 4:3 default, which is the whole point of setting
+       one. Fill/Fit then decides whether a photo is trimmed to fill its cell
+       or shown whole inside it — the same two words the photo's own panel
+       uses, one level up. */
+    .book-image-grid[data-h] { grid-auto-rows: 1fr; }
+    .book-image-grid[data-h] > figure { aspect-ratio: auto; height: 100%; }
+    .book-image-grid > figure img { width: 100%; height: 100%; }
+    .book-image-grid[data-fit="cover"] > figure img { object-fit: cover; }
+    .book-image-grid[data-fit="contain"] > figure img { object-fit: contain; }
+    .book-image-grid > figure > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .book-image-grid[data-fit="contain"] > figure > img { object-fit: contain; background: #F2F4F7; }
+    /* An empty cell, left behind when the column count grows past the number
+       of photos. A real node rather than blank space, so the grid keeps its
+       shape and the gap is obviously fillable rather than looking broken. */
+    .book-image-grid > figure[data-empty] { display: flex; align-items: center; justify-content: center;
+      border: 1.5px dashed #C7CEDA; border-radius: 6px; background: #F7F8FA; }
+    .book-image-grid > figure[data-empty] > img { display: none; }
+    .book-image-grid > figure[data-empty]::after { content: '+ Add photo'; font-family: ${bodyFont};
+      font-size: 12px; font-weight: 600; color: #8A94A6; }
+    .book-chart { margin: 18px 0; max-width: 480px; }
+    .book-chart svg { display: block; width: 100%; height: auto; }
+    .book-qr { display: flex; align-items: center; justify-content: center; margin: 16px 0; width: fit-content; }
+    .book-jumbotron { margin: 22px 0; padding: 32px; border-radius: 10px; text-align: center; }
+    .book-jumbotron-heading { font-family: ${theme.headingFont}; font-size: 22px; color: ${headingColor}; margin-bottom: 8px; }
+    /* The body is an ordinary paragraph now, so it arrives carrying the
+       prose rules — margins included. Reset to the banner's own spacing
+       rather than left to inherit a chapter's paragraph rhythm inside a
+       32px box. */
+    .book-jumbotron > p { font-family: ${bodyFont}; font-size: 14px; color: #52637A; margin: 0 0 16px; text-indent: 0; }
+    /* Dark fill, light text — set on the container and inherited down rather
+       than written onto each child, so a colour the AUTHOR picks in the text
+       panel is an inline style and still wins. :not([style*="color"]) is not
+       needed for that; inline simply outranks a stylesheet. */
+    .book-jumbotron[data-ink="dark"] .book-jumbotron-heading { color: #FFFFFF; }
+    .book-jumbotron[data-ink="dark"] > p { color: #D7DEE8; }
+    .book-jumbotron[data-ink="dark"] .book-button-url { color: #AEBAC9; }
+    /* Kept for banners that predate the rebuild and for anything exported
+       before it: nothing the editor produces now carries these classes. */
+    .book-jumbotron-button { display: inline-block; font-family: ${bodyFont}; font-size: 13.5px; line-height: 1.2; font-weight: 700; color: #fff; background: ${theme.accentColor}; border-radius: 7px; padding: 10px 20px; text-decoration: none; }
+    .book-jumbotron-url, .book-button-url { display: block; margin-top: 8px; font-family: ${bodyFont}; font-size: 11.5px; color: #6B7686; word-break: break-all; }
+    /* Mirrors the EPUB rule rather than using flex, so what the author lines
+       up on the canvas is what the packaged book lays out. */
+    .book-button-wrap { margin: 20px 0; }
+    /* font-size and padding are the fallback only: every button writes its own
+       from BUTTON_SIZES inline, the way it writes its fill. line-height is
+       pinned here because an unpinned "normal" is font-dependent, and the
+       whole point of the size scale is that the smallest preset clears a
+       44px tap target by a knowable margin. */
+    .book-button { display: inline-block; font-family: ${bodyFont}; font-size: 13.5px; line-height: 1.2; font-weight: 700; border-radius: 7px; padding: 10px 20px; text-decoration: none; }
+    /* display:inline-block is load-bearing, not tidiness: the app's CSS reset
+       sets svg to display:block, which put the icon on its own line under
+       the label. The EPUB has no such reset, so stating it in both places is
+       also what keeps the canvas and the packaged book laying out the same. */
+    .book-btn-icon { display: inline-block; vertical-align: -0.15em; }
+    .book-button-label + .book-btn-icon { margin-left: 7px; }
+    .book-btn-icon + .book-button-label { margin-left: 7px; }
+    .book-icon-wrap { margin: 18px 0; }
+    .book-icon { display: inline-block; }
+    .book-social { margin: 20px 0; }
+    .book-social-item { display: inline-block; margin: 0 18px 6px 0; font-family: ${bodyFont}; font-size: 13.5px; text-decoration: none; }
+    .book-social-icon { display: inline-block; vertical-align: -0.18em; }
+    .book-social-handle { margin-left: 6px; }
+    /* An unfinished block, drawn the way the image grid draws an empty cell:
+       dashed and tinted, so three greyed marks read as a placeholder waiting
+       for content rather than as content. Without it the ghosts survive
+       deselection and show up in the page thumbnail looking like real marks,
+       and nothing on screen says they will not print. They will not — the
+       export renders no children at all for an empty block. */
+    .book-chapter-prose .book-social[data-empty] { border: 1.5px dashed #C7CEDA; border-radius: 6px;
+      background: #F7F8FA; padding: 8px 12px; }
+    .book-social-ghost { opacity: .9; }
+    .book-answer-line { border-bottom: 1px solid ${BORDER}; height: 22px; margin: 0 0 14px; }
+    /* Photo vs photo-grid focus. An image had no selection ring of its own at
+       all — it inherited ProseMirror's default, which reads the same whether
+       you've grabbed one cell or the whole grid. The grid is not itself
+       selectable (there's no clickable gap around a cell, which is why
+       grid-level controls surface on the cell's own inspector), so the pair
+       has to say "this cell, inside this grid": a solid ring on the cell and a
+       dashed one, further out, on the grid that contains it. Matches how Figma
+       and Canva hint the parent while a child is selected. */
+    /* A figure is a block, so it stayed full-column-width even once the photo
+       inside it was given an explicit size — leaving the selection ring
+       floating out around empty space. data-w is only emitted when a width is
+       set, so this shrinks exactly those and leaves auto-width photos alone. */
+    .book-chapter-prose figure.book-img-wrap[data-w] { width: fit-content; }
+    .book-chapter-prose figure.book-img-wrap[data-w].book-img-wrap--inline { margin-left: 0; margin-right: auto; }
+    .book-chapter-prose figure.book-img-wrap.ProseMirror-selectednode,
+    /* The ring moved from the grid to the wrapper the node view puts
+       around it — the wrapper is the node now, and the grid inside it is
+       just its content box. */
+    .book-chapter-prose .book-image-grid-wrap { position: relative; }
+    .book-chapter-prose .book-image-grid.ProseMirror-selectednode,
+    .book-chapter-prose .book-image-grid-wrap.ProseMirror-selectednode { outline: ${RING}; outline-offset: ${RING_OFFSET}px; border-radius: ${RING_RADIUS}px; }
+    /* Resize handles. The dots sit on the box's own corners rather than on
+       the selection ring's, which is 2px further out — a handle centred on
+       the ring reads as belonging to the ring, and the ring is not the
+       thing being dragged. The wrapper takes no pointer events so the
+       photo underneath still accepts a click everywhere except the dots. */
+    .book-chapter-prose .book-resize-handles { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+    .book-chapter-prose .book-resize-dot {
+      position: absolute; width: 9px; height: 9px; border-radius: 50%;
+      background: #fff; border: 1.5px solid ${BLUE}; pointer-events: auto;
+    }
+    .book-chapter-prose .book-resize-dot--tl { top: -4.5px; left: -4.5px; }
+    .book-chapter-prose .book-resize-dot--tr { top: -4.5px; right: -4.5px; }
+    .book-chapter-prose .book-resize-dot--bl { bottom: -4.5px; left: -4.5px; }
+    .book-chapter-prose .book-resize-dot--br { bottom: -4.5px; right: -4.5px; }
+    /* The handle layer is positioned against the figure, so the figure has
+       to be a containing block. Figures here are already in the flow with
+       no offsets of their own, so this changes nothing else. */
+    .book-chapter-prose figure:has(> .book-resize-handles) { position: relative; }
+    /* The quieter half of the pair: dashed and translucent, and sitting
+       outside the cell's own ring rather than replacing it. */
+    .book-chapter-prose .book-image-grid:has(> figure.ProseMirror-selectednode) { outline: ${RING_WIDTH}px dashed rgba(0,110,254,0.45); outline-offset: ${RING_OFFSET + 4}px; border-radius: ${RING_RADIUS}px; }
+    /* The container ring described on ActiveBlockRing above. Scoped to
+       ProseMirror-focused because every chapter is its own editor and keeps
+       its own caret — unscoped, each chapter you had visited would hold a
+       ring on the last container you touched there, and several pages would
+       claim to be selected at once.
+
+       There is deliberately no companion rule for the paragraph the caret
+       is in: see the note in ActiveBlockRing for why that ring is gone. */
+    .book-chapter-prose.ProseMirror-focused .book-block-active { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
+    /* A stack selected whole by the first click. Tables are the one block
+       here that gets node-selected without an atom's node view to toggle a
+       class of its own, so this rule is the only thing marking it. */
+    .book-chapter-prose table.ProseMirror-selectednode,
+    .book-chapter-prose .tableWrapper.ProseMirror-selectednode { outline: ${RING}; outline-offset: ${RING_OFFSET}px; border-radius: ${RING_RADIUS}px; }
+    .book-chapter-prose .ProseMirror-selectednode.book-shape,
+    .book-chapter-prose .ProseMirror-selectednode .book-embed,
+    .book-chapter-prose .ProseMirror-selectednode .book-qr,
+    .book-chapter-prose .ProseMirror-selectednode .book-jumbotron { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
+    .book-chapter-prose .ProseMirror-selectednode.book-button-wrap { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
+    .book-chapter-prose .ProseMirror-selectednode.book-icon-wrap { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
+    .book-chapter-prose .ProseMirror-selectednode.book-social { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
+    /* The Forms blocks ring like every other selectable object — the
+       container around the question AND its lines together, so the first
+       click visibly takes the pair, and the answer space on its own at the
+       second. Without these two rules the selection was real but invisible:
+       the panel changed and nothing on the page did. */
+    .book-chapter-prose .ProseMirror-selectednode.book-question,
+    .book-chapter-prose .ProseMirror-selectednode.book-choice,
+    .book-chapter-prose .ProseMirror-selectednode.book-question-space,
+    .book-chapter-prose .ProseMirror-selectednode.book-choice-options,
+    .book-chapter-prose .ProseMirror-selectednode.book-question-box { outline: ${RING}; outline-offset: ${RING_OFFSET}px; border-radius: ${RING_RADIUS}px; }
+    /* The ring's corners come from whatever it's around — a jumbotron's 10px
+       box, a photo's 8px one. These four have square corners of their own
+       and nothing visible to square off, so they borrow the shared radius
+       rather than ringing sharp against everything else's rounded. */
+    .book-chapter-prose .book-image-grid.ProseMirror-selectednode,
+    .book-chapter-prose .book-columns.book-block-active,
+    .book-chapter-prose table.book-block-active,
+    .book-chapter-prose .tableWrapper.book-block-active,
+    .book-chapter-prose .ProseMirror-selectednode.book-shape { border-radius: ${RING_RADIUS}px; }
+    /* No :focus rule of its own — the title is a .book-simple-editable like
+       every other single-field editor and takes the shared ring from there. */
+    .book-chapter-title { outline: none; border-radius: ${RING_RADIUS}px; }
+    .book-chapter-title p, .book-chapter-title h2, .book-chapter-eyebrow p { margin: 0; font: inherit; color: inherit; }
+    .book-chapter-eyebrow { outline: none; border-radius: ${RING_RADIUS}px; }
+    .book-chapter-title p.is-editor-empty:first-child::before,
+    .book-chapter-title h2.is-editor-empty:first-child::before,
+    .book-chapter-eyebrow p.is-editor-empty:first-child::before { color: currentColor; opacity: 0.5; content: attr(data-placeholder); float: left; pointer-events: none; height: 0; }
+
+    /* ── Insert-panel specimens (see SpecimenCard) ──────────────────────
+       The same real prose styles, with the outer block margins taken off so
+       the card's own padding is the only space around a specimen, and the
+       blockquote's 34px page indents pulled in — a 236px card can't spare
+       68px of them.
+       Both classes in the selector, and last in the sheet. The page rules
+       these override are \`.book-chapter-prose\` plus an element or another
+       class, so a lone \`.book-specimen\` either ties or loses: the callout
+       kept its 18px margins and stood its card 94px tall, and the chapter
+       title kept its .6em bottom margin, which left it sitting 12px below
+       the card's top edge and 29px above the bottom in a card that centres
+       what's in it. Doubling the class outranks the page rules outright. */
+    .book-chapter-prose.book-specimen > :first-child { margin-top: 0; }
+    .book-chapter-prose.book-specimen > :last-child { margin-bottom: 0; }
+    /* The divider's own rule is !important — it pads the hr out into a
+       clickable hit target on the page — so the margin reset above can't
+       touch it, and About the author (which opens on a rule) sat 9px low in
+       its card. Only ever the first one: a rule BETWEEN two blocks still
+       wants its space. */
+    .book-specimen > hr:first-child { margin-top: 0 !important; padding-top: 0 !important; }
+    .book-specimen blockquote { margin-left: 12px; margin-right: 0; }
+  `}</style>
+  );
+}
+
+/** One sheet's view of a multi-column chapter that is not the sheet being edited.
+
+    A column flow is a single box, so only one place on the canvas can BE it.
+    Every other sheet shows a copy of that box at the same width, which is why
+    the copy breaks its columns in exactly the same places — the copy is not an
+    approximation of the layout, it is the same layout measured again from the
+    same numbers. Clicking one hands the real editor over (see onEnter), so what
+    you can do on a copy is look at it and then start typing in it.
+
+    It is deliberately a clone of the live DOM rather than a re-render of the
+    chapter's HTML: ProseMirror's own decorations are in that DOM — a selected
+    block's ring, a change flash, the lead spacer — and a page that dropped them
+    would quietly disagree with the page beside it. */
+function ColumnMirror({ editor, revision, offset, style, onEnter }: {
+  editor: Editor | null;
+  revision: number;
+  offset: number;
+  style: React.CSSProperties;
+  onEnter: (clientX: number, clientY: number) => void;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = host.current;
+    const src = editor?.view.dom as HTMLElement | undefined;
+    if (!el || !src) return;
+    const copy = src.cloneNode(true) as HTMLElement;
+    /* Not a second editable surface: two contenteditable roots holding the same
+       document is how you get a caret the document has never heard of. */
+    copy.removeAttribute('contenteditable');
+    copy.removeAttribute('translate');
+    copy.classList.remove('ProseMirror-focused');
+    copy.style.marginLeft = `-${Math.round(offset)}px`;
+    copy.style.pointerEvents = 'none';
+    el.replaceChildren(copy);
+  }, [editor, revision, offset, style.width, style.height]);
+  return (
+    <div
+      ref={host}
+      /* Page content, not editing chrome — see sanitizeThumbClone, which drops
+         every other absolutely-positioned thing in the stack. */
+      data-page-content=""
+      style={{ ...style, cursor: 'text' }}
+      onPointerDown={(e) => { e.preventDefault(); onEnter(e.clientX, e.clientY); }}
+    />
+  );
+}
+
 function ChapterEditor({
   page, theme, isSelected, currentSelection, onSelection, onAddChapterAfter, onSplitChapter, onBeginChapterEdit, onWordCountChange, onPageCountChange, onEditorFocus, onContentChange, titleHtml, onTitleChange, eyebrowHtml, onFieldChange, moveDragRef, onMoveDragActiveChange, zoom, pageNumbers, pageNumberIndex, chapterNumber, onMediaDropped, onSetOpenerImage, getFieldEditor,
+  fieldContent, onAddElement, onUpdateElement, onStartCrop, onReorderElement, onDuplicateElement, onDeleteElement, onSelectPage, onRefuse, overlayOpen,
 }: {
   page: ChapterPage;
   theme: ThemeDef;
@@ -8700,6 +10797,19 @@ function ChapterEditor({
   // isn't a click-only dead end for the drag gesture its sibling "Ready to place"
   // card explicitly invites.
   onSetOpenerImage: (chapterId: string, src: string) => void;
+  /* A designed chapter opener is a free canvas, so this page needs the same six
+     object handlers the cover has always been given. Unused on a template that
+     designs nothing — see ThemeDef.pageDesign. */
+  fieldContent: Record<string, string>;
+  onAddElement: (pageId: string, el: CoverElement) => void;
+  onUpdateElement: (pageId: string, elementId: string, patch: CoverElementPatch) => void;
+  onStartCrop: (elementId: string) => void;
+  onReorderElement: (pageId: string, elementId: string, dir: 'front' | 'back') => void;
+  onDuplicateElement: (pageId: string, elementId: string) => void;
+  onDeleteElement: (pageId: string, elementId: string) => void;
+  onSelectPage: (pageId: string) => void;
+  onRefuse: (message: string) => void;
+  overlayOpen: boolean;
   // Looks up a *live* field/chapter Editor by its registry key — the title's
   // own SimpleFieldEditor is uncontrolled after mount (only takes initialHtml),
   // so "Suggest a title" needs this to push a new value into its already-mounted
@@ -8722,13 +10832,7 @@ function ChapterEditor({
      dark theme alike — a translucent ink tint darkens a light page, a
      translucent white lifts a dark one. relativeLuminance is the same helper the
      charts use to pick a label colour against their own bars. */
-  const bandBase = page.bg ?? theme.bg;
-  /* relativeLuminance slices #RRGGBB and hands back NaN for anything else, and
-     NaN > 0.5 is false — which would put the dark-page tint on a white sheet.
-     Anything unparseable is treated as light paper, which is what it nearly
-     always is. */
-  const lightPage = !/^#[0-9a-f]{6}$/i.test(bandBase) || relativeLuminance(bandBase) > 0.5;
-  const bandTint = lightPage ? 'rgba(15,25,40,0.04)' : 'rgba(255,255,255,0.07)';
+  const bandTint = bandTintFor(page.bg ?? theme.bg);
   const [dragOver, setDragOver] = useState(false);
   // The opener-photo placeholder's own drop target — separate from `dragOver`
   // above (the whole page accepting an Insert-panel tile), since this one only
@@ -8757,6 +10861,182 @@ function ChapterEditor({
   useEffect(() => { if (hasTitle) setKeepTitleMounted(true); }, [hasTitle]);
   useEffect(() => { if (!hasTitle && !isSelected) setKeepTitleMounted(false); }, [hasTitle, isSelected]);
   const showTitleField = hasTitle || keepTitleMounted;
+
+  /* ── a template that designs its own pages ─────────────────────────────────
+     Career Pathways and Lovable both replace the editor's own chapter furniture
+     — the accent rule, the eyebrow, the numeral beside the title — wholesale
+     rather than restyling it: one puts a 122pt numeral on the opposite side of
+     the page from the title, the other puts it inside a card, and neither has
+     an eyebrow at all, so there is nothing to restyle. Which design is on is
+     asked once, here, and everything below goes through it (see PAGE_DESIGNS). */
+  const design = pageDesignOf(theme);
+  const cpDesign = !!design;
+  /* Which opener this chapter takes, or null when the page is a continuation
+     (no heading, so no chapter and no opener). */
+  const isOpener = !!design && page.layout === 'opener' && hasTitle;
+  const openerSpec = isOpener && design
+    ? design.openerTitle(chapterNumber, page.openerIndex ?? undefined)
+    : null;
+  const openerHasPhoto = isOpener && !!design?.openerHasPhoto(chapterNumber, page.openerIndex ?? undefined);
+  /* Which running-page design a given SHEET of this chapter takes: its own
+     override first, then the chapter's style, then the template's default —
+     one column under both of them. The Layout panel writes the override for
+     the sheet you are looking at, which is why this is asked per index rather
+     than once per chapter.
+
+     Stable identity, because it feeds the paginator through a ref-backed
+     getter and a new function every render would be read on every measure. */
+  const sheetStyles = page.sheetStyles;
+  const chapterSheet = page.sheetStyle;
+  const variantAt = useCallback(
+    (i: number): string => (design ? (sheetStyles?.[i] ?? chapterSheet ?? design.defaultSheet) : 'plain'),
+    [design, sheetStyles, chapterSheet],
+  );
+  /* The chapter's own style, which is what the things that belong to the whole
+     chapter still ask — above all its column count, which one multi-column box
+     cannot vary halfway down (see SimplePage.sheetStyles). */
+  const sheetVariant: string = design ? (chapterSheet ?? design.defaultSheet) : 'plain';
+  /* The opener's objects as stored, with the numeral's text recomputed. The
+     numeral IS the chapter number: reorder two chapters and both have to follow,
+     so it is the one thing on the page that is derived rather than typed. */
+  const cpOpenerObjects = useMemo(() => {
+    if (!isOpener || !design) return undefined;
+    const stored = page.coverElements ?? [];
+    return stored.map((el) => (el.id === design.numeralId && el.type === 'text'
+      /* Never 0. A page outside the book's own chapter run — a Layout tile's
+         specimen — computes no number, and a chapter numeral is 1-based
+         everywhere a reader sees one. */
+      ? { ...el, defaultHtml: design.numeralHtml(chapterNumber) }
+      : el));
+  }, [isOpener, design, page.coverElements, chapterNumber]);
+  /* The photograph the photo content pages are DRAWN around (frame 2168:4672),
+     not the opener stock they were borrowing. The author's own `openerImage`
+     still outranks it — this is only what the design shows untouched. */
+  const sheetPhotoAt = useCallback(
+    (i: number) => (design?.sheetHasPhoto(variantAt(i)) ? (page.openerImage ?? CP_FIELD.contentPhoto) : undefined),
+    [design, variantAt, page.openerImage],
+  );
+  /* The room a page style takes off the FOOT of one sheet — the paginator's
+     `pageReserve` for that page. A bled photo stops the text at its own top
+     edge; a foot band stops it clear of itself. Stated by the design in ITS
+     points, converted here against the sheet the editor is actually drawing. */
+  const reserveOf = useCallback((variant: string): number => {
+    const pts = design ? design.footReserve(variant) : 0;
+    if (!design || pts <= 0) return 0;
+    return Math.max(0, (geometry.h - geometry.padBottom)
+      - ((design.h - pts) / design.h) * geometry.h);
+  }, [design, geometry]);
+  const reserveAt = useCallback((i: number): number => reserveOf(variantAt(i)), [reserveOf, variantAt]);
+  /* And the room it takes off the HEAD — the paginator's `pageInset`. A head
+     band cannot be a reserve, because a reserve shortens a page from the
+     bottom. It used to be a single spacer at the top of the flow, sized to
+     carry the text down the one sheet the file draws the band on; now that any
+     sheet can wear any style it is a per-page band like the reserve, and the
+     engine pays for page 0 with a spacer and every later page with the break
+     that opens it (see lib/pagination). */
+  /* A head-set style claims room at the top of ONE sheet, never of every sheet
+     of a long chapter — the file draws it as a single page. WHICH sheet depends
+     on where the style came from: a sheet given one of its own is that sheet,
+     and a style inherited from the chapter belongs to the first sheet carrying
+     running text, exactly as it did before a style could be picked per sheet. */
+  const headSheet = isOpener ? 1 : 0;
+  const ownsHead = useCallback(
+    (i: number) => (sheetStyles?.[i] !== undefined ? true : i === headSheet),
+    [sheetStyles, headSheet],
+  );
+  const insetAt = useCallback((i: number): number => {
+    const pts = design && ownsHead(i) ? design.headTextTop(variantAt(i)) : 0;
+    if (!design || pts <= 0) return 0;
+    return Math.max(0, (pts / design.h) * geometry.h - geometry.padTop);
+  }, [design, variantAt, ownsHead, geometry]);
+  /* The chapter's own reserve, for the things that are still chapter-wide: the
+     height of the column strip, and the room the opener leaves the columns. */
+  const chapterReserve = reserveOf(sheetVariant);
+  /* Every per-sheet style in one string, so the re-measure key below changes
+     when any one sheet is restyled — the geometry of a page the flow has to
+     break around, which no other value in this component reports. */
+  const sheetStyleKey = useMemo(() => JSON.stringify(sheetStyles ?? {}), [sheetStyles]);
+  /* The opener sheet's own reserve, which the spacer that gives the opener its
+     whole page has to match or the first line of prose lands on the wrong one. */
+  const openerReserve = reserveAt(0);
+  /* Read through refs, because a TipTap extension is configured once when its
+     editor is created and these change whenever a sheet is restyled. */
+  const reserveAtRef = useRef(reserveAt);
+  useEffect(() => { reserveAtRef.current = reserveAt; }, [reserveAt]);
+  const insetAtRef = useRef(insetAt);
+  useEffect(() => { insetAtRef.current = insetAt; }, [insetAt]);
+  const readPageReserve = useCallback((i: number) => reserveAtRef.current(i), []);
+  const readPageInset = useCallback((i: number) => insetAtRef.current(i), []);
+
+  /* ── the column strip ──────────────────────────────────────────────────────
+     A page of running text sets in one column or two, and which it is belongs
+     to the page (see sheetColumns). Two is not a decoration on top of one: the
+     flow itself is laid out in columns, the browser breaks them, and this
+     chapter's sheets become windows onto the strip that comes out. */
+  const columnCount = sheetColumns(theme, page);
+  const multiCol = columnCount > 1;
+  /* The gutter between columns, from the design that drew it, in the sheet's
+     own pixels. The same figure BookProseStyles uses for the read-only render,
+     so a page and its preview put the gutter in the same place. */
+  const colGapPx = design ? design.prose.colGap * (geometry.w / design.w) : 28;
+  const grid = useMemo(() => columnMetrics(geometry, columnCount, colGapPx), [geometry, columnCount, colGapPx]);
+  /* Which sheet the running text starts on. A designed opener is a whole page
+     of its own — numeral, band, artwork — so the columns begin after it. */
+  const colStart = isOpener ? 1 : 0;
+  const stripH = Math.max(40, contentH(geometry) - chapterReserve);
+  /* The room the chapter title takes at the head of the sheet the text starts
+     on. Measured rather than computed: it is a rich-text field whose height is
+     whatever the author's title wraps to. */
+  const [colLead, setColLead] = useState(0);
+  /* Which sheet holds the live editor. A column flow is ONE box; only one place
+     on the canvas can be it, so the other sheets show a copy and clicking one
+     moves the real thing there. */
+  const [liveColumn, setLiveColumn] = useState(0);
+  /* Bumped on every edit so the copies re-clone. */
+  const [colRevision, setColRevision] = useState(0);
+  const colFlow = useMemo<ColumnFlow | null>(
+    () => (multiCol
+      ? { cols: columnCount, colW: grid.colW, gap: grid.gap, height: stripH, lead: colLead, startSheet: colStart }
+      : null),
+    [multiCol, columnCount, grid.colW, grid.gap, stripH, colLead, colStart],
+  );
+  const colFlowRef = useRef(colFlow);
+  useEffect(() => { colFlowRef.current = colFlow; }, [colFlow]);
+  const readColumns = useCallback(() => colFlowRef.current, []);
+  const leadRef = useRef<HTMLDivElement>(null);
+  /* The paginator re-measures on every transaction and whenever the editor's own
+     box resizes — neither of which happens when the OPENER appears. The opener
+     is a sibling above the prose, so it moves the flow's starting offset by a
+     whole page without changing the editor's size, and the chapter would keep
+     the page count it was measured with (body text running off the foot of
+     sheet 1). A history-less no-op transaction is the signal: the plugin's
+     `update` schedules a measure for any transaction at all. */
+  const cpLayoutKey = `${isOpener ? page.layout : ''}:${sheetVariant}:${sheetStyleKey}:${geometry.w}x${geometry.h}:${colFlow ? `${colFlow.cols}x${Math.round(colFlow.colW)}x${Math.round(colFlow.height)}x${Math.round(colFlow.lead)}` : '1'}`;
+  /* Where the opener's title sits, in the stack's own coordinates: the design
+     places it against the TRIM edge, and an absolutely-positioned child of this
+     stack is already in trim coordinates — the sheets themselves sit at left:0
+     in the same containing block. */
+  /* Split in two because the title field is wrapped (the AI "suggest a title"
+     menu hangs off that wrapper). The BOX is what gets positioned; the field
+     inside it only carries the type. Putting both on the field would position it
+     against its own wrapper, which sits at the END of the reserved page. */
+  const cpTitleBox: React.CSSProperties | undefined = openerSpec && design ? {
+    position: 'absolute',
+    left: (openerSpec.x + openerSpec.pad) / design.w * geometry.w,
+    top: (openerSpec.y + openerSpec.pad) / design.h * geometry.h,
+    width: (openerSpec.w - openerSpec.pad * 2) / design.w * geometry.w,
+    zIndex: 2,
+  } : undefined;
+  const cpTitleType: React.CSSProperties | undefined = openerSpec && design ? {
+    position: 'relative',
+    fontFamily: openerSpec.font,
+    fontSize: fitOpenerTitleSize(openerSpec, design, geometry, stripTags(titleHtml)),
+    fontWeight: openerSpec.weight,
+    lineHeight: openerSpec.lineHeight,
+    color: openerSpec.color,
+    margin: 0,
+  } : undefined;
+
   const handleOpenerDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setOpenerDragOver(false);
@@ -8783,7 +11063,7 @@ function ChapterEditor({
      It used to carry a `movable` flag as well, to keep the bar and the drag
      handle from overlapping while both lived in the left gutter — the bar
      doesn't sit there any more, so the gutter is the handle's alone. */
-  const [blockMenuAt, setBlockMenuAt] = useState<{ pos: number; top: number; left: number; width: number; clearTop: number; barRight: number } | null>(null);
+  const [blockMenuAt, setBlockMenuAt] = useState<{ pos: number; top: number; left: number; width: number; clearTop: number } | null>(null);
   const [wordgenieToast, setWordgenieToast] = useState(false);
   /* How many fixed-height pages this chapter currently occupies. Owned here
      rather than derived in render because only the pagination plugin knows —
@@ -8909,7 +11189,7 @@ function ChapterEditor({
       SmartTypography,
       ActiveBlockRing,
       ChangeFlash,
-      Pagination.configure({ onLayout: setPageCount, geometry: readGeometry }),
+      Pagination.configure({ onLayout: setPageCount, geometry: readGeometry, pageReserve: readPageReserve, pageInset: readPageInset, columns: readColumns }),
     ],
     content: page.initialHtml,
     onFocus: ({ editor: ed }) => {
@@ -9072,6 +11352,103 @@ function ChapterEditor({
     editorPrefs.chapterOpener,
     !isChapterStartPage,
   );
+  /* The column strip's own box. Written straight onto the editor's root rather
+     than through a stylesheet because every figure in it is this book's trim and
+     margins: the measure, the gutter and the height of a column are the page,
+     not a house style. `column-fill: auto` is the load-bearing one — the default
+     balances the text across the columns it is given, which is right for a
+     pull-out and wrong for a page, where column one has to fill before column
+     two starts.
+
+     The box keeps `overflow: visible` on purpose. Past the second column the
+     flow does not stop or spill: the browser starts a third column beside the
+     second, a fourth beside that, on out past the box's own edge. That strip IS
+     the pagination — each sheet below is a window onto two columns of it — so
+     clipping here would throw away every page after the first. */
+  useLayoutEffect(() => {
+    const dom = editor?.view.dom as HTMLElement | undefined;
+    if (!dom) return;
+    if (!colFlow) {
+      dom.classList.remove('book-col-flow');
+      dom.style.columnCount = '';
+      dom.style.columnGap = '';
+      dom.style.columnFill = '';
+      dom.style.width = '';
+      dom.style.height = '';
+      dom.style.marginLeft = '';
+      return;
+    }
+    dom.classList.add('book-col-flow');
+    dom.style.columnCount = String(colFlow.cols);
+    dom.style.columnGap = `${colFlow.gap}px`;
+    dom.style.columnFill = 'auto';
+    dom.style.width = `${grid.width}px`;
+    dom.style.height = `${colFlow.height}px`;
+    // Which pair of the strip the live editor is parked over.
+    dom.style.marginLeft = `-${Math.round(liveColumn * colFlow.cols * grid.pitch)}px`;
+  }, [editor, colFlow, grid.width, grid.pitch, liveColumn]);
+
+  /* What stands above the running text on the sheet the text starts on — the
+     chapter title, and its eyebrow where the theme draws one. It is measured
+     rather than computed because it is a rich-text field: a title that wraps to
+     two lines pushes the first column down by a line.
+
+     Deliberately on every render with its own equality guard, not on a
+     dependency list. The thing it measures is the laid-out height of somebody
+     else's DOM, and there is no value this component holds that changes when
+     that does. */
+  useLayoutEffect(() => {
+    if (!multiCol) { setColLead((prev) => (prev === 0 ? prev : 0)); return; }
+    const el = leadRef.current;
+    if (!el) return;
+    /* The opener is a whole SHEET, not a heading: the flow reserves a page for
+       it, and that page is not room taken off the top of the columns. */
+    const openerRoom = isOpener ? contentH(geometry) - openerReserve : 0;
+    const next = Math.max(0, Math.round(el.offsetTop - geometry.padTop - openerRoom));
+    setColLead((prev) => (Math.abs(prev - next) < 1 ? prev : next));
+  });
+
+  /* A sheet that is not holding the live editor shows a copy of it, and a copy
+     is only right until the thing it copied changes.
+
+     Watching the DOM rather than the document, because the document is not the
+     only thing that changes it: a decoration the paginator adds or drops, a
+     selection ring, an image that finishes loading. The first of those is how a
+     page-break spacer left over from the single-column layout survived the
+     switch to columns — the document had not changed, so a copy taken on an
+     edit would never have been retaken, and page two kept a gap nothing had put
+     there. Coalesced to one frame: a keystroke is several mutations. */
+  useEffect(() => {
+    if (!multiCol || !editor || editor.isDestroyed) return;
+    const dom = editor.view.dom;
+    let frame = 0;
+    const observer = new MutationObserver(() => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; setColRevision((n) => n + 1); });
+    });
+    observer.observe(dom, { subtree: true, childList: true, attributes: true, characterData: true });
+    return () => { observer.disconnect(); if (frame) cancelAnimationFrame(frame); };
+  }, [multiCol, editor]);
+
+  /* The page you were editing can stop existing — delete enough and the chapter
+     is shorter than it was. */
+  useEffect(() => {
+    if (liveColumn > Math.max(0, pageCount - colStart - 1)) setLiveColumn(0);
+  }, [liveColumn, pageCount, colStart]);
+
+  /* See cpLayoutKey: a page design changes where the flow STARTS without
+     changing the editor's own box, so neither of the paginator's two triggers
+     (a transaction, a resize of view.dom) fires. One empty transaction is both
+     signals' equal — `update` schedules a measure for any transaction — and it
+     is kept out of the undo history so it can never be the thing Cmd-Z undoes.
+     Deferred a frame so the opener's own height is in layout first. */
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    const id = requestAnimationFrame(() => {
+      if (!editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta('addToHistory', false));
+    });
+    return () => cancelAnimationFrame(id);
+  }, [editor, cpLayoutKey]);
   /* Cmd/Ctrl-click follows an internal link; a plain click keeps editing.
      That split is the convention in every editor that has both jobs — Google
      Docs, Notion, VS Code — and the alternative is worse in a book: chapter
@@ -9323,9 +11700,9 @@ function ChapterEditor({
   // for "stay reachable while scrolling a tall page" but not for "sit directly
   // above the thing I selected."
   /* `left`/`width` are the BLOCK's own box — BlockResizeHandles reads them — so
-     the bar carries its own `barLeft`, which differs the moment it flips out
-     beside the block (see barPlacement). */
-  const [blockBarPos, setBlockBarPos] = useState<{ top: number; left: number; width: number; barLeft: number; barRight: number; beside: boolean; boxTop: number; boxHeight: number } | null>(null);
+     the bar carries its own `barLeft`, which barPlacement lifts clear of the
+     block's top edge. */
+  const [blockBarPos, setBlockBarPos] = useState<{ top: number; left: number; width: number; barLeft: number; boxTop: number; boxHeight: number } | null>(null);
   useEffect(() => {
     if (!isBlockKind || currentSelection.chapterId !== page.id) { setBlockBarPos(null); return; }
     const ed = currentSelection.editor;
@@ -9340,12 +11717,10 @@ function ChapterEditor({
       if (!dom) { setBlockBarPos(null); return; }
       const rect = dom.getBoundingClientRect();
       const anchor = blockAnchor(dom, host, scale);
-      const placed = barPlacement(anchor);
+      const placed = barPlacement(anchor, scale);
       setBlockBarPos({
         top: placed.top,
         barLeft: placed.barLeft,
-        barRight: anchor.barRight,
-        beside: placed.beside,
         left: anchor.left,
         width: rect.width / scale,
         // The block's own box, for the resize handles — the bar's `top` above is
@@ -9593,6 +11968,7 @@ function ChapterEditor({
         transition: 'border-color .1s ease, background .1s ease',
       }}
     >
+      {/* eslint-disable-next-line @typescript-eslint/no-unused-expressions */}
       {Array.from({ length: pageCount }, (_, i) => (
         <div
           key={i}
@@ -9603,6 +11979,10 @@ function ChapterEditor({
           style={{
             position: 'absolute', left: 0, top: pageTop(i, geometry), width: '100%', height: geometry.h,
             background: dragOver ? '#F3F8FF' : (page.bg ?? theme.bg),
+            /* A page design draws to the trim edge — bands, bled photos, a dash
+               field that stops exactly at the corner — so the sheet has to clip
+               like a real sheet does. */
+            overflow: cpDesign ? 'hidden' : undefined,
             /* No dashed drop-target outline, in either form: not on the page
                under the pointer, and not on every page at once while a drag is
                live. The precise drop indicator below — the blue rule and dot at
@@ -9617,8 +11997,70 @@ function ChapterEditor({
             zIndex: 0,
           }}
         >
-          <PageNumberChip settings={pageNumbers} index={pageNumberIndex + i} edge="header" selected={currentSelection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
-          <PageNumberChip settings={pageNumbers} index={pageNumberIndex + i} edge="footer" selected={currentSelection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
+          {cpDesign ? (
+            /* Sheet 0 of a titled chapter is the opener — a whole designed page,
+               not a band of furniture above running text (which is why the block
+               below reserves the rest of it). Every other sheet is a running
+               page: a rule, a folio, and whatever band the page style asks for. */
+            i === 0 && openerSpec
+              ? (
+                  <CoverCanvasEditable
+                    page={page}
+                    theme={theme}
+                    bare
+                    elements={cpOpenerObjects}
+                    fieldContent={fieldContent}
+                    selection={currentSelection}
+                    onSelection={onSelection}
+                    onEditorFocus={onEditorFocus}
+                    onContentChange={onFieldChange}
+                    onSelectPage={onSelectPage}
+                    onAddElement={onAddElement}
+                    onUpdateElement={onUpdateElement}
+                    onStartCrop={onStartCrop}
+                    onReorderElement={onReorderElement}
+                    onDuplicateElement={onDuplicateElement}
+                    onDeleteElement={onDeleteElement}
+                    pageNumbers={pageNumbers}
+                    pageNumberIndex={pageNumberIndex}
+                    overlayOpen={overlayOpen}
+                    zoom={zoom}
+                    onRefuse={onRefuse}
+                  />
+                )
+              : (
+                  <>
+                    {/* A head-set design — a band, or a photo card across the
+                        top — belongs to the first sheet that carries running
+                        text (the sheet after the opener when there is one) and
+                        not to every sheet of a long chapter. It is the page
+                        style the file draws as one page; the rest of the
+                        chapter runs on plain sheets behind it. The design makes
+                        that call itself, because only it knows which of its
+                        styles are head-set. */}
+                    {design!.ContentSheet({ geo: geometry, variant: variantAt(i), photo: sheetPhotoAt(i), sheetIndex: i, textSheet: ownsHead(i) ? i : headSheet })}
+                    <PageNumberChip settings={pageNumbers} index={pageNumberIndex + i} edge="header" selected={currentSelection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
+                    {/* The folio at the template's own coordinates. */}
+                    <PageNumberChip
+                      settings={pageNumbers} index={pageNumberIndex + i} edge="footer"
+                      selected={currentSelection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })}
+                      at={(() => {
+                        const f = design!.folioAt(variantAt(i));
+                        return f ? {
+                          left: (f.x / design!.w) * geometry.w,
+                          top: (f.y / design!.h) * geometry.h,
+                          fontSize: (f.size / design!.h) * geometry.h,
+                        } : undefined;
+                      })()}
+                    />
+                  </>
+                )
+          ) : (
+            <>
+              <PageNumberChip settings={pageNumbers} index={pageNumberIndex + i} edge="header" selected={currentSelection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
+              <PageNumberChip settings={pageNumbers} index={pageNumberIndex + i} edge="footer" selected={currentSelection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
+            </>
+          )}
         </div>
       ))}
       {/* One gutter per boundary INSIDE this chapter. `breaks[i]` is the break
@@ -9645,21 +12087,14 @@ function ChapterEditor({
       ))}
       {measure && <MeasureOverlay {...measure} />}
       {blockBar && blockBarPos && (
-        /* Centred over the block when it sits in the gap above it. Flipped out
-           beside the block, it spans from the block's right edge to the sheet's
-           (`right: 0`) and hugs the far end, so it sits in the page margin
-           rather than hanging off the paper — the first attempt let it overhang
-           onto the canvas, where the narrow editor viewport clipped the Delete
-           button clean off. If the bar is wider than the margin, flex-end
-           overflows it back over the block's own top-right corner, which is a
-           corner, not the first line, and keeps every button reachable. */
+        /* Always centred over the block, in the gap above it — see
+           barPlacement. The wrapper spans the block's own width so `center`
+           lands on the block's midpoint whatever its size. */
         <div
           className="absolute flex"
-          style={blockBarPos.beside
-            ? { top: blockBarPos.top, left: blockBarPos.barLeft, right: blockBarPos.barRight, justifyContent: 'flex-end', zIndex: 20 }
-            : { top: blockBarPos.top, left: blockBarPos.barLeft, width: blockBarPos.width, justifyContent: 'center', zIndex: 20 }}
+          style={{ top: blockBarPos.top, left: blockBarPos.barLeft, width: blockBarPos.width, justifyContent: 'center', zIndex: 20 }}
         >
-          <FloatingObjectBar onDuplicate={blockBar.onDuplicate} onDelete={blockBar.onDelete} locked={blockBar.locked} onToggleLock={blockBar.onToggleLock} />
+          <FloatingObjectBar style={counterScale(scale)} onDuplicate={blockBar.onDuplicate} onDelete={blockBar.onDelete} locked={blockBar.locked} onToggleLock={blockBar.onToggleLock} />
         </div>
       )}
       {/* Locked blocks get no handles, matching the floating bar, which drops to
@@ -9791,8 +12226,8 @@ function ChapterEditor({
              than onto it when the gap above is too small (see barPlacement).
              The "···" trigger is unaffected either way: it lives in the left
              gutter, outside the text column. */
-          {...barPlacement(blockMenuAt)}
-          barRight={blockMenuAt.barRight}
+          {...barPlacement(blockMenuAt, scale)}
+          scale={scale}
           left={blockMenuAt.left}
           width={blockMenuAt.width}
           blockTop={blockMenuAt.top}
@@ -9815,750 +12250,39 @@ function ChapterEditor({
       )}
       {wordgenieToast && <WordgenieToast onDismiss={() => setWordgenieToast(false)} />}
 
-      <style jsx global>{`
-        .book-drag-handle { opacity: 0.7; transition: opacity .12s ease, background .12s ease, border-color .12s ease; }
-        .book-drag-handle:hover { opacity: 1; background: #F3F8FF; border-color: ${BLUE}; color: ${BLUE}; }
-        .book-drag-handle:active { cursor: grabbing; }
-        .book-chapter-prose { font-family: ${bodyFont}; font-size: 15.5px; line-height: 1.7; color: ${bodyColor}; outline: none; border-radius: 6px; }
-        /* Same issue as the :hover dashed box above, just for :focus — one ring
-           around the WHOLE contentEditable (every paragraph, plus any embedded
-           image/shape/etc, all together) regardless of which specific block is
-           actually being worked on. Removed rather than scoped: unlike an atom
-           object (which gets its own outline via ProseMirror-selectednode only
-           while IT specifically is selected), plain flowing text has no
-           equivalent per-paragraph "you are here" affordance to fall back on —
-           nor does it need one; the native caret already is that indicator, the
-           same way Word/Docs/Notion show no box around the paragraph you're
-           typing in. Still need an explicit override, not just deleting the
-           rule that used to be here — globals.css's own unscoped
-           [contenteditable]:focus underneath applies the same whole-container
-           box-shadow regardless, exactly like its :hover sibling above. */
-        .book-chapter-prose[contenteditable]:focus { box-shadow: none; outline: none; }
-        /* globals.css's [contenteditable]:hover dashed outline is meant for a
-           single plain field — applied unscoped here it drew ONE dashed box
-           around the entire chapter body (every paragraph plus any embedded
-           image together), reading as if they shared one container instead of
-           each being its own block. Killed the same way .book-simple-editable
-           already was for cover text fields. */
-        .book-chapter-prose[contenteditable]:hover { outline: none; background: none; }
-        /* Size, weight and margins are restated here because Tailwind's preflight
-           resets every heading to \`font-size: inherit; font-weight: inherit\` and
-           strips its margins, and nothing put them back. An inserted Heading came
-           out at body size in body weight — the only thing telling it apart from
-           the paragraph above was the family — and Subheading, the one level that
-           did carry a size (1.02em), rendered LARGER than the Heading it sits
-           under. The hierarchy was inverted.
-           The numbers are kept identical to lib/epub.ts, so the editor can't show
-           one hierarchy while the exported book ships another — change them in
-           one place and the other has to follow.
-           The first pass took the export's own 1.15em/1.02em and inherited its
-           problem: against 15.5px body that put a subheading at 15.81px and a
-           paragraph at 15.5px, a third of a pixel apart, so the two levels were
-           separated by weight alone and the longer paragraph line actually read
-           as the larger of the two. The ramp is now ~1.4 / ~1.15 / 1 — one that
-           survives being glanced at. */
-        /* A chapter title in the flow. Sized above h3 for the same reason it
-           sits above it in the Style list — it opens a chapter, h3 opens a
-           section inside one. The top margin collapses to nothing on a title
-           that starts its own page, where the page's own top margin is already
-           doing that job and a second one would push the chapter down the
-           sheet. */
-        .book-chapter-prose h2[data-chapter-title] { font-family: ${theme.headingFont}; color: ${headingColor}; font-size: 1.85em; font-weight: 700; line-height: 1.2; margin: 1.6em 0 .6em; }
-        .book-chapter-prose h2[data-chapter-title]:not([data-break-before="false"]) { margin-top: 0; }
-        .book-chapter-prose h3 { font-family: ${theme.headingFont}; color: ${headingColor}; font-size: 1.4em; font-weight: 700; line-height: 1.25; margin: 1.3em 0 .45em; }
-        /* Smaller than h3 and not a ToC entry (deriveSubheadings reads h3 only) —
-           two ToC levels is what an ebook wants; a third turns the contents page
-           into an index. h4 is the level you break a long section with. */
-        .book-chapter-prose h4 { font-family: ${theme.headingFont}; color: ${headingColor}; font-size: 1.15em; font-weight: 700; line-height: 1.3; margin: 1.2em 0 .4em; }
-        /* A heading opening a chapter has nothing above it to be separated from. */
-        .book-chapter-prose > h3:first-child, .book-chapter-prose > h4:first-child { margin-top: 0; }
-        ${editorPrefs.paragraphStyle === 'indented' ? `
-        /* Printed-book paragraphs — see ParagraphStyle. Direct children only, so
-           a paragraph inside a list item, an info box or a table cell isn't
-           indented by a rule meant for running body text. A first paragraph has
-           nothing to be separated from, so the chapter's opening one and any
-           that follows a heading stay flush. */
-        .book-chapter-prose > p { margin: 0 0 ${editorPrefs.paragraphSpace / 100}em; text-indent: ${editorPrefs.paragraphIndent / 100}em; }
-        .book-chapter-prose > p:first-child,
-        .book-chapter-prose > h2 + p, .book-chapter-prose > h3 + p,
-        .book-chapter-prose > h4 + p, .book-chapter-prose > hr + p { text-indent: 0; }
-        ` : `
-        .book-chapter-prose p { margin: 0 0 ${editorPrefs.paragraphSpace / 100}em; }
-        `}
-        .book-chapter-prose ul { list-style: disc; margin: 0 0 14px; padding-left: 22px; }
-        .book-chapter-prose ol { list-style: decimal; margin: 0 0 14px; padding-left: 22px; }
-        .book-chapter-prose li { margin-bottom: 4px; }
-        .book-chapter-prose li p { margin: 0; }
-        /* The spacer that carries the flow from one page to the next. It has
-           no appearance of its own — the page sheets behind it are what you
-           see through the gap. */
-        .book-chapter-prose .book-page-break { width: 100%; user-select: none; pointer-events: none; }
-        /* Tailwind's preflight resets <a> to inherit both colour and
-           decoration, so a link in the body was indistinguishable from the text
-           around it — you could only find one by clicking.
+      <BookProseStyles theme={theme} bodyFont={bodyFont} bodyColor={bodyColor} headingColor={headingColor} bandTint={bandTint} />
+      {/* The template's own rules — the cap-top trim its headings are positioned
+          by, and its list styling. Every surface that draws one of its pages
+          renders this; it is scoped to classes nothing else uses. */}
+      {design && <design.Styles />}
 
-           Fixed blue/purple rather than theme.accentColor: blue-then-purple is
-           the one piece of web typography every reader already knows, and a
-           themed link colour would make "visited" mean something different in
-           every template. Browsers only allow a handful of properties on
-           :visited (colour is one), which is why the rule is colour-only. */
-        .book-chapter-prose a { color: ${LINK_COLOR}; text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; cursor: pointer; }
-        /* Visited only in the reader view. In the editor a link's colour would
-           otherwise depend on the author's own browsing history — you'd paste a
-           link you use every day and watch it come out purple in your own
-           manuscript, which tells you nothing about the book. */
-        .book-chapter-prose:not([contenteditable="true"]) a:visited { color: ${LINK_VISITED_COLOR}; }
-        /* A quotation is set by indenting it and sizing it down — not by a fill,
-           a border or a coloured bar down its side, all of which are web and
-           magazine conventions that arrived here by way of CSS defaults.
-           Butterick's Practical Typography gives the whole recipe for a block
-           quotation as "reduce the point size and line spacing slightly" and
-           "indent the text block between half an inch and a full inch on the
-           left side, and optionally the same on the right" — no rule, no tint —
-           and The Book Designer's nonfiction guidance is that "in nonfiction
-           books, pull quotes are usually just in black … this is different from
-           magazines, where they are often colorful". The tinted box also never
-           survived export (epub.ts has never carried it), so the canvas was
-           showing something no reader would ever see.
-
-           The pull-quote layout is the same rule set louder: bigger, in the
-           heading face, upright. Indentation carries both. */
-        .book-chapter-prose blockquote {
-          margin: 18px 34px; padding: 0; color: ${bodyColor}; font-style: italic; font-size: 0.95em;
-        }
-        /* Its own rule, not a conditional block interpolated into the one above.
-           styled-jsx parses this CSS and re-emits it, and an interpolation
-           sitting mid-declaration-list comes back out AFTER the static
-           declarations that followed it in source — so font-style:normal here
-           lost to the font-style:italic above, and a pull-quote rendered italic
-           no matter what this said. A sibling rule of equal specificity, later in the
-           sheet, cascades the way the source reads. */
-        .book-chapter-prose.book-layout-quote-pull blockquote {
-          font-size: 22px; font-family: ${theme.headingFont}; font-style: normal; color: ${headingColor};
-        }
-        /* A glossary. The term sits above its definition, which is what a <dl>
-           does by default and what survives a narrow column — the side-by-side
-           arrangement the old editor uses is the one that clips a long term
-           mid-word, which theirs visibly does.
-           The empty rows are labelled by CSS, not by seeded words: an empty
-           glossary has to read as a glossary, and a placeholder written into the
-           document would be text somebody has to delete. :empty matches only a
-           genuinely empty node, so the label vanishes the moment you type. */
-        .book-chapter-prose .${GLOSSARY_CLASS} { margin: 20px 0; }
-        .book-chapter-prose .${GLOSSARY_CLASS} dl { margin: 0; padding: 0; }
-        .book-chapter-prose .${GLOSSARY_CLASS} dt {
-          font-weight: 700; color: ${headingColor}; margin-top: 12px;
-        }
-        .book-chapter-prose .${GLOSSARY_CLASS} dt:first-child { margin-top: 0; }
-        .book-chapter-prose .${GLOSSARY_CLASS} dd {
-          margin: 2px 0 0; padding: 0 0 0 16px; border-left: 2px solid ${BORDER};
-        }
-        /* Two selectors for one state. :empty is the honest test and is what
-           matches in Preview and the page thumbnails, which render plain HTML —
-           but it never matches in the live editor, because ProseMirror puts a
-           trailing <br> inside every empty text block, so the node has a child
-           and stops being :empty. The :has() rule catches exactly that shape. */
-        .book-chapter-prose .${GLOSSARY_CLASS} dt:empty::before,
-        .book-chapter-prose .${GLOSSARY_CLASS} dt:has(> br.ProseMirror-trailingBreak:only-child)::before {
-          content: 'Term'; color: #9AA5B4; font-weight: 400;
-        }
-        .book-chapter-prose .${GLOSSARY_CLASS} dd:empty::before,
-        .book-chapter-prose .${GLOSSARY_CLASS} dd:has(> br.ProseMirror-trailingBreak:only-child)::before {
-          content: 'What it means'; color: #9AA5B4;
-        }
-        /* The drop cap. A floated span, NOT ::first-letter — the pseudo-element
-           is unreliable across reading systems, and the float-a-span recipe is
-           what every ebook formatting guide gives, so the canvas is built the
-           same way the exported file is rather than a prettier way that would
-           not survive. line-height:0.8 and the small negative top are what sit
-           the cap's shoulders on the first line instead of pushing it below.
-           Three lines tall: the conventional depth, and the one that still fits
-           when a paragraph is only four lines long. */
-        .book-chapter-prose .${DROPCAP_CLASS} {
-          float: left;
-          font-family: ${theme.headingFont};
-          font-size: 6.4em;
-          line-height: 0.74;
-          padding-right: 0.08em;
-          margin-top: 0.04em;
-          color: ${headingColor};
-        }
-        /* A link whose chapter has been deleted. Red and struck through, which
-           is Vellum's treatment and the only one that works here: an internal
-           link is styled like every other link, so without this it still LOOKS
-           live and only fails for the reader. It is also dropped from the export,
-           so this is a warning rather than a defect you can ship. */
-        .book-chapter-prose .${BROKEN_LINK_CLASS} {
-          color: #B91C1C; text-decoration: line-through; text-decoration-color: #B91C1C;
-        }
-        /* The figure takes the blockquote's own left/right indent and the quote
-           inside it drops to zero, so a quote with an attribution sits on exactly
-           the same measure as one without — the attribution should not be able to
-           move the quote. */
-        .book-chapter-prose figure.${QUOTE_FIGURE_CLASS} { margin: 18px 34px; }
-        .book-chapter-prose figure.${QUOTE_FIGURE_CLASS} blockquote { margin: 0; }
-        /* Upright and a size down from the quote: it is the source line, not part
-           of the quotation, and setting it in the same italic would read as a
-           continuation of the sentence above it. */
-        .book-chapter-prose .${QUOTE_ATTRIBUTION_CLASS} {
-          margin-top: 8px; font-style: normal; font-size: 0.85em; color: ${SLATE};
-        }
-        .book-chapter-prose.book-layout-quote-pull .${QUOTE_ATTRIBUTION_CLASS} {
-          font-family: ${theme.bodyFont}; text-align: center;
-        }
-        /* The Divider tile drops a bare <hr>, which had no rule of its own here and
-           so came out as the browser's default inset 3D groove — and no selected
-           state either, so clicking one (the only way to reach it) gave no sign it
-           had worked. Selected, the line itself turns blue: a 1px rule is too thin
-           for the outline ring the other objects use to read as a selection. */
-        /* What an AI action just changed — see the ChangeFlash plugin.
-           Held at full strength long enough to find on the page, then faded out
-           over about the same again: a flash that vanishes before the eye gets
-           there is the same as no flash, and one that lingers becomes a
-           highlight the author has to wonder about. Green rather than the
-           editor's blue, because blue in this canvas already means selection.
-           Nothing here affects layout — only the background moves, so the
-           paragraph can't reflow as it fades. */
-        @keyframes bookChangeFlash {
-          0%, 45%  { background-color: rgba(22, 163, 74, 0.20); }
-          100%     { background-color: rgba(22, 163, 74, 0); }
-        }
-        @keyframes bookChangeTick {
-          0%, 45%  { opacity: 1; }
-          100%     { opacity: 0; }
-        }
-        /* Scoped to the editor you are actually working in. The page navigator
-           renders each chapter again as a read-only thumbnail, and a thumbnail
-           that picks up the highlight either flashes green in the rail for no
-           reason or — worse — restarts the animation whenever it is rebuilt,
-           long after the edit it belonged to. The feedback is about the
-           paragraph under the author's cursor, so it only draws there. */
-        .book-chapter-prose[contenteditable='true'] .${CHANGE_FLASH_CLASS} {
-          border-radius: 2px;
-          animation: bookChangeFlash 1900ms ease-out forwards;
-        }
-        /* A deletion's marker. Zero width, so it sits between two characters
-           without pushing them apart — the words either side must not move, or
-           the flash becomes an edit of its own.
-           Drawn as a short horizontal dash rather than the upright tick it
-           started as: upright, 2px and dark it was indistinguishable from the
-           text caret sitting in the same paragraph, which made the one action
-           that deletes look like it had merely moved the cursor. A dash across
-           the join is the strikethrough gesture, and nothing else in the editor
-           looks like it. */
-        .book-chapter-prose[contenteditable='true'] .${CHANGE_TICK_CLASS} {
-          display: inline-block; position: relative; width: 0; height: 1em;
-          vertical-align: text-bottom;
-          animation: bookChangeTick 1900ms ease-out forwards;
-        }
-        .book-chapter-prose[contenteditable='true'] .${CHANGE_TICK_CLASS}::after {
-          content: ''; position: absolute; left: 50%; top: 0.42em;
-          width: 7px; height: 2px; margin-left: -3.5px; border-radius: 1px;
-          background: rgba(22, 163, 74, 0.75);
-        }
-        /* The fade is decoration in the strict sense: it carries information the
-           highlight itself already carries, so it is safe to simply stop. */
-        @media (prefers-reduced-motion: reduce) {
-          .book-chapter-prose[contenteditable='true'] .${CHANGE_FLASH_CLASS},
-          .book-chapter-prose[contenteditable='true'] .${CHANGE_TICK_CLASS} { animation-duration: 1ms; }
-        }
-        .book-chapter-prose hr { border: none; height: 1px; background: ${BORDER}; margin: 26px 0; }
-        /* A divider is 1px tall, and that was also the whole of its hit area:
-           clicking one selected it only if the pointer landed on that exact row
-           of pixels — one px either side missed — so in practice a divider
-           could not be selected at all. Padding grows the box to 23px while
-           background-clip keeps the paint on the rule, and the margin drops by
-           the same amount so nothing on the page moves: 15 + 11 either side is
-           the 26 it always was.
-
-           Here rather than in Divider's renderHTML, and !important to beat that
-           node's inline style, because renderHTML's output is what gets stored
-           and exported — and this trick leans on background-clip, which a
-           reading system may not implement. Where it isn't implemented the rule
-           paints across the whole padded box, so an exported divider would come
-           out a thick bar. Confining it to the canvas keeps the export exactly
-           as it was. box-sizing is spelled out because the app sets border-box
-           globally, under which 1px of height and 11px of padding collapse the
-           content box to nothing and the rule vanishes.
-
-           (A ::before overlay was the tidier idea and doesn't work: it renders
-           on an hr but takes no part in hit-testing.) */
-        .book-chapter-prose hr {
-          box-sizing: content-box !important;
-          padding: 11px 0 !important;
-          margin-top: 15px !important;
-          margin-bottom: 15px !important;
-          background-clip: content-box !important;
-        }
-        /* background-COLOR, not the shorthand: the shorthand resets
-           background-clip to border-box, which spread the blue across all 23px
-           and turned a selected divider into a solid bar. No outline-offset —
-           the padding is already clear space, so the ring lands on the edge of
-           the box you actually click. */
-        .book-chapter-prose hr.ProseMirror-selectednode { background-color: ${BLUE} !important; outline: ${RING}; outline-offset: 0; }
-        .book-chapter-prose.is-two-col { column-count: 2; column-gap: 28px; }
-        .book-img-wrap { margin: 0; border-radius: 8px; }
-        .book-img-wrap img { display: block; width: 100%; border-radius: 8px; }
-        /* 13px, not 12.5 — the Caption panel reports the unset size as a whole
-           number, and a field that says 13 over text set at 12.5 makes the
-           first nudge look like it did nothing. 13px is also what the EPUB
-           stylesheet's .82em already comes out at against a 16px base, so the
-           two renderings agree. */
-        .book-img-wrap figcaption { font-family: ${bodyFont}; font-size: ${CAPTION_DEFAULT_SIZE}px; color: ${CAPTION_DEFAULT_COLOR}; text-align: center; line-height: 1.4; margin-top: 6px; outline: none; }
-        /* The canvas keeps a figcaption on every image so there is always
-           somewhere to click, but an uncaptioned image must not reserve a blank
-           line for it. It collapses unless the image is selected or the caption
-           itself has focus — which is exactly when someone might add one. The
-           reader view never selects anything, so there it simply never shows. */
-        .book-img-wrap figcaption:empty { display: none; }
-        .book-img-wrap.book-img-capt-open figcaption:empty,
-        .book-img-wrap figcaption:empty:focus { display: block; }
-        .book-img-wrap figcaption:empty::before { content: 'Add a caption'; color: #A6B0BD; }
-        .book-img-wrap--inline { display: block; max-width: 100%; margin: 16px auto; }
-        .book-img-wrap--left { float: left; max-width: 46%; margin: 4px 18px 10px 0; }
-        .book-img-wrap--right { float: right; max-width: 46%; margin: 4px 0 10px 18px; }
-        /* image-led: the first image in the chapter body bleeds to the page's own
-           edge (canceling the 55px/63px page padding) regardless of which wrap
-           style the user picked, instead of a full-bleed variant being something
-           they have to remember to choose by hand. */
-        .book-chapter-prose.is-image-led > .book-img-wrap:first-child,
-        .book-chapter-prose.is-image-led > p:first-child > .book-img-wrap:only-child {
-          display: block; float: none; width: calc(100% + 126px); max-width: none;
-          margin: -55px -63px 24px; border-radius: 0;
-        }
-        .book-chapter-prose.is-image-led > .book-img-wrap:first-child img,
-        .book-chapter-prose.is-image-led > p:first-child > .book-img-wrap:only-child img { border-radius: 0; }
-        .book-chapter-prose p.is-editor-empty:first-child::before { color: currentColor; opacity: 0.5; content: attr(data-placeholder); float: left; pointer-events: none; height: 0; }
-        /* Tint plus a bar down the left edge, and nothing else. The 1px surround
-           it used to carry was doing no work the fill wasn't already doing —
-           the fill is what separates the box from the page, the bar is what
-           colours it — and the two together drew the same boundary twice, in
-           two different strengths. It's also the dominant convention in the
-           systems that ship this component (Bootstrap/CoreUI's callout sets its
-           left border to 4x the others; Supabase's admonition is a tinted panel
-           with a 4px left accent). Square against the bar, rounded away from
-           it, so the bar reads as an edge rather than a cropped outline. */
-        .book-chapter-prose .book-callout { background: #EAF2FF; border: none; border-left: 3px solid #2563EB; border-radius: 0 6px 6px 0; padding: 4px 18px; margin: 18px 0; }
-        ${CALLOUT_TYPES.map((c) => `
-        .book-chapter-prose .book-callout--${c.id} { background: ${c.tint}; border-left-color: ${c.accent}; }`).join('')}
-        .book-chapter-prose .book-callout p:last-child { margin-bottom: 0; }
-        /* Forms. Every colour here is a LITERAL hex, not a token: these rules are
-           mirrored into lib/epub.ts, which has no :root, so a var() would resolve
-           to nothing in EPUB and Kindle. See the same note on the button's ink. */
-        .book-chapter-prose .book-question, .book-chapter-prose .book-choice { margin: 18px 0; }
-        .book-chapter-prose .book-question > p, .book-chapter-prose .book-choice > p { margin: 0; }
-        /* A guide, not a rule: light grey at hairline weight, because at ink
-           strength a stack of five competes with the question above them. */
-        .book-chapter-prose .book-question-rule { height: ${QUESTION_LINE_PX}px; line-height: ${QUESTION_LINE_PX}px; border-bottom: 1px solid #C7CDD5; }
-        .book-chapter-prose .book-question-n { font-size: 12px; color: #9AA3AE; }
-        .book-chapter-prose .book-question-box { border: 1px solid #C7CDD5; border-radius: 3px; }
-        .book-chapter-prose .book-choice-options ul { list-style: none; margin: 0; padding: 0; }
-        .book-chapter-prose .book-choice-options li { margin: 0 0 8px; }
-        /* Inline so the marker and the first line of a long option sit on one
-           baseline instead of the text starting a line below the box. */
-        .book-chapter-prose .book-choice-options li p { margin: 0; display: inline; }
-        /* An empty ::before with a border, never generated CONTENT: a character
-           marker is the thing reading systems substitute or drop. */
-        .book-chapter-prose .book-choice-options li::before { content: ''; display: inline-block; width: 13px; height: 13px; margin-right: 10px; vertical-align: -2px; border: 1px solid #8C96A3; }
-        .book-chapter-prose .book-choice-options[data-marker="circle"] li::before { border-radius: 50%; }
-        .book-chapter-prose .book-choice-options[data-marker="box"] li::before { border-radius: 2px; }
-        /* A scale puts the number INSIDE the ring and runs across the page —
-           ringing a 7 is one gesture, and a vertical list of ten numbers is a
-           different question. The ::before is dropped rather than restyled, or
-           every number would carry an empty circle beside its own. */
-        .book-chapter-prose .book-choice-options[data-marker="scale"] li { display: inline-block; margin: 0 10px 0 0; }
-        .book-chapter-prose .book-choice-options[data-marker="scale"] li::before { display: none; }
-        .book-chapter-prose .book-choice-options[data-marker="scale"] li p { display: inline-block; min-width: 26px; height: 26px; line-height: 26px; text-align: center; border: 1px solid #8C96A3; border-radius: 50%; }
-        .book-chapter-prose table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 14px; }
-        /* Column resizing. The handle is absolutely positioned inside a cell,
-           so the cells have to be a positioning context — without this it
-           anchors to the page and lands somewhere else entirely. */
-        .book-chapter-prose th, .book-chapter-prose td { position: relative; }
-        .book-chapter-prose .column-resize-handle { position: absolute; right: -1px; top: 0; bottom: 0; width: 2px; background: ${BLUE}; pointer-events: none; z-index: 5; }
-        /* prosemirror-tables puts this class on the editor while the pointer is
-           over a column edge, which is the only hint that the edge is grabbable. */
-        .ProseMirror.book-chapter-prose.resize-cursor { cursor: col-resize; }
-        .book-chapter-prose th, .book-chapter-prose td { border: var(--book-tbl-bw, 1px) solid var(--book-tbl-bc, ${BORDER}); padding: var(--book-cell-pad, 8px) calc(var(--book-cell-pad, 8px) * 1.5); text-align: left; }
-        /* Cell selection. prosemirror-tables has always put this class on the
-           cells you drag across — there was simply no rule for it, so selecting
-           a range did nothing visible and every control that could act on one
-           looked broken. An ::after overlay rather than a background, so a cell
-           carrying its own fill still shows it underneath. */
-        .book-chapter-prose .selectedCell { position: relative; }
-        .book-chapter-prose .selectedCell::after {
-          content: ''; position: absolute; inset: 0; pointer-events: none;
-          background: ${hexToRgba(BLUE, 0.13)};
-        }
-        .book-chapter-prose th { background: #F4F6F9; font-weight: 600; }
-        /* The 'of :not([data-page-break])' is load-bearing, not a flourish: a table
-           that splits across pages has two extra <tr>s decorated into it at the
-           break (the spacer and the repeated header, below), and a plain
-           nth-child would count those and put every stripe after the break on
-           the wrong row. Odd rather than even so a header row — always row 1,
-           and made of th, which this rule doesn't touch — leaves the first body
-           row untinted; a table with no header tints its rows from the first,
-           the way a spreadsheet's alternating colours do. */
-        /* Derived from the page it sits on, not a fixed grey. #F7F9FB was a
-           cool light tint hardcoded against white paper: on a dark or warm
-           theme it read as a bright band across the table rather than a quiet
-           stripe. A translucent ink tint darkens a light page and a translucent
-           white lifts a dark one, so one rule covers every theme — and it
-           follows a page background the author sets later, which a fixed hex
-           could never do. */
-        .book-chapter-prose table[data-table-style="striped"] tr:nth-child(odd of :not([data-page-break])) > td { background: var(--book-tbl-tint, ${bandTint}); }
-        /* Minimal: horizontal rules only. The convention every book and journal
-           typesets tables with — verticals are the thing that makes a table
-           look like a spreadsheet dropped into a page. */
-        .book-chapter-prose table[data-table-style="minimal"] th,
-        .book-chapter-prose table[data-table-style="minimal"] td { border-left: none; border-right: none; }
-        .book-chapter-prose table[data-table-style="minimal"] th { border-bottom-width: 2px; }
-        /* A page break inside a table is a row rather than a div — a div in a
-           <tbody> gets hoisted out of the table by the parser. It has to paint
-           nothing at all: a border here would draw straight across the page
-           gap, which is the very thing that keeps other boxes monolithic. */
-        .book-chapter-prose tr.book-tr-spacer td { border: none; padding: 0; background: transparent; }
-        /* A bare superscript numeral — no brackets. That's the book
-           convention (Chicago, Word, Vellum, Atticus all produce it); square
-           brackets are a Wikipedia/IEEE citation idiom and read as a reference
-           list, not a note. Line-height 0 keeps the superscript from opening up
-           the line it sits on.
-
-           But a 6px numeral is a poor target and easy to mistake for a real
-           superscript ("1st", "x²"), so in the EDITOR it also gets a tint, a
-           radius and padding: there it's a control, and it should look like
-           one. The preview and the exported book get the plain numeral in body
-           colour, which is what a typeset footnote looks like. Scoped on
-           contenteditable because PreviewPage reuses this same class. */
-        .book-chapter-prose .book-footnote-ref { font-size: 0.72em; line-height: 0; vertical-align: super; font-weight: 700; }
-        .book-chapter-prose[contenteditable="true"] .book-footnote-ref {
-          color: #006EFE; background: #EAF2FF; border-radius: 3px; padding: 1px 3px; margin: 0 1px; cursor: pointer;
-        }
-        .book-chapter-prose[contenteditable="true"] .book-footnote-ref:hover { background: #D6E6FF; }
-        .book-chapter-prose[contenteditable="true"] .book-footnote-ref.ProseMirror-selectednode { background: #BBD6FF; outline: none; }
-        .book-chapter-prose ol.book-footnotes { margin: 30px 0 0; padding: 14px 0 0 20px; border-top: 1px solid ${BORDER}; font-size: 12.5px; color: ${SLATE}; }
-        .book-chapter-prose ol.book-footnotes li { margin: 5px 0; }
-        .book-chapter-prose ol.book-footnotes p { margin: 0; }
-        /* Placed: the pagination plugin has worked out which page each note
-           belongs to, so the list stops being a block at the end of the
-           chapter and becomes nothing — its items are positioned one page at a
-           time against the wrapper the prose sits in. The rule and the space
-           above it move onto whichever note opens a page's group, since that's
-           the one that has to separate itself from the body text; the room for
-           all of it was taken out of that page's text band before the flow was
-           measured, so nothing is overlapping anything. */
-        .book-chapter-prose ol.book-footnotes.book-fn-paged { margin: 0; padding: 0; border-top: none; height: 0; }
-        /* list-style-position:inside, with a hanging indent built from
-           text-indent + padding, is the only way to keep the number in the
-           column: an absolutely positioned item establishes its own box, so an
-           outside marker is laid out to the LEFT of that box and the numbers
-           hung out in the page margin instead of lining up with the text. */
-        .book-chapter-prose ol.book-footnotes.book-fn-paged > li.book-fn-placed {
-          position: absolute; left: 0; right: 0; margin: 0;
-          list-style-position: inside; padding-left: 20px; text-indent: -20px;
-        }
-        .book-chapter-prose ol.book-footnotes.book-fn-paged > li.book-fn-placed p { display: inline; }
-        .book-chapter-prose ol.book-footnotes.book-fn-paged > li.book-fn-first {
-          border-top: 1px solid ${BORDER}; padding-top: 10px; margin-top: 0;
-        }
-        .book-chapter-prose th { background: #F7F8FA; font-weight: 700; color: ${INK}; }
-        /* position:relative so the handle layer has something to sit against,
-           and the art fills the box so a stretched shape stretches. */
-        .book-shape { display: inline-block; position: relative; margin: 8px 12px 8px 0; vertical-align: top; }
-        .book-shape .book-shape-art { width: 100%; height: 100%; display: block; }
-        .book-shape .book-shape-art svg { display: block; }
-        .book-embed { margin: 18px 0; border-radius: 8px; overflow: hidden; background: #F0F2F5; }
-        .book-embed--video { position: relative; aspect-ratio: 16/9; background: #0E1218; }
-        .book-embed--video .book-embed-link { position: absolute; inset: 0; display: block; text-decoration: none; }
-        /* Same reasoning the iframe needed before it: a click on the poster is a
-           click on a link, which would navigate away instead of selecting the
-           block, so Properties and the floating bar could never be reached by
-           clicking the one thing you'd actually click. pointer-events:none means
-           the first click selects the wrapper; once selected (ProseMirror's own
-           selectednode class, already used for the other atom outlines below) a
-           second click opens the video to check it's the right one. */
-        .book-embed--video .book-embed-link { pointer-events: none; }
-        .book-chapter-prose .ProseMirror-selectednode .book-embed--video .book-embed-link { pointer-events: auto; }
-        /* An uploaded file gets a real player, filling the same 16:9 box the
-           poster does. Its controls take clicks for the same reason the link does,
-           so they follow the same rule: the first click selects the block, and
-           only once selected do the controls become usable. */
-        .book-embed--video .book-embed-video { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
-        .book-chapter-prose .ProseMirror-selectednode .book-embed--video .book-embed-video { pointer-events: auto; }
-        .book-embed-poster { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .book-embed-badge {
-          position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-          width: 54px; height: 54px; border-radius: 50%; background: rgba(12,16,22,0.68);
-          border: 2px solid rgba(255,255,255,0.9);
-        }
-        /* A CSS triangle rather than an SVG: this markup is serialised straight
-           into the EPUB, and a border triangle needs no namespace declaration and
-           no extra packaged file to render in a reading system. Nudged right of
-           centre because an optical centre for a triangle isn't its bounding box. */
-        .book-embed-badge::after {
-          content: ''; position: absolute; left: 54%; top: 50%; transform: translate(-50%, -50%);
-          border-style: solid; border-width: 9px 0 9px 15px;
-          border-color: transparent transparent transparent #fff;
-        }
-        .book-embed-caption {
-          position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 12px 10px;
-          color: #fff; font-size: 12.5px; font-weight: 600; line-height: 1.35;
-          background: linear-gradient(180deg, rgba(10,13,18,0) 0%, rgba(10,13,18,0.82) 62%);
-          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
-        .book-embed--audio { padding: 14px; }
-        .book-embed--audio audio { width: 100%; display: block; }
-        .book-author-name { font-family: ${bodyFont}; font-style: italic; letter-spacing: 0.02em; color: ${bodyColor}; text-align: center; }
-        .book-display-text { font-family: ${theme.headingFont}; font-size: 30px; text-align: center; color: ${headingColor}; margin: 24px 0; }
-        ${TEXT_STYLES.map((s) => `
-        .book-textstyle--${s.id} {
-          font-family: ${s.fontFamily}; font-size: ${s.fontSize}px; color: ${s.color}; text-align: center; margin: 18px 0;
-          ${s.fontWeight ? `font-weight: ${s.fontWeight};` : ''}
-          ${s.fontStyle ? `font-style: ${s.fontStyle};` : ''}
-          ${s.letterSpacing ? `letter-spacing: ${s.letterSpacing};` : ''}
-          ${s.textTransform ? `text-transform: ${s.textTransform};` : ''}
-        }`).join('')}
-        .book-textstyle--gilded {
-          text-decoration: underline; text-decoration-color: #C9A94A; text-decoration-thickness: 1.5px; text-underline-offset: 6px;
-        }
-        .book-columns { column-gap: 28px; margin: 18px 0; }
-        .book-columns--2 { column-count: 2; }
-        .book-columns--3 { column-count: 3; }
-        .book-columns--4 { column-count: 4; }
-        /* Two genuinely independent cells, not one flowing stream like .book-columns
-           above — reuses the plain table's own border/th/td rules by default, so
-           these strip that chrome back down to a bare two-pane layout. */
-        /* table-layout: fixed is what makes the cells equal without a class per
-           count — and it's also what keeps the uneven ratios honest, since an
-           auto table lets a long word in the narrow cell widen it back out. */
-        .book-chapter-prose .book-split-columns { border: none; margin: 18px 0; width: 100%; table-layout: fixed; }
-        /* A gutter between every pair, not just the one between two cells, so
-           three and four columns get the same 14px gap the pair always had. */
-        .book-chapter-prose .book-split-columns td { border: none; padding: 0 7px; vertical-align: top; }
-        .book-chapter-prose .book-split-columns td:first-child { padding-left: 0; }
-        .book-chapter-prose .book-split-columns td:last-child { padding-right: 0; }
-        .book-chapter-prose .book-split-columns--1-3 td:first-child { width: 33.333%; }
-        .book-chapter-prose .book-split-columns--1-3 td:last-child { width: 66.667%; }
-        .book-chapter-prose .book-split-columns--3-1 td:first-child { width: 66.667%; }
-        .book-chapter-prose .book-split-columns--3-1 td:last-child { width: 33.333%; }
-        /* A photo in a split cell starts level with the text beside it. The
-           figure's own 16px top margin is right when it sits in the flow of a
-           paragraph and wrong here, where the cell edge is already the gap —
-           it left the Photo and text block starting its two halves a line apart. */
-        .book-chapter-prose .book-split-columns td > .book-img-wrap:first-child { margin-top: 0; }
-        .book-chapter-prose .book-split-columns td > .book-img-wrap:last-child { margin-bottom: 0; }
-        .book-image-grid { display: grid; gap: 12px; margin: 20px 0; }
-        .book-image-grid--2 { grid-template-columns: repeat(2, 1fr); }
-        .book-image-grid--3 { grid-template-columns: repeat(3, 1fr); }
-        .book-image-grid--4 { grid-template-columns: repeat(4, 1fr); }
-        .book-image-grid--1-3 { grid-template-columns: 1fr 3fr; }
-        .book-image-grid--3-1 { grid-template-columns: 3fr 1fr; }
-        /* The wide cell alone keeps the 4:3 box and so sets the row's height;
-           the narrow one drops its own aspect and stretches to match. Leaving
-           both on 4:3 is what an uneven split can't do — a quarter-width cell
-           would be a quarter as tall, and the pair would sit top-aligned with a
-           ragged gap under the small one instead of reading as one band. The
-           narrow photo is then cropped tall by Fill, which is the point of the
-           layout: a feature image with a portrait beside it. */
-        .book-image-grid--1-3 > figure:first-child,
-        .book-image-grid--3-1 > figure:last-child { aspect-ratio: auto; height: 100%; }
-        .book-image-grid .book-img-wrap--inline { margin: 0; }
-        /* Cells are equal boxes and photos fill them. Without this each figure
-           kept its own natural aspect, so a grid of a landscape and a portrait
-           shot came out ragged — which is the one thing a grid is supposed to
-           avoid. aspect-ratio degrades gracefully: a reader too old to support
-           it just falls back to natural heights, i.e. the old behaviour. */
-        .book-image-grid > figure { aspect-ratio: 4 / 3; overflow: hidden; }
-        /* When the grid is given an explicit height the cells share it instead
-           of each keeping the 4:3 default, which is the whole point of setting
-           one. Fill/Fit then decides whether a photo is trimmed to fill its cell
-           or shown whole inside it — the same two words the photo's own panel
-           uses, one level up. */
-        .book-image-grid[data-h] { grid-auto-rows: 1fr; }
-        .book-image-grid[data-h] > figure { aspect-ratio: auto; height: 100%; }
-        .book-image-grid > figure img { width: 100%; height: 100%; }
-        .book-image-grid[data-fit="cover"] > figure img { object-fit: cover; }
-        .book-image-grid[data-fit="contain"] > figure img { object-fit: contain; }
-        .book-image-grid > figure > img { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .book-image-grid[data-fit="contain"] > figure > img { object-fit: contain; background: #F2F4F7; }
-        /* An empty cell, left behind when the column count grows past the number
-           of photos. A real node rather than blank space, so the grid keeps its
-           shape and the gap is obviously fillable rather than looking broken. */
-        .book-image-grid > figure[data-empty] { display: flex; align-items: center; justify-content: center;
-          border: 1.5px dashed #C7CEDA; border-radius: 6px; background: #F7F8FA; }
-        .book-image-grid > figure[data-empty] > img { display: none; }
-        .book-image-grid > figure[data-empty]::after { content: '+ Add photo'; font-family: ${bodyFont};
-          font-size: 12px; font-weight: 600; color: #8A94A6; }
-        .book-chart { margin: 18px 0; max-width: 480px; }
-        .book-chart svg { display: block; width: 100%; height: auto; }
-        .book-qr { display: flex; align-items: center; justify-content: center; margin: 16px 0; width: fit-content; }
-        .book-jumbotron { margin: 22px 0; padding: 32px; border-radius: 10px; text-align: center; }
-        .book-jumbotron-heading { font-family: ${theme.headingFont}; font-size: 22px; color: ${headingColor}; margin-bottom: 8px; }
-        /* The body is an ordinary paragraph now, so it arrives carrying the
-           prose rules — margins included. Reset to the banner's own spacing
-           rather than left to inherit a chapter's paragraph rhythm inside a
-           32px box. */
-        .book-jumbotron > p { font-family: ${bodyFont}; font-size: 14px; color: #52637A; margin: 0 0 16px; text-indent: 0; }
-        /* Dark fill, light text — set on the container and inherited down rather
-           than written onto each child, so a colour the AUTHOR picks in the text
-           panel is an inline style and still wins. :not([style*="color"]) is not
-           needed for that; inline simply outranks a stylesheet. */
-        .book-jumbotron[data-ink="dark"] .book-jumbotron-heading { color: #FFFFFF; }
-        .book-jumbotron[data-ink="dark"] > p { color: #D7DEE8; }
-        .book-jumbotron[data-ink="dark"] .book-button-url { color: #AEBAC9; }
-        /* Kept for banners that predate the rebuild and for anything exported
-           before it: nothing the editor produces now carries these classes. */
-        .book-jumbotron-button { display: inline-block; font-family: ${bodyFont}; font-size: 13.5px; line-height: 1.2; font-weight: 700; color: #fff; background: ${theme.accentColor}; border-radius: 7px; padding: 10px 20px; text-decoration: none; }
-        .book-jumbotron-url, .book-button-url { display: block; margin-top: 8px; font-family: ${bodyFont}; font-size: 11.5px; color: #6B7686; word-break: break-all; }
-        /* Mirrors the EPUB rule rather than using flex, so what the author lines
-           up on the canvas is what the packaged book lays out. */
-        .book-button-wrap { margin: 20px 0; }
-        /* font-size and padding are the fallback only: every button writes its own
-           from BUTTON_SIZES inline, the way it writes its fill. line-height is
-           pinned here because an unpinned "normal" is font-dependent, and the
-           whole point of the size scale is that the smallest preset clears a
-           44px tap target by a knowable margin. */
-        .book-button { display: inline-block; font-family: ${bodyFont}; font-size: 13.5px; line-height: 1.2; font-weight: 700; border-radius: 7px; padding: 10px 20px; text-decoration: none; }
-        /* display:inline-block is load-bearing, not tidiness: the app's CSS reset
-           sets svg to display:block, which put the icon on its own line under
-           the label. The EPUB has no such reset, so stating it in both places is
-           also what keeps the canvas and the packaged book laying out the same. */
-        .book-btn-icon { display: inline-block; vertical-align: -0.15em; }
-        .book-button-label + .book-btn-icon { margin-left: 7px; }
-        .book-btn-icon + .book-button-label { margin-left: 7px; }
-        .book-icon-wrap { margin: 18px 0; }
-        .book-icon { display: inline-block; }
-        .book-social { margin: 20px 0; }
-        .book-social-item { display: inline-block; margin: 0 18px 6px 0; font-family: ${bodyFont}; font-size: 13.5px; text-decoration: none; }
-        .book-social-icon { display: inline-block; vertical-align: -0.18em; }
-        .book-social-handle { margin-left: 6px; }
-        /* An unfinished block, drawn the way the image grid draws an empty cell:
-           dashed and tinted, so three greyed marks read as a placeholder waiting
-           for content rather than as content. Without it the ghosts survive
-           deselection and show up in the page thumbnail looking like real marks,
-           and nothing on screen says they will not print. They will not — the
-           export renders no children at all for an empty block. */
-        .book-chapter-prose .book-social[data-empty] { border: 1.5px dashed #C7CEDA; border-radius: 6px;
-          background: #F7F8FA; padding: 8px 12px; }
-        .book-social-ghost { opacity: .9; }
-        .book-answer-line { border-bottom: 1px solid ${BORDER}; height: 22px; margin: 0 0 14px; }
-        /* Photo vs photo-grid focus. An image had no selection ring of its own at
-           all — it inherited ProseMirror's default, which reads the same whether
-           you've grabbed one cell or the whole grid. The grid is not itself
-           selectable (there's no clickable gap around a cell, which is why
-           grid-level controls surface on the cell's own inspector), so the pair
-           has to say "this cell, inside this grid": a solid ring on the cell and a
-           dashed one, further out, on the grid that contains it. Matches how Figma
-           and Canva hint the parent while a child is selected. */
-        /* A figure is a block, so it stayed full-column-width even once the photo
-           inside it was given an explicit size — leaving the selection ring
-           floating out around empty space. data-w is only emitted when a width is
-           set, so this shrinks exactly those and leaves auto-width photos alone. */
-        .book-chapter-prose figure.book-img-wrap[data-w] { width: fit-content; }
-        .book-chapter-prose figure.book-img-wrap[data-w].book-img-wrap--inline { margin-left: 0; margin-right: auto; }
-        .book-chapter-prose figure.book-img-wrap.ProseMirror-selectednode,
-        /* The ring moved from the grid to the wrapper the node view puts
-           around it — the wrapper is the node now, and the grid inside it is
-           just its content box. */
-        .book-chapter-prose .book-image-grid-wrap { position: relative; }
-        .book-chapter-prose .book-image-grid.ProseMirror-selectednode,
-        .book-chapter-prose .book-image-grid-wrap.ProseMirror-selectednode { outline: ${RING}; outline-offset: ${RING_OFFSET}px; border-radius: ${RING_RADIUS}px; }
-        /* Resize handles. The dots sit on the box's own corners rather than on
-           the selection ring's, which is 2px further out — a handle centred on
-           the ring reads as belonging to the ring, and the ring is not the
-           thing being dragged. The wrapper takes no pointer events so the
-           photo underneath still accepts a click everywhere except the dots. */
-        .book-chapter-prose .book-resize-handles { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
-        .book-chapter-prose .book-resize-dot {
-          position: absolute; width: 9px; height: 9px; border-radius: 50%;
-          background: #fff; border: 1.5px solid ${BLUE}; pointer-events: auto;
-        }
-        .book-chapter-prose .book-resize-dot--tl { top: -4.5px; left: -4.5px; }
-        .book-chapter-prose .book-resize-dot--tr { top: -4.5px; right: -4.5px; }
-        .book-chapter-prose .book-resize-dot--bl { bottom: -4.5px; left: -4.5px; }
-        .book-chapter-prose .book-resize-dot--br { bottom: -4.5px; right: -4.5px; }
-        /* The handle layer is positioned against the figure, so the figure has
-           to be a containing block. Figures here are already in the flow with
-           no offsets of their own, so this changes nothing else. */
-        .book-chapter-prose figure:has(> .book-resize-handles) { position: relative; }
-        /* The quieter half of the pair: dashed and translucent, and sitting
-           outside the cell's own ring rather than replacing it. */
-        .book-chapter-prose .book-image-grid:has(> figure.ProseMirror-selectednode) { outline: ${RING_WIDTH}px dashed rgba(0,110,254,0.45); outline-offset: ${RING_OFFSET + 4}px; border-radius: ${RING_RADIUS}px; }
-        /* The container ring described on ActiveBlockRing above. Scoped to
-           ProseMirror-focused because every chapter is its own editor and keeps
-           its own caret — unscoped, each chapter you had visited would hold a
-           ring on the last container you touched there, and several pages would
-           claim to be selected at once.
-
-           There is deliberately no companion rule for the paragraph the caret
-           is in: see the note in ActiveBlockRing for why that ring is gone. */
-        .book-chapter-prose.ProseMirror-focused .book-block-active { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
-        /* A stack selected whole by the first click. Tables are the one block
-           here that gets node-selected without an atom's node view to toggle a
-           class of its own, so this rule is the only thing marking it. */
-        .book-chapter-prose table.ProseMirror-selectednode,
-        .book-chapter-prose .tableWrapper.ProseMirror-selectednode { outline: ${RING}; outline-offset: ${RING_OFFSET}px; border-radius: ${RING_RADIUS}px; }
-        .book-chapter-prose .ProseMirror-selectednode.book-shape,
-        .book-chapter-prose .ProseMirror-selectednode .book-embed,
-        .book-chapter-prose .ProseMirror-selectednode .book-qr,
-        .book-chapter-prose .ProseMirror-selectednode .book-jumbotron { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
-        .book-chapter-prose .ProseMirror-selectednode.book-button-wrap { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
-        .book-chapter-prose .ProseMirror-selectednode.book-icon-wrap { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
-        .book-chapter-prose .ProseMirror-selectednode.book-social { outline: ${RING}; outline-offset: ${RING_OFFSET}px; }
-        /* The Forms blocks ring like every other selectable object — the
-           container around the question AND its lines together, so the first
-           click visibly takes the pair, and the answer space on its own at the
-           second. Without these two rules the selection was real but invisible:
-           the panel changed and nothing on the page did. */
-        .book-chapter-prose .ProseMirror-selectednode.book-question,
-        .book-chapter-prose .ProseMirror-selectednode.book-choice,
-        .book-chapter-prose .ProseMirror-selectednode.book-question-space,
-        .book-chapter-prose .ProseMirror-selectednode.book-choice-options,
-        .book-chapter-prose .ProseMirror-selectednode.book-question-box { outline: ${RING}; outline-offset: ${RING_OFFSET}px; border-radius: ${RING_RADIUS}px; }
-        /* The ring's corners come from whatever it's around — a jumbotron's 10px
-           box, a photo's 8px one. These four have square corners of their own
-           and nothing visible to square off, so they borrow the shared radius
-           rather than ringing sharp against everything else's rounded. */
-        .book-chapter-prose .book-image-grid.ProseMirror-selectednode,
-        .book-chapter-prose .book-columns.book-block-active,
-        .book-chapter-prose table.book-block-active,
-        .book-chapter-prose .tableWrapper.book-block-active,
-        .book-chapter-prose .ProseMirror-selectednode.book-shape { border-radius: ${RING_RADIUS}px; }
-        /* No :focus rule of its own — the title is a .book-simple-editable like
-           every other single-field editor and takes the shared ring from there. */
-        .book-chapter-title { outline: none; border-radius: ${RING_RADIUS}px; }
-        .book-chapter-title p, .book-chapter-title h2, .book-chapter-eyebrow p { margin: 0; font: inherit; color: inherit; }
-        .book-chapter-eyebrow { outline: none; border-radius: ${RING_RADIUS}px; }
-        .book-chapter-title p.is-editor-empty:first-child::before,
-        .book-chapter-title h2.is-editor-empty:first-child::before,
-        .book-chapter-eyebrow p.is-editor-empty:first-child::before { color: currentColor; opacity: 0.5; content: attr(data-placeholder); float: left; pointer-events: none; height: 0; }
-
-        /* ── Insert-panel specimens (see SpecimenCard) ──────────────────────
-           The same real prose styles, with the outer block margins taken off so
-           the card's own padding is the only space around a specimen, and the
-           blockquote's 34px page indents pulled in — a 236px card can't spare
-           68px of them.
-           Both classes in the selector, and last in the sheet. The page rules
-           these override are \`.book-chapter-prose\` plus an element or another
-           class, so a lone \`.book-specimen\` either ties or loses: the callout
-           kept its 18px margins and stood its card 94px tall, and the chapter
-           title kept its .6em bottom margin, which left it sitting 12px below
-           the card's top edge and 29px above the bottom in a card that centres
-           what's in it. Doubling the class outranks the page rules outright. */
-        .book-chapter-prose.book-specimen > :first-child { margin-top: 0; }
-        .book-chapter-prose.book-specimen > :last-child { margin-bottom: 0; }
-        /* The divider's own rule is !important — it pads the hr out into a
-           clickable hit target on the page — so the margin reset above can't
-           touch it, and About the author (which opens on a rule) sat 9px low in
-           its card. Only ever the first one: a rule BETWEEN two blocks still
-           wants its space. */
-        .book-specimen > hr:first-child { margin-top: 0 !important; padding-top: 0 !important; }
-        .book-specimen blockquote { margin-left: 12px; margin-right: 0; }
-      `}</style>
-
+      {/* A designed opener is a whole PAGE, not a band above running text: the
+          file gives chapter 1 a page of its own and starts the prose on the next
+          sheet. So this block reserves the rest of sheet 1 and the body flows
+          past it, which is the same mechanism the editor's own opener chrome
+          already uses — just the full height instead of a strip of it. The
+          artwork itself is drawn in the sheet layer above; this is the space it
+          needs and the drop target for the opener photo. */}
+      {openerSpec && (
+        <div
+          onClick={() => onSelection({ kind: 'openerImage', chapterId: page.id })}
+          onDragEnter={(e) => { e.preventDefault(); setOpenerDragOver(true); }}
+          onDragOver={(e) => e.preventDefault()}
+          onDragLeave={() => setOpenerDragOver(false)}
+          onDrop={handleOpenerDrop}
+          title={openerHasPhoto ? 'Click to replace this photo, or drag one here' : undefined}
+          style={{
+            height: contentH(geometry) - openerReserve,
+            cursor: openerHasPhoto ? 'pointer' : 'default',
+            outline: openerDragOver ? `${RING_WIDTH}px dashed ${BLUE}` : openerSelected ? RING : 'none',
+            outlineOffset: RING_OFFSET_INSET,
+          }}
+        />
+      )}
       {/* Opener chrome — the rule, the label and the big numeral — is chapter
           furniture. A continuation page has no number and opens no chapter, so
           it gets none of it and starts at the top margin like any other sheet. */}
-      {page.layout === 'opener' && hasTitle && (
+      {!cpDesign && page.layout === 'opener' && hasTitle && (
         page.openerImage ? (
           <div
             onClick={() => onSelection({ kind: 'openerImage', chapterId: page.id })}
@@ -10650,13 +12374,24 @@ function ChapterEditor({
         )
       )}
       {showTitleField ? (
-      <div className="relative group">
+      /* On a multi-column page the title sets to the FIRST column's measure, not
+         the page's. The alternative is a title that runs the full width while
+         column two starts at the top margin beside it — the title printed over
+         the first lines of its own chapter, which is what the full measure did.
+
+         It cannot be solved by starting both columns lower. A column flow has
+         one height for every column it will ever make, so any room taken off
+         the top of page one's columns is taken off every page's, and a chapter
+         title appears on one page. `column-span: all` is the same bargain in CSS
+         form — measured, it pushed EVERY column down by the title's height and
+         turned four columns into eight. */
+      <div className="relative group" style={cpTitleBox ?? (multiCol ? { maxWidth: grid.colW } : undefined)}>
         <SimpleFieldEditor
           fieldKey={`${page.id}::title`}
           initialHtml={titleHtml}
           placeholder="Chapter title"
-          className="book-chapter-title"
-          style={{
+          className={cpTitleType ? 'book-chapter-title cp-trim' : 'book-chapter-title'}
+          style={cpTitleType ?? {
             position: 'relative', fontFamily: theme.headingFont, color: headingColor,
             fontSize: page.layout === 'opener' ? 38 : 26,
             margin: page.layout === 'opener' ? '0 0 20px' : '0 0 14px',
@@ -10704,11 +12439,67 @@ function ChapterEditor({
           Chapter title
         </button>
       )}
-      {/* Above the page sheets drawn behind it — they're absolutely positioned,
-          so the flow needs its own stacking context to stay on top. */}
-      <div style={{ position: 'relative', zIndex: 1 }}>
-        <EditorContent editor={editor} className={page.layout === 'two-column' ? 'is-two-col' : page.layout === 'image-led' ? 'is-image-led' : ''} />
-      </div>
+      {/* Where the running text starts in the stack's own flow. Zero height, so
+          it costs a single-column chapter nothing; a multi-column one measures
+          the chapter title's depth off it — see colLead. */}
+      <div ref={leadRef} aria-hidden style={{ height: 0 }} />
+      {multiCol ? (
+        <>
+          {/* Each sheet is a window onto two columns of the strip. The LIVE
+              editor is parked over whichever sheet has the caret and stays in
+              one place in the React tree whatever that sheet is: moving an
+              <EditorContent> between siblings unmounts the view, and a view that
+              unmounts takes the selection, the undo history and the caret with
+              it. Only the window around it moves. */}
+          <div
+            data-page-content=""
+            style={{
+              position: 'absolute', zIndex: 2, overflow: 'hidden',
+              left: geometry.padLeft,
+              top: pageTop(colStart + liveColumn, geometry) + geometry.padTop,
+              width: grid.width, height: stripH,
+            }}
+            /* The strip is wider than its window, so the browser will try to
+               scroll a caret in a later column into view — which would slide
+               every column off its page. The offset is the only thing allowed
+               to move it. */
+            onScroll={(e) => { e.currentTarget.scrollLeft = 0; e.currentTarget.scrollTop = 0; }}
+          >
+            <EditorContent editor={editor} />
+          </div>
+          {Array.from({ length: Math.max(1, pageCount - colStart) }, (_, pair) => (pair === liveColumn ? null : (
+            <ColumnMirror
+              key={pair}
+              editor={editor}
+              revision={colRevision}
+              offset={pair * grid.cols * grid.pitch}
+              style={{
+                position: 'absolute', zIndex: 1, overflow: 'hidden',
+                left: geometry.padLeft,
+                top: pageTop(colStart + pair, geometry) + geometry.padTop,
+                width: grid.width, height: stripH,
+              }}
+              onEnter={(x, y) => {
+                setLiveColumn(pair);
+                /* The window does not move when the editor arrives in it, so the
+                   point under the pointer is still the point you clicked. */
+                requestAnimationFrame(() => {
+                  if (!editor || editor.isDestroyed) return;
+                  const at = editor.view.posAtCoords({ left: x, top: y });
+                  if (at) editor.chain().focus().setTextSelection(at.pos).run();
+                  else editor.commands.focus();
+                });
+              }}
+            />
+          )))}
+        </>
+      ) : (
+        /* Above the page sheets drawn behind it — they're absolutely positioned,
+           so the flow needs its own stacking context to stay on top. */
+        <div style={{ position: 'relative', zIndex: 1 }}>
+          <EditorContent editor={editor} className={cpDesign ? '' : page.layout === 'image-led' ? 'is-image-led' : ''} />
+        </div>
+      )}
       <TextSelectionBubbleMenu editor={editor} />
     </div>
   );
@@ -10756,19 +12547,20 @@ const OBJECT_SENTINEL = '\uFFFC';
    ones any more. */
 
 function BlockActionBar({
-  editor, chapterId, pos, top, left, width, barLeft, barRight, beside, blockTop, movable, onRunStart, onRunEnd, onSplit, onBeginEdit,
+  editor, chapterId, pos, top, left, width, barLeft, blockTop, scale, movable, onRunStart, onRunEnd, onSplit, onBeginEdit,
 }: {
   editor: Editor;
   chapterId: string;
   pos: number;
+  /* The canvas's zoom factor, so the bar can hold a constant screen size inside
+     the scaled subtree it renders in — see counterScale. */
+  scale: number;
   // The floating bar's own placement, from barPlacement — `top` is already
   // lifted clear above the block, or level with it when the bar has flipped out
   // to the side, in which case `barLeft` is past the block's right edge and
   // there is no width to centre within.
   top: number;
   barLeft: number;
-  barRight: number;
-  beside: boolean;
   left: number;
   /* The block's width — the floating bar centres across it when it sits above. */
   width: number;
@@ -11137,10 +12929,9 @@ function BlockActionBar({
         </div>
 
         {/* Duplicate and Delete keep the floating bar above the block and centred
-            on it — or out beside it when the gap above cannot hold it, which is
-            barPlacement's call, not this component's. Same bar, same place as a
-            selected image's: see FloatingObjectBar and blockBarPos, which
-            branches on `beside` identically. A paragraph, pull-quote, callout or
+            on it — always, which is barPlacement's call, not this component's.
+            Same bar, same place as a selected image's: see FloatingObjectBar and
+            blockBarPos. A paragraph, pull-quote, callout or
             list can't take a node selection (the caret has to stay free to reach
             TextInspector), so this one is driven by the hovered/caret block
             instead, but it reads as the one floating bar the editor has rather
@@ -11153,12 +12944,10 @@ function BlockActionBar({
             pointer; the box that positions it does not. */}
         <div
           className="absolute flex"
-          style={beside
-            ? { top, left: barLeft, right: barRight, justifyContent: 'flex-end', zIndex: 10, pointerEvents: 'none' }
-            : { top, left: barLeft, width, justifyContent: 'center', zIndex: 10, pointerEvents: 'none' }}
+          style={{ top, left: barLeft, width, justifyContent: 'center', zIndex: 10, pointerEvents: 'none' }}
           onMouseDown={(e) => e.preventDefault()}
         >
-          <div className="flex items-center" style={{ gap: 1, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: 3, boxShadow: MENU_SHADOW, width: 'max-content', pointerEvents: 'auto' }}>
+          <div className="flex items-center" style={{ gap: 1, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: 3, boxShadow: MENU_SHADOW, width: 'max-content', pointerEvents: 'auto', ...counterScale(scale) }}>
           <Tooltip label="Duplicate" position="top">
             <button
               onClick={() => structural('Block duplicated', (node, at) => {
@@ -11586,6 +13375,7 @@ function coverImageStyle(el: CoverImageElement): React.CSSProperties {
   const strokeCss = strokeBoxStyle(el.borderWidth ?? 0, el.borderColor || INK, el.borderSides, el.borderPos, el.borderStyle);
   return {
     width: '100%', height: '100%', objectFit: el.fit ?? 'cover', display: 'block', boxSizing: 'border-box',
+    borderRadius: el.radius ? el.radius : undefined, overflow: el.radius ? 'hidden' : undefined,
     ...strokeCss.css,
     boxShadow: strokeCss.ring ?? undefined,
   };
@@ -11936,13 +13726,16 @@ function UnlockIcon() {
    model, not Figma's position-only one) means nothing else here is actionable
    until the object is unlocked, so showing disabled versions of the rest would
    just be clutter with no real choice behind it. */
-function FloatingObjectBar({ onBringToFront, onSendToBack, onDuplicate, onDelete, locked, onToggleLock }: {
+function FloatingObjectBar({ onBringToFront, onSendToBack, onDuplicate, onDelete, locked, onToggleLock, style }: {
   onBringToFront?: () => void;
   onSendToBack?: () => void;
   onDuplicate?: () => void;
   onDelete: () => void;
   locked?: boolean;
   onToggleLock?: () => void;
+  /* Extra box styling from the caller — in practice the zoom counter-scale, so
+     the bar stays one size on screen inside the canvas's scaled subtree. */
+  style?: React.CSSProperties;
 }) {
   const btnStyle: React.CSSProperties = {
     width: 28, height: 28, borderRadius: RADIUS_SM, border: 'none', background: 'none',
@@ -11950,7 +13743,7 @@ function FloatingObjectBar({ onBringToFront, onSendToBack, onDuplicate, onDelete
   };
   const hoverIn = (e: React.MouseEvent<HTMLButtonElement>, bg: string) => { e.currentTarget.style.background = bg; };
   const hoverOut = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.background = 'none'; };
-  const barStyle: React.CSSProperties = { gap: 1, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: 3, boxShadow: MENU_SHADOW, width: 'max-content' };
+  const barStyle: React.CSSProperties = { gap: 1, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: 3, boxShadow: MENU_SHADOW, width: 'max-content', ...style };
 
   if (locked) {
     return (
@@ -12313,56 +14106,44 @@ function blockAnchor(dom: HTMLElement, host: HTMLElement, scale: number) {
     // rather than pinned to its left edge — see BlockActionBar's floating bar.
     width: rect.width / scale,
     clearTop: (ceiling - hostRect.top) / scale,
-    // How far to hold a side-flipped bar off the host's right edge so it lands
-    // inside the visible canvas — see canvasRightInset. +4 for breathing room.
-    barRight: canvasRightInset(host, hostRect, scale) + 4,
   };
 }
 
-/* In the gap above the block when that gap can hold the bar, and OUT TO THE
-   SIDE when it can't — the standard "flip when it doesn't fit" that tooltips
-   and popovers do, rather than dropping onto the block.
+/* ALWAYS in the gap above the block, centred on it.
 
-   It used to tuck against the block's own top edge instead, on the reasoning
-   that a bar may overlap the thing it acts on but never the thing it doesn't.
-   That reasoning holds for an image, where the covered strip is a sliver of
-   picture. It fails for anything whose first line is the point: a Forms
-   question, a callout, a pull quote. There the bar sat squarely on the prompt,
-   and a prompt you cannot read is worse than chrome a little further away.
+   It used to flip out to the right when that gap was tight. That read as the
+   bar belonging to the page rather than to the selection: on a full-width block
+   it landed out past the paper, level with the block's top-right corner, and
+   the narrow canvas then clipped its last button clean off. The bar names what
+   you have selected, so it sits over what you have selected.
 
-   In a flowed document the gap is often just the ~15px of prose margin against
-   a 34px bar, so this fires often. The side has room because the page keeps a
-   0.75in (~64px) margin and the canvas continues past the sheet, so the bar
-   hangs into the margin and over the edge if it must, covering nothing. The
-   left margin is already the block menu's; this is the right.
-
-   Vertically aligned to the block's top rather than centred on it: a tall
-   block would otherwise float its controls halfway down the page, a long way
-   from the edge they belong to. */
-/* How far the host's right edge sits PAST the visible canvas, in host units.
-   The sheet is 720px wide and the canvas between the two panels is narrower
-   than that at common window sizes, so the page's own right margin is already
-   clipped before any bar is drawn — anchoring a flipped bar to the paper's edge
-   put its Delete button in the clipped strip, where it rendered and could never
-   be clicked. Measured against the nearest scrolling ancestor rather than a
-   plumbed-through ref, so it stays correct wherever this page is mounted. */
-function canvasRightInset(host: HTMLElement, hostRect: DOMRect, scale: number) {
-  for (let el = host.parentElement; el; el = el.parentElement) {
-    const overflow = getComputedStyle(el).overflowX;
-    if (overflow === 'auto' || overflow === 'scroll' || overflow === 'hidden') {
-      return Math.max(0, (hostRect.right - el.getBoundingClientRect().right) / scale);
-    }
-  }
-  return 0;
+   When the gap genuinely can't hold it — prose margins are ~15px against a 34px
+   bar — it is pushed down onto the block's OWN top edge rather than up across
+   the neighbour above. Covering a strip of the thing you just selected is
+   recoverable; covering the block above it hides something you weren't even
+   working on. */
+/* Canvas chrome holds a constant SCREEN size whatever the zoom. These bars are
+   absolutely-positioned children of the page host, which sits under the canvas's
+   own `transform: scale()`, so they used to zoom with the paper: 14px buttons at
+   50% — half the minimum hit target — and 42px at 150%, wide enough to push
+   their own Delete button into the clipped strip past the canvas edge. The
+   placement maths above is already scale-corrected and stays in layout units;
+   only the box's own size is counter-scaled, anchored at the corner the bar is
+   pinned to so the position it was given still holds. */
+function counterScale(scale: number): React.CSSProperties {
+  return scale === 1 ? {} : { transform: `scale(${1 / scale})`, transformOrigin: 'center top' };
 }
 
-function barPlacement({ top, left, width, clearTop }: { top: number; left: number; width: number; clearTop: number }) {
-  const above = top - FLOATING_BAR_H - 8;
+function barPlacement(
+  { top, left, clearTop }: { top: number; left: number; clearTop: number },
+  scale = 1,
+) {
+  // The bar's footprint in LAYOUT units, which is what `top`/`clearTop` are in:
+  // counter-scaling keeps it 34 screen px, so at 50% zoom it occupies 68 here.
+  const above = top - FLOATING_BAR_H / scale - 8 / scale;
   // Clear of the top-right resize handle, which sits at right:-5 on the blocks
   // that have corner handles at all.
-  return above >= Math.max(0, clearTop + 4)
-    ? { top: above, barLeft: left, beside: false }
-    : { top, barLeft: left + width + 10, beside: true };
+  return { top: Math.max(clearTop + 4 / scale, above), barLeft: left };
 }
 
 /* Positions a FloatingObjectBar via a portal to <body>, computed in JS from
@@ -12457,11 +14238,90 @@ function FloatingBarPortal({ boxRef, edge, offset = 10, anchorPct, children }: {
    Every consumer that needs a different size wraps this in a CSS
    `transform: scale(...)` rather than asking it to reflow (a percent-positioned
    canvas visibly distorts if given a different width with no matching scale). */
-function CoverCanvasStatic({ page, theme, fieldContent }: { page: SimplePage; theme: ThemeDef; fieldContent: Record<string, string> }) {
+/* Re-fit a template cover title to its box at RENDER, not only when the design is
+   picked. Two reasons it has to happen here: a cover switched before the fit
+   existed still holds the unfitted element, and — the real one — the title is an
+   editable field, so typing a longer one after picking would overflow again. The
+   stored size stays the design's; only what is drawn shrinks. */
+/* Every text field on a template cover is a fixed container at the size Max set,
+   and shrinks only as far as its own overflow requires. Done at RENDER, not when
+   the design is picked, for two reasons: the stored object keeps the design's own
+   number, and these are EDITABLE — "Author Name" is eleven characters and a real
+   byline is not, so the fit has to re-run when the words change, not once. */
+/* Keyed on the ELEMENT, never on an id. It used to be a three-entry map from
+   `cp-cv-title`/`-subtitle`/`-author`, which meant the fit ran on the gallery
+   cards (they draw a template's own array) and never once on a real book:
+   applying a template clones its elements through cloneCoverElements, which
+   mints a fresh `cel-N` for every one of them, so by the time a cover was in a
+   book not a single id matched and every title painted at its design size. That
+   is the whole of the overflow — a 66-character title landing in a box drawn for
+   "Career Pathways" at 96px and running clean off the page.
+
+   WIDTH always binds: a word wider than its box has nowhere to go but off the
+   edge of the cover.
+
+   HEIGHT binds only when the box can hold one line of its own type. That one
+   test sorts the two kinds of `h` this file stores without needing them to be
+   marked, which matters because they are not:
+
+   · A real slot — the title's 130pt on Career Pathways, the 34% every
+     colour-and-type theme gives its title — fits its own first line with room
+     to spare, and is what the rule, the band or the subtitle below it was placed
+     against. Letting the words grow past it is the collision.
+   · A position marker — Career Pathways' byline sits in 15pt of box carrying
+     20pt type, because the design measured to the cap and the box only says
+     WHERE the line starts. Its own design "overflows" it, so a height clamp
+     there would shrink every byline on the template below the size it was drawn
+     at, which is the regression this test exists to avoid. */
+/* The breathing room the editable surface gives a caret, in px per side. It is
+   reserved by the FIT as well, because it is real measure the words do not get:
+   a title that fit its box to within 4px still broke mid-word on the canvas,
+   where the same box is 8px narrower than the one Preview measures. Reserving it
+   everywhere costs the static render a hair of size and makes the two agree. */
+const COVER_TEXT_PAD_X = 4;
+
+function fitCoverElements(els: CoverElement[], page: PageMeta, fieldContent: Record<string, string>, geo: PageGeometry): CoverElement[] {
+  return els.map((el) => {
+    if (el.type !== 'text') return el;
+    const size = Number(el.fontSize) || 0;
+    if (!size) return el;
+    const text = stripTags(
+      fieldContent[fieldKeyForCoverText(page.id, el)] ?? el.defaultHtml ?? DEFAULT_COVER_TEXT[el.role] ?? '',
+    );
+    if (!text.trim()) return el;
+    const metrics: TextMetrics = {
+      weight: el.fontWeight ?? 400, family: el.fontFamily,
+      tracking: el.letterSpacing, transform: el.textTransform,
+      trimmed: el.anchor === 'cap',
+    };
+    const boxH = (el.h / 100) * geo.h;
+    const oneLine = metrics.trimmed ? size * CAP_RATIO : lineBox(el.lineHeight, size);
+    const anchored = el.anchor === 'top' || el.anchor === 'cap';
+    const fitted = cpFitSize(
+      text,
+      (el.w / 100) * geo.w - (anchored ? 0 : COVER_TEXT_PAD_X * 2),
+      oneLine <= boxH ? boxH : Infinity,
+      size,
+      el.lineHeight,
+      metrics,
+    );
+    return fitted === size ? el : { ...el, fontSize: fitted };
+  });
+}
+
+function CoverCanvasStatic({ page, theme, fieldContent, children, elements: elementsProp, bare }: {
+  page: PageMeta; theme: ThemeDef; fieldContent: Record<string, string>; children?: React.ReactNode;
+  /* The editable canvas's two, for the same two reasons: a chapter opener's
+     numeral is derived and has to be recomputed, and the opener is drawn inside
+     a sheet that already is a page. */
+  elements?: CoverElement[]; bare?: boolean;
+}) {
   const geo = useContext(PageGeometryContext);
-  const elements = page.coverElements ?? [];
+  const elements = fitCoverElements(elementsProp ?? page.coverElements ?? [], page, fieldContent, geo);
   return (
-    <div style={{ position: 'relative', overflow: 'hidden', background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`, borderRadius: 3, boxShadow: PAGE_SHADOW, width: geo.w, height: geo.h }}>
+    <div style={bare
+      ? { position: 'absolute', inset: 0, overflow: 'hidden' }
+      : { position: 'relative', overflow: 'hidden', background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`, borderRadius: 3, boxShadow: PAGE_SHADOW, width: geo.w, height: geo.h }}>
       {elements.map((el) => {
         const boxStyle: React.CSSProperties = { position: 'absolute', left: `${el.x}%`, top: `${el.y}%`, width: `${el.w}%`, height: `${el.h}%`, opacity: el.opacity ?? 1 };
         if (el.type === 'image') {
@@ -12482,19 +14342,27 @@ function CoverCanvasStatic({ page, theme, fieldContent }: { page: SimplePage; th
         if (el.type === 'qr') {
           return <div key={el.id} style={boxStyle}><CoverQrFill el={el} /></div>;
         }
-        const html = fieldContent[fieldKeyForCoverText(page.id, el)] ?? DEFAULT_COVER_TEXT[el.role];
+        const html = fieldContent[fieldKeyForCoverText(page.id, el)] ?? el.defaultHtml ?? DEFAULT_COVER_TEXT[el.role];
+        const anchored = el.anchor === 'top' || el.anchor === 'cap';
         return (
           <div
             key={el.id}
-            style={{ ...boxStyle, display: 'flex', alignItems: 'center', justifyContent: el.textAlign === 'left' ? 'flex-start' : el.textAlign === 'right' ? 'flex-end' : 'center' }}
+            style={{
+              ...boxStyle,
+              ...(anchored ? { height: 'auto' } : null),
+              display: 'flex', alignItems: anchored ? 'flex-start' : 'center',
+              justifyContent: el.textAlign === 'left' ? 'flex-start' : el.textAlign === 'right' ? 'flex-end' : 'center',
+            }}
           >
             <div
+              className={el.anchor === 'cap' ? 'cp-trim' : undefined}
               style={{ width: '100%', fontFamily: el.fontFamily, fontSize: el.fontSize, color: el.color, fontWeight: el.fontWeight, fontStyle: el.fontStyle, textAlign: el.textAlign ?? 'center', letterSpacing: el.letterSpacing, lineHeight: el.lineHeight, textTransform: el.textTransform }}
               dangerouslySetInnerHTML={{ __html: html }}
             />
           </div>
         );
       })}
+      {children}
     </div>
   );
 }
@@ -12505,10 +14373,33 @@ function CoverCanvasStatic({ page, theme, fieldContent }: { page: SimplePage; th
    never get a drag listener on the text surface itself (so native caret placement/
    focus keeps working) — once selected, a small floating handle above the box is the
    only draggable surface, unambiguous since it only exists once already selected. */
+/* An object thinner than this in either axis is given a transparent hit pad, so
+   a hairline rule can be clicked at all. 10px is the smaller end of what the
+   touch-target guidance asks for and the largest pad that never starts stealing
+   clicks from the object next to it — on these pages the nearest neighbour to a
+   rule is 32pt away. */
+const HIT_MIN = 10;
+const HIT_PAD = 5;
+
 function CoverCanvasEditable({
-  page, theme, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onAddElement, onUpdateElement, onStartCrop, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex, overlayOpen, zoom, onRefuse,
+  page, theme, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onAddElement, onUpdateElement, onStartCrop, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex, overlayOpen, zoom, onRefuse, children, elements: elementsProp, bare,
 }: {
-  page: SimplePage;
+  page: PageMeta;
+  /* Anything on this page that is GENERATED rather than placed — the contents
+     list and its folios, which are read off the book's own chapters. It rides on
+     top of the elements instead of being one, because an element is something
+     you put somewhere and this is something the book works out. */
+  children?: React.ReactNode;
+  /* The objects to draw, when they are not simply the page's own. A chapter
+     opener's numeral is its chapter NUMBER, which is derived and must stay
+     derived — reorder two chapters and both numerals have to follow. So the
+     caller passes the stored elements with that one's text recomputed, and the
+     canvas never has to know why. */
+  elements?: CoverElement[];
+  /* Drawn as a layer inside something that is already a page (a chapter's own
+     sheet) rather than as a page of its own, so it brings no border, no shadow
+     and no fill with it. */
+  bare?: boolean;
   theme: ThemeDef;
   fieldContent: Record<string, string>;
   /* Something was dropped here that this page can't hold. The stage knows WHY —
@@ -12535,8 +14426,52 @@ function CoverCanvasEditable({
 }) {
   const geo = useContext(PageGeometryContext);
   const stageRef = useRef<HTMLDivElement>(null);
-  const elements = page.coverElements ?? [];
+  const elements = fitCoverElements(elementsProp ?? page.coverElements ?? [], page, fieldContent, geo);
   const selectedId = selection.kind === 'coverElement' && selection.pageId === page.id ? selection.elementId : null;
+  /* Which text box the caret is allowed into. One id, because stepping inside
+     one box means leaving any other — the same shape `imageDragOverId` below
+     takes, for the same reason. */
+  const [textEditing, setTextEditing] = useState<string | null>(null);
+  /* Derived, not synced: stepping inside only counts while that box is still the
+     selected one, so selecting anything else steps back out on the spot. An
+     effect that cleared the state when the selection moved would do the same
+     thing one render later — and leave a frame in which a box the author has
+     already left still has the caret. */
+  const textEditingId = textEditing === selectedId ? textEditing : null;
+
+  /* Step inside a text box and put the caret where the click landed. The shield
+     that made the container step possible is also what swallowed the click that
+     would have placed it, so it is placed by hand from the same coordinates —
+     ProseMirror reads the DOM selection when it takes focus, so setting the
+     range and focusing is enough and no editor instance is needed here. */
+  const enterText = useCallback((elementId: string, clientX: number, clientY: number) => {
+    setTextEditing(elementId);
+    requestAnimationFrame(() => {
+      const box = stageRef.current?.querySelector(`[data-cover-el="${CSS.escape(elementId)}"]`);
+      const surface = box?.querySelector<HTMLElement>('.ProseMirror');
+      if (!surface) return;
+      surface.focus();
+      const doc = document as Document & {
+        caretRangeFromPoint?: (x: number, y: number) => Range | null;
+        caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+      };
+      const range = doc.caretRangeFromPoint?.(clientX, clientY)
+        ?? (() => {
+          const pos = doc.caretPositionFromPoint?.(clientX, clientY);
+          if (!pos) return null;
+          const r = document.createRange();
+          r.setStart(pos.offsetNode, pos.offset);
+          r.collapse(true);
+          return r;
+        })();
+      // Outside the text itself (the box is wider than its words) — the focus
+      // above already left the caret somewhere sensible.
+      if (!range || !surface.contains(range.startContainer)) return;
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
+  }, []);
   // Which image element a new photo is currently being dragged over — only one
   // drag can be in flight at a time, so a single id (not per-element state) is
   // enough. Lets dropping a new photo directly onto an already-placed cover
@@ -12796,7 +14731,9 @@ function CoverCanvasEditable({
           onAddElement(page.id, { id: `cover-photo-${Date.now()}`, type: 'image', src, ...box });
         } catch { /* malformed payload, ignore */ }
       }}
-      style={{ position: 'relative', overflow: 'hidden', background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`, borderRadius: 3, boxShadow: PAGE_SHADOW, width: geo.w, height: geo.h, cursor: 'default' }}
+      style={bare
+        ? { position: 'absolute', inset: 0, overflow: 'hidden', cursor: 'default', pointerEvents: 'auto' }
+        : { position: 'relative', overflow: 'hidden', background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`, borderRadius: 3, boxShadow: PAGE_SHADOW, width: geo.w, height: geo.h, cursor: 'default' }}
     >
       {elements.map((el) => {
         const selected = el.id === selectedId;
@@ -12861,8 +14798,16 @@ function CoverCanvasEditable({
           );
         }
         if (el.type === 'shape') {
+          /* A rule is a shape half a point tall, which is about half a pixel of
+             target — you cannot click it, and a template that draws its rules as
+             real objects draws a lot of them. So anything under HIT_MIN gets a
+             transparent pad around it: the rule stays exactly as thin as it was
+             drawn, and the thing you aim at is a reasonable size. The pad sits
+             behind the fill, so it never changes what you see. */
+          const thin = el.h * geo.h / 100 < HIT_MIN || el.w * geo.w / 100 < HIT_MIN;
           return (
             <div key={el.id} data-cover-el={el.id} data-cover-selected={selected ? "true" : undefined} {...coverElKeyProps(el)} style={{ ...boxStyle, cursor: el.locked ? 'default' : 'grab' }} onPointerDown={(e) => beginDrag(el, e)}>
+              {thin && <div aria-hidden style={{ position: 'absolute', inset: -HIT_PAD, background: 'transparent' }} />}
               <ShapeFill el={el} />
               {selected && !el.locked && <ResizeHandles onResizeStart={(corner, e) => beginResize(el, corner, e)} />}
             </div>
@@ -12888,30 +14833,70 @@ function CoverCanvasEditable({
         // exactly the point the theme placed it, so only the surrounding chrome
         // tightens and the text itself never visibly shifts.
         const autoHeight = el.heightAuto !== false;
-        const textBoxStyle: React.CSSProperties = autoHeight
-          ? { ...boxStyle, top: `${el.y + el.h / 2}%`, height: 'auto', transform: 'translateY(-50%)' }
-          : boxStyle;
+        /* An anchored box grows DOWNWARD from the y it was given — see
+           CoverTextElement.anchor. The centred default below moves the words when
+           the box or the copy changes size, which is right for a cover and wrong
+           for a page drawn to a measurement. */
+        const anchored = el.anchor === 'top' || el.anchor === 'cap';
+        const textBoxStyle: React.CSSProperties = anchored
+          ? { ...boxStyle, height: 'auto' }
+          : autoHeight
+            ? { ...boxStyle, top: `${el.y + el.h / 2}%`, height: 'auto', transform: 'translateY(-50%)' }
+            : boxStyle;
+        const editingText = textEditingId === el.id;
         return (
           <div
             key={el.id} data-cover-el={el.id} data-cover-selected={selected ? "true" : undefined}
-            style={{ ...textBoxStyle, display: 'flex', alignItems: 'center', justifyContent: el.textAlign === 'left' ? 'flex-start' : el.textAlign === 'right' ? 'flex-end' : 'center' }}
+            data-cover-text-editing={editingText ? 'true' : undefined}
+            style={{ ...textBoxStyle, display: 'flex', alignItems: anchored ? 'flex-start' : 'center', justifyContent: el.textAlign === 'left' ? 'flex-start' : el.textAlign === 'right' ? 'flex-end' : 'center' }}
           >
-            {selected && (
+            {/* The container step. A text box on this canvas is an object like
+                any other — it has a position, a size and an inspector — but it
+                was the only one you could not simply grab: the editable surface
+                took the first click, dropped a caret in, and moving the box
+                needed a blue "⠿ Move" chip that existed solely to give the drag
+                somewhere to live.
+
+                So: first click selects the box, second click enters the words.
+                That is the same drill-in a photo grid and a column stack already
+                use one level down, and what Figma, Canva and every other canvas
+                does with a text frame. A photo deliberately does NOT gain a
+                second level — its "inside" is the crop, which already has its
+                own way in (double-click) — so this makes text behave like a
+                photo rather than giving photos something new.
+
+                A shield rather than toggling `contentEditable`: ProseMirror
+                re-reads its own DOM when editability changes, and the point here
+                is only that the first click must not reach it. */}
+            {!editingText && (
               <div
-                onPointerDown={(e) => beginDrag(el, e)}
-                className="flex items-center justify-center"
-                style={{ position: 'absolute', top: -22, left: 0, cursor: 'grab', background: BLUE, color: '#fff', ...ns, fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 5, whiteSpace: 'nowrap' }}
-              >
-                ⠿ Move
-              </div>
+                aria-hidden
+                onPointerDown={(e) => {
+                  if (!selected) { beginDrag(el, e); return; }
+                  /* Already selected, so this is the second click: step inside.
+                     The pointer position is kept so the caret lands where it was
+                     aimed rather than at the start of the field — the shield is
+                     what swallowed the click that would have placed it. */
+                  e.stopPropagation();
+                  if (el.locked) return;
+                  enterText(el.id, e.clientX, e.clientY);
+                }}
+                style={{ position: 'absolute', inset: 0, zIndex: 2, cursor: el.locked ? 'default' : selected ? 'text' : 'grab' }}
+              />
             )}
             <SimpleFieldEditor
               fieldKey={fieldKey}
-              initialHtml={fieldContent[fieldKey] ?? DEFAULT_COVER_TEXT[el.role]}
+              initialHtml={fieldContent[fieldKey] ?? el.defaultHtml ?? DEFAULT_COVER_TEXT[el.role]}
+              className={`book-no-word-break${el.anchor === 'cap' ? ' cp-trim' : ''}`}
               style={{
                 width: '100%', fontFamily: el.fontFamily, fontSize: el.fontSize, color: el.color,
                 fontWeight: el.fontWeight, fontStyle: el.fontStyle, textAlign: el.textAlign ?? 'center',
-                letterSpacing: el.letterSpacing, lineHeight: el.lineHeight, textTransform: el.textTransform, padding: '2px 4px',
+                letterSpacing: el.letterSpacing, lineHeight: el.lineHeight, textTransform: el.textTransform,
+                /* The 2x4 breathing room a cover's text carries for its caret is
+                   4px of horizontal drift against the same element in Preview and
+                   in the export, which nobody notices on a cover and is exactly
+                   the kind of thing a page drawn to a measurement is for. */
+                padding: anchored ? 0 : `2px ${COVER_TEXT_PAD_X}px`,
               }}
               onSelection={onSelection}
               onEditorFocus={onEditorFocus}
@@ -12943,8 +14928,9 @@ function CoverCanvasEditable({
         />
       )}
 
-      <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="header" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
-      <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="footer" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />
+      {children}
+      {!bare && <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="header" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />}
+      {!bare && <PageNumberChip settings={pageNumbers} index={pageNumberIndex} edge="footer" selected={selection.kind === 'pageNumber'} onSelect={() => onSelection({ kind: 'pageNumber' })} />}
       {selectedId && !overlayOpen && (() => {
         const selectedEl = elements.find((e) => e.id === selectedId);
         return (
@@ -12968,6 +14954,671 @@ function CoverCanvasEditable({
     </div>
   );
 }
+
+/* ── Career Pathways page bodies ─────────────────────────────────────────────
+   The editable half of the template. Each one is written ONCE and rendered on
+   both surfaces that draw a page — the live canvas and the read-only Preview —
+   by taking how a text field is drawn as an argument (`field`). Without that
+   the two surfaces drift: that is exactly what happened to the TOC and the
+   author page, which already describe the same page twice.
+
+   Position, type and colour come from templates/careerPathways.ts; the chrome
+   around them from templates/careerPathwaysChrome.tsx. Nothing is restated. */
+/* The one thing the template's text needs that a style object can't say: list
+   markers. Scoped to the template's own classes so no other page is touched. */
+function CpStyles() {
+  return (
+    <style jsx global>{`
+      /* The design positions type by its CAP TOP, not by the top of its line
+         box — every heading in the file carries Figma's text-box trim. Without
+         it every block sits a few points low, and the gap grows with the size:
+         the 36pt contents heading landed 5pt down, the 32pt chapter title 7pt.
+         Supported in Chrome from 133; where it isn't, the type lands where it
+         always did rather than anywhere worse. Both spellings, because the
+         shorthand is the newer one and the longhands shipped first. */
+      .cp-trim {
+        text-box-trim: trim-both;
+        text-box-edge: cap alphabetic;
+        text-box: trim-both cap alphabetic;
+      }
+      /* The same trim, for a block whose own lines belong to its children — a
+         list, or the contents page's column of folios. Trimming the container
+         does nothing there (it has no line boxes of its own), and trimming every
+         child would eat the leading the rhythm is built on. So only the first
+         line is trimmed: the block starts on its cap height and everything below
+         it keeps its 32pt step. */
+      .cp-trim-top > ol > li:first-child,
+      .cp-trim-top > div:first-child {
+        text-box-trim: trim-start;
+        text-box-edge: cap alphabetic;
+        text-box: trim-start cap alphabetic;
+      }
+      .book-toc-entries.cp-toc-entries > ol { list-style: none; margin: 0; padding: 0; counter-reset: cp-toc; }
+      /* No per-row rule and no padding — this design separates entries by
+         leading alone, on a 32pt grid the folio column is aligned to. Qualified
+         with .book-toc-entries to outrank SimplePageBlock's own TOC rules, which
+         are an exact specificity tie and would otherwise win on order.
+
+         The number is a counter on the row rather than a real list marker, and
+         the row is a block rather than a list-item, for one reason: Chrome will
+         not trim the line box of a display:list-item, so with real markers the
+         whole list sat 10pt below where the design puts it. The counter draws the
+         same "1." … "10." right-aligned in the same 24pt gutter. */
+      .book-toc-entries.cp-toc-entries > ol > li {
+        display: block; padding: 0; border-bottom: none;
+        margin-inline-start: var(--cp-li, 24px); counter-increment: cp-toc; position: relative;
+      }
+      .book-toc-entries.cp-toc-entries > ol > li::before {
+        content: counter(cp-toc) '.';
+        position: absolute; right: calc(100% + var(--cp-li-gap, 6px)); top: 0;
+        white-space: nowrap;
+      }
+      /* The first row's TEXT is trimmed to its cap (see .cp-trim-top) but its
+         number is a separate absolutely-positioned box, so without the same trim
+         the number keeps its half-leading and sits a line's worth low — only on
+         row one, which is exactly what it looked like. */
+      .cp-trim-top > ol > li:first-child::before {
+        text-box-trim: trim-start;
+        text-box-edge: cap alphabetic;
+        text-box: trim-start cap alphabetic;
+      }
+      .book-toc-entries.cp-toc-entries > ol > li > ul { display: none; }
+      .cp-body p { margin: 0; }
+      .cp-body p:empty::after { content: '\\200b'; }
+    `}</style>
+  );
+}
+
+interface CpFieldArgs {
+  fieldKey: string;
+  initialHtml: string;
+  placeholder?: string;
+  className?: string;
+  style: React.CSSProperties;
+}
+type CpRenderField = (args: CpFieldArgs) => React.ReactNode;
+
+/** Figma points → canvas px on this page. */
+const cpK = (geo: PageGeometry) => geo.w / 595;
+/** A Figma-unit text block, positioned and set. */
+function cpText(geo: PageGeometry, x: number, y: number, w: number, t: { size: number; weight: number; lineHeight: string; letterSpacing?: string }, extra?: React.CSSProperties): React.CSSProperties {
+  const s = cpK(geo);
+  return {
+    position: 'absolute', left: `${cpX(x)}%`, top: `${cpY(y)}%`, width: `${cpX(w)}%`,
+    fontSize: t.size * s, fontWeight: t.weight,
+    lineHeight: t.lineHeight.endsWith('px') ? `${parseFloat(t.lineHeight) * s}px` : t.lineHeight,
+    letterSpacing: t.letterSpacing ? `${parseFloat(t.letterSpacing) * s}px` : undefined,
+    margin: 0,
+    ...extra,
+  };
+}
+
+/** The sheet every Career Pathways page is drawn on: one page box, nothing
+    inside it offset by a margin, because the design places to the trim edge. */
+function CpSheet({ geo, bg, onClick, children }: { geo: PageGeometry; bg: string; onClick?: (e: React.MouseEvent) => void; children: React.ReactNode }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        position: 'relative', background: bg, border: `1px solid ${BORDER}`, borderRadius: 3,
+        boxShadow: PAGE_SHADOW, width: '100%', minHeight: geo.h, height: geo.h, overflow: 'hidden',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/* The generated half of the contents page: the chapter list and the column of
+   folios beside it. Everything else on that page — the dash field, the heading,
+   the rule — is a real object (see cpPageElements); these two are not, because
+   they are read off the book's own chapters rather than placed by anyone. The
+   folios especially: they are where each chapter actually starts, so typing over
+   them could only ever make them wrong.
+
+   The seed carries no sub-headings on this design: the folio column is one block
+   on a fixed 32pt grid, and a sub-entry would push every number after it off its
+   own row. */
+/* The list is drawn here rather than as seeded objects, because its rows ARE the
+   book's chapters. So the design's two variables have to reach it: where the list
+   starts, and whether it is sitting on the dark ground or on a paper panel — on
+   the panel it has to flip to ink, or it is white text on white. */
+function CpTocEntries({ page, geo, pages, fieldContent, pageNumbers = DEFAULT_PAGE_NUMBERS, field }: {
+  page: SimplePage; geo: PageGeometry; pages: PageMeta[];
+  fieldContent: Record<string, string>; pageNumbers?: PageNumberSettings; field: CpRenderField;
+}) {
+  const onPanel = page.tocLayout === 'toc-panel' || page.tocLayout === 'toc-stack';
+  const listY = onPanel ? 250 : 274;
+  const listInk = onPanel ? CP_COLOR.ink : 'rgba(255,255,255,0.8)';
+  const folioInk = onPanel ? CP_COLOR.ink : CP_COLOR.paper;
+  const chapters = chapterStarts(pages, fieldContent);
+  const contentPages = pages.filter((p) => !(pageNumbers.skipCoverAndBackMatter && (p.type === 'cover' || p.type === 'backmatter')));
+  const folioOf = (id: string) => {
+    const i = contentPages.findIndex((p) => p.id === id);
+    return i < 0 ? '' : String(pageNumbers.startAt + i).padStart(2, '0');
+  };
+  const seedHtml = `<ol>${chapters.map((c) => {
+    const heading = stripTags(fieldContent[`${c.id}::title`] ?? c.titleHtml) || c.title;
+    return `<li>${escapeHtml(heading)}</li>`;
+  }).join('')}</ol>`;
+  const s = cpK(geo);
+  return (
+    <>
+      {field({
+        fieldKey: `${page.id}::entries`,
+        initialHtml: seedHtml,
+        className: 'book-toc-entries cp-toc-entries cp-trim-top',
+        style: {
+          ...cpText(geo, CP_METRIC.margin, listY, 453, CP_TYPE.tocEntry),
+          fontFamily: CP_FONT.heading, color: listInk, textTransform: 'capitalize',
+          ['--cp-li' as string]: `${24 * s}px`,
+          ['--cp-li-gap' as string]: `${9 * s}px`,
+        } as React.CSSProperties,
+      })}
+      <div aria-hidden className="cp-trim-top" style={{
+        ...cpText(geo, 513.5, listY, 60, CP_TYPE.tocFolio),
+        fontFamily: CP_FONT.heading, color: folioInk, textAlign: 'center',
+      }}>
+        {/* No hand-set row height. Both columns carry `lineHeight: '32px'` from
+            their type spec, so letting each number occupy one line of its own
+            block keeps the folio on the entry's baseline — a fixed `32 * s` box
+            was a second, unscaled grid, and the two drifted a few points further
+            apart with every row. */}
+        {chapters.map((c) => <div key={c.id}>{folioOf(c.id)}</div>)}
+      </div>
+    </>
+  );
+}
+
+/** Which designed page this is, or null for an ordinary one. A call-to-action
+    and a workbook sheet only exist under a template that ships them, so they are
+    always designed; a contents page and a back page exist in every book and are
+    only designed while such a template is on. */
+function cpPageKindOf(page: SimplePage, designed: boolean): CpPageKind | null {
+  /* The four layout fields are plain strings on SimplePage — every page design
+     names its own, so the field cannot be one template's union (see
+     SimplePage.imageLayout). Which makes the DESIGN the thing that validates
+     them: a book saved under Lovable and reopened under Career Pathways has an
+     `imageLayout: 'img-rainbow'` that means nothing here, and falling through
+     to it would hand an unknown kind to a switch with no default. */
+  const pick = <T extends string>(v: string | undefined, allowed: readonly T[], fallback: T): T =>
+    (allowed as readonly string[]).includes(v ?? '') ? (v as T) : fallback;
+  if (page.type === 'cta') return 'cta';
+  if (page.type === 'image') return pick(page.imageLayout, ['img-card', 'img-bleed'] as const, 'img-card');
+  if (page.type === 'workbook') return `wb-${page.workbook ?? 'summary'}` as CpPageKind;
+  if (!designed) return null;
+  if (page.type === 'toc') return pick(page.tocLayout, ['toc', 'toc-panel', 'toc-stack'] as const, 'toc');
+  if (page.type === 'backmatter') return pick(page.backLayout, ['back', 'back-right', 'back-photo'] as const, 'back');
+  return null;
+}
+
+/* ── Lovable — page furniture that has to be React ───────────────────────────
+   Everything the template draws is an OBJECT (see templates/lovableElements),
+   with two exceptions, both the same exception Career Pathways has: the running
+   sheets' furniture repeats per sheet and so cannot be a placed object, and the
+   contents list is generated from the book's own chapters. */
+
+function LvStyles() {
+  return (
+    <style jsx global>{`
+      /* Figma's text-box trim, which is how this design positions a heading —
+         by its cap top, not by the top of its line box. Same rule and same
+         caveat as .cp-trim: Chrome 133+, and where it is missing the type lands
+         where it always did rather than anywhere worse. */
+      .lv-trim { text-box-trim: trim-both; text-box-edge: cap alphabetic; text-box: trim-both cap alphabetic; }
+      .lv-trim-top > ol > li:first-child,
+      .lv-trim-top > div:first-child {
+        text-box-trim: trim-start; text-box-edge: cap alphabetic; text-box: trim-start cap alphabetic;
+      }
+      /* The contents list. Numbers are a counter on a block row rather than a
+         real list marker, for the reason the cp- rules give at length: Chrome
+         refuses to trim the line box of a display:list-item, so with real
+         markers the whole list sits a line low. */
+      .book-toc-entries.lv-toc-entries > ol { list-style: none; margin: 0; padding: 0; counter-reset: lv-toc; }
+      .book-toc-entries.lv-toc-entries > ol > li {
+        display: block; padding: 0; border-bottom: none;
+        margin-inline-start: var(--lv-li, 24px); counter-increment: lv-toc; position: relative;
+      }
+      .book-toc-entries.lv-toc-entries > ol > li::before {
+        content: counter(lv-toc) '.';
+        position: absolute; right: calc(100% + var(--lv-li-gap, 8px)); top: 0; white-space: nowrap;
+      }
+      .lv-trim-top > ol > li:first-child::before {
+        text-box-trim: trim-start; text-box-edge: cap alphabetic; text-box: trim-start cap alphabetic;
+      }
+      .book-toc-entries.lv-toc-entries > ol > li > ul { display: none; }
+      .lv-body p { margin: 0; }
+      .lv-body p:empty::after { content: '\\200b'; }
+      ${LV_QUOTE_CSS}
+    `}</style>
+  );
+}
+
+/** Where each contents design sets its list, in Figma points. The entries and
+    the folio column share a top and a leading, which is what keeps a page
+    number on its own row's baseline.
+
+    `floor` is where the list has to stop. On the paper design that is the top of
+    the three blocks that run off the foot, less a gap — those blocks are objects
+    on the page, not a margin the text knows about, so a book with enough
+    chapters set the last entries straight through them. The other two designs
+    have nothing at the foot and stop at the trim. */
+const LV_TOC_LIST: Record<string, { x: number; y: number; w: number; folioX: number; ink: string; floor: number }> = {
+  /* 645 is `lv-toc-b1`, the first block off the foot; 32 is a line of clearance
+     so the list reads as ending above the motif rather than against it. */
+  toc: { x: 78, y: 317, w: 391, folioX: 477, ink: LV_COLOR.page, floor: 645 - 32 },
+  'toc-dark': { x: 73, y: 333, w: 391, folioX: 477, ink: LV_COLOR.paper, floor: LV_H - 56 },
+  'toc-bleed': { x: 73, y: 325, w: 391, folioX: 477, ink: LV_COLOR.page, floor: LV_H - 56 },
+};
+
+/** The tightest leading a contents list is set at, in Figma points — 1.5x the
+    16pt entry. Past that the rows stop reading as a list, so a book long enough
+    to need it is one the author has to split or set on a second contents page;
+    squeezing further would only trade one unreadable page for another. */
+const LV_TOC_LEAD_MIN = 24;
+
+/** The leading a contents list of `rows` entries is set at: the design's own 32pt
+    until that many rows would pass the floor, then whatever fits, down to the
+    minimum. Both columns take it, so they stay on one grid. */
+function lvTocLead(rows: number, set: { y: number; floor: number }, natural: number): number {
+  if (rows < 1) return natural;
+  return Math.max(LV_TOC_LEAD_MIN, Math.min(natural, (set.floor - set.y) / rows));
+}
+
+function LvTocEntries({ page, geo, pages, fieldContent, pageNumbers = DEFAULT_PAGE_NUMBERS, field }: {
+  page: SimplePage; geo: PageGeometry; pages: PageMeta[];
+  fieldContent: Record<string, string>; pageNumbers?: PageNumberSettings; field: CpRenderField;
+}) {
+  const set = LV_TOC_LIST[page.tocLayout ?? 'toc'] ?? LV_TOC_LIST.toc;
+  const chapters = chapterStarts(pages, fieldContent);
+  const contentPages = pages.filter((p) => !(pageNumbers.skipCoverAndBackMatter && (p.type === 'cover' || p.type === 'backmatter')));
+  const folioOf = (id: string) => {
+    const i = contentPages.findIndex((p) => p.id === id);
+    return i < 0 ? '' : String(pageNumbers.startAt + i).padStart(2, '0');
+  };
+  const seedHtml = `<ol>${chapters.map((c) => {
+    const heading = stripTags(fieldContent[`${c.id}::title`] ?? c.titleHtml) || c.title;
+    return `<li>${escapeHtml(heading)}</li>`;
+  }).join('')}</ol>`;
+  const s = geo.w / LV_W;
+  /* One leading for both columns, sized to the room the design leaves the list.
+     A contents page cannot repaginate — it is one sheet — so a long book either
+     fits or sets its last chapters over the artwork at the foot. */
+  const lead = lvTocLead(chapters.length, set, parseFloat(LV_TYPE.tocEntry.lineHeight));
+  const box = (x: number, w: number, t: { size: number; weight: number; lineHeight: string; letterSpacing?: string }): React.CSSProperties => ({
+    position: 'absolute', left: `${lvX(x)}%`, top: `${lvY(set.y)}%`, width: `${lvX(w)}%`,
+    fontSize: t.size * s, fontWeight: t.weight,
+    lineHeight: t.lineHeight.endsWith('px') ? `${parseFloat(t.lineHeight) * s}px` : t.lineHeight,
+    letterSpacing: t.letterSpacing ? `${parseFloat(t.letterSpacing) * s}px` : undefined,
+  });
+  return (
+    <>
+      {field({
+        fieldKey: `${page.id}::entries`,
+        initialHtml: seedHtml,
+        className: 'book-toc-entries lv-toc-entries lv-trim-top',
+        style: {
+          ...box(set.x, set.w, { ...LV_TYPE.tocEntry, lineHeight: `${lead}px` }),
+          fontFamily: LV_FONT.body, color: set.ink, textTransform: 'capitalize',
+          ['--lv-li' as string]: `${24 * s}px`,
+          ['--lv-li-gap' as string]: `${8 * s}px`,
+        } as React.CSSProperties,
+      })}
+      {/* The folio column is set in the HEADING face and bold, which is the one
+          place the two columns differ — Max sets the number heavier than the
+          chapter it belongs to. No hand-set row height: both columns carry the
+          same 32pt leading, so one line per number keeps them on a shared grid. */}
+      <div aria-hidden className="lv-trim-top" style={{
+        ...box(set.folioX, 60, { ...LV_TYPE.tocFolio, lineHeight: `${lead}px` }),
+        fontFamily: LV_FONT.heading, color: set.ink, textAlign: 'center',
+      }}>
+        {chapters.map((c) => <div key={c.id}>{folioOf(c.id)}</div>)}
+      </div>
+    </>
+  );
+}
+
+/** Which designed page a Lovable page is. Mirrors cpPageKindOf exactly — same
+    question, different vocabulary — and is what validates the plain-string
+    layout fields on SimplePage. */
+function lvPageKindOf(page: SimplePage, designed: boolean): LvPageKind | null {
+  const pick = <T extends string>(v: string | undefined, allowed: readonly T[], fallback: T): T =>
+    (allowed as readonly string[]).includes(v ?? '') ? (v as T) : fallback;
+  if (page.type === 'cta') return pick(page.imageLayout, ['cta', 'cta-violet'] as const, 'cta');
+  if (page.type === 'image') return pick(page.imageLayout, ['img-card', 'img-rainbow'] as const, 'img-card');
+  if (page.type === 'workbook') return `wb-${page.workbook ?? 'summary'}` as LvPageKind;
+  if (!designed) return null;
+  if (page.type === 'toc') return pick(page.tocLayout, ['toc', 'toc-dark', 'toc-bleed'] as const, 'toc');
+  if (page.type === 'backmatter') return pick(page.backLayout, ['back', 'back-card', 'back-blocks', 'back-band'] as const, 'back');
+  return null;
+}
+
+/** The stock a Lovable page falls back to, in the shape its builders want. */
+const LV_STOCK: LvStock = { photo: CP_OPENER_STOCK[0], portrait: CP_BACK_STOCK };
+
+function lvSeedPage(page: SimplePage, kind: LvPageKind): SimplePage {
+  const authored = (page.coverElements ?? []).filter((el) => el.origin === 'author');
+  return { ...page, bg: LV_PAGE_BG[kind], coverElements: [...lvPageElements(kind, LV_STOCK), ...authored] };
+}
+
+/* ── the page-design registry ────────────────────────────────────────────────
+   A template that designs whole pages has to answer the same dozen questions
+   wherever the editor meets it: what its running text is set at, what objects a
+   page of each kind carries, which designs each kind can wear, what a chapter
+   opener looks like, and what furniture repeats per sheet. Career Pathways was
+   the only one, so the editor asked it by name — `theme.pageDesign ===
+   'career-pathways'` at sixteen sites, each reaching straight into CP_*.
+
+   With a second template that shape doesn't hold: either every one of those
+   sixteen grows a second arm, or the question gets asked once of whichever
+   design is on. This is that. Each entry answers for one template; the editor
+   only ever holds a `PageDesign`.
+
+   Nothing moved into here. The cp* builders keep their names and their bodies;
+   the lv* ones live in templates/lovableElements.ts. This is the switchboard. */
+type PageDesignId = NonNullable<ThemeDef['pageDesign']>;
+
+/** One pickable design within a kind. */
+interface DesignOption { id: string; label: string }
+
+/** A running-page style, and what picking it does to the page's CONTENT. Most
+    only change the furniture, so `seed` is absent; a two-column design has to
+    move the body into columns, which is a content edit and belongs to the
+    design rather than to the panel that offers it. */
+interface SheetStyleDef {
+  id: string; label: string;
+  /** How many columns this style sets its running text in. Absent is one.
+      It is a LAYOUT fact, not a rewrite of the body: the flow itself is set in
+      columns (see columnMetrics and the strip the chapter canvas draws), so the
+      author's words are never moved to make it true. */
+  cols?: number;
+  /** Rewrites the page's body when this style is picked. Gets what is there.
+      No design uses it any more — it existed so a two-column style could pour
+      the body into a two-cell table, which is what columns replaced. */
+  seed?: (html: string) => string;
+}
+
+/* `h` is the room the title has before it runs into whatever the design put
+   below it — the plate it sits on, the band it sits in, the standfirst under it.
+   A chapter title is whatever the author called the chapter, so the designed
+   size is a starting point, not a promise: "Section 3: The Voice Transfer
+   Method" takes four lines where "Beginnings" takes one, and without a stated
+   budget the fourth line simply drew over the artwork. Same rule the cover's
+   text uses (see fitCoverElements) — keep the designed size when it fits, step
+   down only as far as the overflow requires. */
+interface OpenerTitleBox { x: number; y: number; w: number; h: number; color: string; pad: number; size: number; weight: number; lineHeight: string; font: string }
+
+/* A chapter opener's title at the size it actually fits in — the rendered size
+   only, exactly as fitCoverElements works: the design keeps its own number and
+   a short chapter title still sets at it. Measured in the geometry being drawn,
+   so a thumbnail and a full page agree. Both renderers call this; the canvas and
+   the read-only Preview disagreeing about a title's size is the bug class
+   fitCoverElements already had to be taught to avoid. */
+function fitOpenerTitleSize(spec: OpenerTitleBox, design: PageDesign, geo: PageGeometry, text: string): number {
+  const size = spec.size * (geo.w / design.w);
+  if (!text.trim() || !size) return size;
+  const boxW = ((spec.w - spec.pad * 2) / design.w) * geo.w;
+  const boxH = (spec.h / design.h) * geo.h;
+  return cpFitSize(text, boxW, boxH, size, spec.lineHeight, {
+    weight: spec.weight, family: spec.font,
+    tracking: undefined,
+    transform: undefined,
+    // Every opener title in both templates is drawn with .cp-trim / .lv-trim.
+    trimmed: true,
+  });
+}
+
+interface PageDesign {
+  id: PageDesignId;
+  /** The sheet the design was drawn on, in its own points — every geometry
+      below is a fraction of these two numbers. */
+  w: number; h: number;
+  /** Running text, in design points: the editor scales by geo.w / design.w. */
+  prose: { size: number; lead: number; gap: number; colGap: number };
+  /** The template's own rules — the cap-top trim, its list styling, its quote. */
+  Styles: () => React.ReactElement;
+
+  /* pages */
+  pageKindOf: (page: SimplePage, designed: boolean) => string | null;
+  seedPage: (page: SimplePage, kind: string) => SimplePage;
+  TocEntries: (p: {
+    page: SimplePage; geo: PageGeometry; pages: PageMeta[];
+    fieldContent: Record<string, string>; pageNumbers?: PageNumberSettings; field: CpRenderField;
+  }) => React.ReactNode;
+
+  /* covers */
+  coverElements: (kind: string, title: string, subtitle: string, author: string) => CoverElement[];
+  coverBg: (kind: string, themeCoverBg: string | undefined) => string | undefined;
+
+  /* chapter openers */
+  openerElements: (chapterNumber: number, index: number | undefined, photo: string | undefined) => CoverElement[];
+  openerTitle: (chapterNumber: number, index: number | undefined) => OpenerTitleBox;
+  /** Whether this opener design carries a photograph the author can swap. */
+  openerHasPhoto: (chapterNumber: number, index: number | undefined) => boolean;
+  /** The id of the opener element whose text IS the chapter number. */
+  numeralId: string;
+  /** What that element should read for a given chapter. */
+  numeralHtml: (chapterNumber: number) => string;
+
+  /* running sheets */
+  sheetStyles: SheetStyleDef[];
+  defaultSheet: string;
+  ContentSheet: (p: { geo: PageGeometry; variant: string; photo?: string; sheetIndex: number; textSheet: number }) => React.ReactNode;
+  /** Room this style takes off the FOOT of every sheet, in design points. */
+  footReserve: (variant: string) => number;
+  /** Where the flow has to start on the sheet that carries text, in design
+      points from the head. 0 means "at the top margin". */
+  headTextTop: (variant: string) => number;
+  /** Whether this style draws a photograph the author can click and replace. */
+  sheetHasPhoto: (variant: string) => boolean;
+  /** Where the folio sits, in design points — the TEXT BOX's top-left, not the
+      chip's. The page number is the editor's own tool with its own inspector,
+      so a design says where it goes instead of drawing a number you could see
+      and not click. Null on a style that carries no folio at all. */
+  folioAt: (variant: string) => { x: number; y: number; size: number } | null;
+
+  /* what each kind can wear, and what it wears by default */
+  layouts: { cover: DesignOption[]; toc: DesignOption[]; back: DesignOption[]; image: DesignOption[]; cta: DesignOption[]; worksheet: DesignOption[] };
+  defaults: { cover: string; toc: string; back: string; image: string; cta: string };
+  openerCount: number;
+
+  /* the add-a-page gallery */
+  addPageOptions: { id: AddPageKind; label: string; hint: string; once?: boolean; at?: 'start' | 'after-cover' | 'end' }[];
+}
+
+const PAGE_DESIGNS: Record<PageDesignId, PageDesign> = {
+  'career-pathways': {
+    id: 'career-pathways',
+    w: CP_W, h: CP_H,
+    prose: {
+      size: CP_TYPE.body.size,
+      lead: parseFloat(CP_TYPE.body.lineHeight) / CP_TYPE.body.size,
+      gap: parseFloat(CP_TYPE.body.lineHeight),
+      colGap: CP_METRIC.columnGap,
+    },
+    Styles: CpStyles,
+    pageKindOf: cpPageKindOf,
+    seedPage: (page, kind) => cpSeedPage(page, kind as CpPageKind),
+    TocEntries: (p) => <CpTocEntries {...p} />,
+    coverElements: (kind, t, s, a) => cpCoverElements(kind as CpCoverKind, t, s, a),
+    coverBg: (kind, themeBg) => cpCoverBg(kind as CpCoverKind, themeBg),
+    /* `photo` is passed through UNRESOLVED. It used to default to CP_OPENER_STOCK
+       here, which looked harmless and wasn't: openers 1 and 3 are each drawn
+       around a specific photograph, and `cpOpenerElements` picks it when no
+       author image is set — a default applied one level up made that branch
+       unreachable, so both openers always drew the generic stock. A fallback
+       belongs where the design's own knowledge is, not in the adapter. */
+    openerElements: (n, index, photo) => cpOpenerElements(index != null ? index + 1 : n, photo),
+    openerTitle: (n, index) => {
+      const o = index != null ? CP_OPENERS[index % CP_OPENERS.length] : cpOpenerFor(n);
+      return {
+        x: o.title.x, y: o.title.y, w: o.title.w, color: o.title.color,
+        /* The plate where there is one — opener 4 sets its title on a 217x131
+           white plate, and the plate IS the box. Otherwise the band the title
+           sits in: on the other three the title opens a white (or black) field
+           that the artwork below starts at the foot of. */
+        h: o.title.plate
+          ? o.title.plate.h - (o.title.plate.pad ?? 0) * 2
+          : (o.band.y + o.band.h) - o.title.y,
+        pad: o.title.plate?.pad ?? 0,
+        size: CP_TYPE.chapterTitle.size, weight: CP_TYPE.chapterTitle.weight,
+        lineHeight: CP_TYPE.chapterTitle.lineHeight, font: CP_FONT.heading,
+      };
+    },
+    openerHasPhoto: (n, index) => !!(index != null ? CP_OPENERS[index % CP_OPENERS.length] : cpOpenerFor(n)).photo,
+    numeralId: 'cp-op-number',
+    numeralHtml: (n) => `<p>${Math.max(1, n)}</p>`,
+    /* Deliberately one column by default, even though five of Max's eight
+       content pages are two — confirmed with the user. The two-column designs
+       are an insert-time choice, not what a chapter falls back to. */
+    sheetStyles: CP_CONTENT_LAYOUTS.map((l) => ({ id: l.sheet, label: l.label })),
+    defaultSheet: 'plain',
+    ContentSheet: ({ geo, variant, photo, sheetIndex, textSheet }) => (
+      <CpContentSheet
+        page={{ w: geo.w, h: geo.h }}
+        variant={variant === 'band-head' && sheetIndex !== textSheet ? 'plain' : (variant as CpSheetVariant)}
+        photo={photo}
+      />
+    ),
+    footReserve: (v) => (v === 'photo-left' || v === 'photo-right'
+      ? CP_H - CP_METRIC.photoY
+      : v === 'band-foot' ? CP_H - CP_METRIC.bandFootTextBottom : 0),
+    headTextTop: (v) => (v === 'band-head' ? CP_METRIC.bandHeadTextTop : 0),
+    sheetHasPhoto: (v) => v === 'photo-left' || v === 'photo-right',
+    /* `folioY: 791` is the text box's TOP, not its baseline — 791 plus half the
+       16pt line box is 799, which is the foot rule at 800, so the rule IS the
+       folio's vertical centre and the two share one axis. */
+    folioAt: (v) => (v === 'bare' ? null : { x: CP_METRIC.folioX, y: CP_METRIC.folioY, size: CP_TYPE.folio.size }),
+    layouts: {
+      cover: CP_COVER_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+      toc: CP_TOC_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+      back: CP_BACK_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+      image: CP_IMAGE_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+      /* One CTA design, so the panel has nothing to offer and says so. */
+      cta: [],
+      worksheet: CP_WORKSHEET_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+    },
+    defaults: { cover: 'cover-band', toc: 'toc', back: 'back', image: 'img-card', cta: 'cta' },
+    openerCount: CP_OPENERS.length,
+    addPageOptions: CP_ADD_PAGE_OPTIONS,
+  },
+
+  lovable: {
+    id: 'lovable',
+    w: LV_W, h: LV_H,
+    prose: {
+      size: LV_TYPE.body.size,
+      lead: parseFloat(LV_TYPE.body.lineHeight) / LV_TYPE.body.size,
+      gap: parseFloat(LV_TYPE.body.lineHeight),
+      colGap: LV_METRIC.columnGap,
+    },
+    Styles: LvStyles,
+    pageKindOf: lvPageKindOf,
+    seedPage: (page, kind) => lvSeedPage(page, kind as LvPageKind),
+    TocEntries: (p) => <LvTocEntries {...p} />,
+    coverElements: (kind, t, s, a) => lvCoverElements(kind as LvCoverKind, t, s, a),
+    coverBg: (kind) => lvCoverBg(kind as LvCoverKind),
+    openerElements: (n, index) => lvOpenerElements(n, index),
+    openerTitle: (n, index) => {
+      const o = LV_OPENERS[(index ?? Math.max(1, n) - 1) % LV_OPENERS.length];
+      return {
+        x: o.title.x, y: o.title.y, w: o.title.w, color: o.title.color, pad: 0,
+        /* The standfirst where the opener has one (only the second does), and
+           the bottom margin otherwise — these titles sit on open ground with
+           nothing but the trim below them. */
+        h: (o.intro ? o.intro.y : LV_H - LV_METRIC.margin) - o.title.y,
+        size: LV_TYPE.display.size, weight: LV_TYPE.display.weight,
+        lineHeight: LV_TYPE.display.lineHeight, font: LV_FONT.heading,
+      };
+    },
+    /* No opener in this template carries a photograph — the motif does that
+       work. So the opener is never a drop target, and the editor must not
+       offer "click to replace this photo" on one. */
+    openerHasPhoto: () => false,
+    numeralId: 'lv-op-number',
+    numeralHtml: (n) => `<p>${String(Math.max(1, n)).padStart(2, '0')}</p>`,
+    sheetStyles: LV_CONTENT_LAYOUTS.map((l) => ({
+      id: l.sheet,
+      label: l.label,
+      /* A two-column design is not furniture, and it is not a rewrite of the
+         body either. It used to pour the page's copy into the first cell of a
+         two-cell table, which left the text in ONE column half the page wide,
+         the second cell empty, and the whole chapter inside a single layout
+         table the paginator refuses to split — so a long chapter ran off the
+         foot of its sheet. The flow sets in columns now. */
+      cols: l.cols,
+    })),
+    defaultSheet: 'plain',
+    ContentSheet: ({ variant, photo, sheetIndex, textSheet }) => (
+      <LvContentSheet
+        variant={variant === 'photo-head' && sheetIndex !== textSheet ? 'plain' : (variant as LvSheetVariant)}
+        photo={photo}
+      />
+    ),
+    footReserve: (v) => LV_FOOT_RESERVE[v as LvSheetVariant] ?? 0,
+    headTextTop: (v) => LV_HEAD_INSET[v as LvSheetVariant] ?? 0,
+    sheetHasPhoto: (v) => v === 'photo-head' || v === 'photo-side',
+    folioAt: (v) => (v === 'bare' ? null : { x: LV_METRIC.folioRightX, y: LV_METRIC.folioY, size: LV_TYPE.folio.size }),
+    layouts: {
+      cover: LV_COVER_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+      toc: LV_TOC_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+      back: LV_BACK_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+      image: LV_IMAGE_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+      cta: LV_CTA_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+      worksheet: LV_WORKSHEET_LAYOUTS.map((l) => ({ id: l.id, label: l.label })),
+    },
+    defaults: { cover: 'cover-outline', toc: 'toc', back: 'back', image: 'img-card', cta: 'cta' },
+    openerCount: LV_OPENERS.length,
+    addPageOptions: LV_ADD_PAGE_OPTIONS,
+  },
+};
+
+/* What "+ Add page" can insert. These are KINDS — what a page IS — and they are
+   the editor's vocabulary, not any one template's: both designs ship the same
+   nine, because the set is "the things a book has", and it is the DESIGNS each
+   kind can wear that differ. A template that genuinely had no worksheets would
+   leave that entry out of its own addPageOptions rather than need a new word. */
+type AddPageKind = CpAddPageKind;
+
+/** The page design a theme ships, or null when it designs nothing. This is the
+    one question the editor asks; everything after it goes through the record. */
+function pageDesignOf(theme: ThemeDef): PageDesign | null {
+  return theme.pageDesign ? PAGE_DESIGNS[theme.pageDesign] : null;
+}
+
+/** How many columns a chapter page sets its running text in.
+
+    Two templates ask the question differently and both answers are the page's,
+    not the book's: a designed template names a running-sheet style (Lovable's
+    "Two columns"), and a plain theme carries the older per-page `layout`. One
+    helper so the canvas, the paginator, Preview and the Pages panel cannot
+    disagree about how many columns a page has — they did, which is how the
+    panel came to show a tile that drew one column and a canvas that drew
+    something else again. */
+function sheetColumns(theme: ThemeDef, page: { layout?: LayoutId; sheetStyle?: string } | null | undefined): number {
+  if (!page) return 1;
+  const design = pageDesignOf(theme);
+  if (design) {
+    const variant = page.sheetStyle ?? design.defaultSheet;
+    return Math.max(1, design.sheetStyles.find((st) => st.id === variant)?.cols ?? 1);
+  }
+  return page.layout === 'two-column' ? 2 : 1;
+}
+
+/** The column grid a page's running text is set on, in canvas pixels.
+
+    `pitch` is what moves you one column to the right, and it is the whole
+    reason this is shared: a multi-column flow is laid out by the browser as a
+    STRIP of columns running left to right — column k sits at `k * pitch`, past
+    the end of the box and all — so every surface that shows one page of such a
+    flow is a window onto that strip at a known offset. Get the pitch wrong by a
+    pixel and page four is half a column out. */
+function columnMetrics(geo: PageGeometry, cols: number, gap: number) {
+  const width = geo.w - geo.padLeft - geo.padRight;
+  const colW = cols > 1 ? (width - gap * (cols - 1)) / cols : width;
+  return { width, cols, colW, gap, pitch: colW + gap };
+}
+
 
 function SimplePageBlock({
   page, theme, pages, chapterHtml, fieldContent, selection, onSelection, onEditorFocus, onContentChange, onSelectPage, onAddElement, onUpdateElement, onStartCrop, onReorderElement, onDuplicateElement, onDeleteElement, pageNumbers, pageNumberIndex, overlayOpen, onSetBackmatterPhoto, zoom, onRefuse,
@@ -13037,6 +15688,67 @@ function SimplePageBlock({
       .book-toc-entries > ol > li > ul > li { padding: 2px 0; font-size: 13px; color: ${theme.bodyColor}; }
     `}</style>
   );
+  /* A template that ships a whole page design draws its own pages. Everything
+     the reader can edit still goes through SimpleFieldEditor — `cpField` is that
+     editor, handed to the shared body so the live canvas and Preview lay the
+     page out from one description instead of two. */
+  const design = pageDesignOf(theme);
+  const cpField: CpRenderField = ({ fieldKey, initialHtml, placeholder, className, style }) => (
+    <SimpleFieldEditor
+      key={fieldKey}
+      fieldKey={fieldKey}
+      initialHtml={initialHtml}
+      placeholder={placeholder}
+      className={className}
+      style={style}
+      onSelection={onSelection}
+      onEditorFocus={onEditorFocus}
+      onContentChange={onContentChange}
+    />
+  );
+  const selectPageOnMargin = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) onSelection({ kind: 'page', pageId: page.id, viaCanvas: true });
+  };
+
+  /* Every page a template designs is a free canvas of real objects. One branch,
+     because they differ only in what they hold: the contents page also carries
+     a generated list, and nothing else does. */
+  const cpKind = design ? design.pageKindOf(page, true) : null;
+  if (cpKind && design) {
+    return (
+      <>
+        {focusRing}
+        <design.Styles />
+        <CoverCanvasEditable
+          page={page}
+          theme={theme}
+          fieldContent={fieldContent}
+          selection={selection}
+          onSelection={onSelection}
+          onEditorFocus={onEditorFocus}
+          onContentChange={onContentChange}
+          onSelectPage={onSelectPage}
+          onAddElement={onAddElement}
+          onUpdateElement={onUpdateElement}
+          onStartCrop={onStartCrop}
+          onReorderElement={onReorderElement}
+          onDuplicateElement={onDuplicateElement}
+          onDeleteElement={onDeleteElement}
+          pageNumbers={pageNumbers}
+          pageNumberIndex={pageNumberIndex}
+          overlayOpen={overlayOpen}
+          zoom={zoom}
+          onRefuse={onRefuse}
+        >
+          {/* Any of the contents designs — the list is the same rows whichever
+              ground they sit on. Testing for 'toc' alone meant the two panel
+              designs drew their furniture and no entries at all. */}
+          {cpKind.startsWith('toc') && design.TocEntries({ page, geo, pages, fieldContent, pageNumbers, field: cpField })}
+        </CoverCanvasEditable>
+      </>
+    );
+  }
+
   if (page.type === 'cover') {
     return (
       <>
@@ -13249,8 +15961,17 @@ function PageNumberStrip({ settings, index, edge }: { settings: PageNumberSettin
    rendering (the original approach) can't follow that, only a child can.
    Read-only surfaces (the plain/template PreviewOverlay) keep using
    PageNumberStrip above — there's nothing to click there. */
-function PageNumberChip({ settings, index, edge, selected, onSelect }: {
+/* `at` lets a template that draws its own page furniture put the folio where its
+   design puts it, in page pixels, instead of on the editor's generic 16/20 inset.
+   It exists because the two were set by unrelated systems: Career Pathways draws
+   the foot rule from its own metrics and the number came from here, so the rule
+   and the number it belongs to did not share an axis. The padding below is
+   subtracted so `at` addresses the TEXT BOX, not the button around it — a chip
+   positioned by its button edge is off by its own padding, which is exactly the
+   kind of few-pixel drift that reads as sloppy rather than broken. */
+function PageNumberChip({ settings, index, edge, selected, onSelect, at }: {
   settings: PageNumberSettings; index: number; edge: 'header' | 'footer'; selected: boolean; onSelect: () => void;
+  at?: { left: number; top: number; fontSize: number };
 }) {
   if (!settings.enabled || !settings.position.startsWith(edge) || index < 0) return null;
   const isLeft = settings.position.endsWith('left');
@@ -13261,10 +15982,15 @@ function PageNumberChip({ settings, index, edge, selected, onSelect }: {
       onClick={(e) => { e.stopPropagation(); onSelect(); }}
       className="cursor-pointer hover:bg-[#F2F7FF]"
       style={{
-        position: 'absolute', [edge === 'header' ? 'top' : 'bottom']: 16,
-        [isLeft ? 'left' : isRight ? 'right' : 'left']: isLeft || isRight ? 20 : '50%',
-        transform: isLeft || isRight ? undefined : 'translateX(-50%)',
-        ...ns, fontSize: settings.fontSize ?? 11.5, fontFamily: settings.fontFamily ?? ns.fontFamily, color: settings.color ?? SLATE,
+        position: 'absolute',
+        ...(at
+          ? { left: at.left - 7, top: at.top - 3 }
+          : {
+            [edge === 'header' ? 'top' : 'bottom']: 16,
+            [isLeft ? 'left' : isRight ? 'right' : 'left']: isLeft || isRight ? 20 : '50%',
+            transform: isLeft || isRight ? undefined : 'translateX(-50%)',
+          }),
+        ...ns, fontSize: at?.fontSize ?? settings.fontSize ?? 11.5, fontFamily: settings.fontFamily ?? ns.fontFamily, color: settings.color ?? SLATE,
         background: 'none', border: 'none', borderRadius: RADIUS_SM, padding: '3px 7px',
         ...ringStyle(selected), zIndex: 2,
         // The page sheet behind the flow is pointer-events:none so clicks reach
@@ -14292,6 +17018,17 @@ function PanelSectionBreak({ label, hint }: { label: string; hint?: string }) {
    because it's the biggest and the one people come here for; Interactive is last
    because it's the most specialised. */
 const ELEMENTS_CATEGORIES: { id: string; label: string; icon: string; group?: ElementsCategory; media?: MediaPickerKind }[] = [
+  /* Blocks leads: columns, photo grids and photo-and-text are what you reach for
+     to arrange a page, and the rest of this index is things you drop ONTO one.
+
+     They used to be a rail tab called "Layouts", which was the product's own word
+     for something else — in the real Designrr editor, and in Canva, BookWright,
+     Mixbook and the print cover editor, "Layout" is a whole-page arrangement you
+     apply to the page you are on, never a shelf of blocks you insert. Canva draws
+     this exact line: Layouts rearranges the page, and frames, grids and COLUMNS
+     live under Elements. So they live here, and "Layout" is left free for the
+     thing it means everywhere else. */
+  { id: 'blocks', label: 'Blocks', icon: ICONS.columns, group: 'Blocks' },
   { id: 'shapes', label: 'Shapes', icon: ICONS.shapesTab, group: 'Shapes' },
   // Next to Shapes, not inside it: neighbours in what they're for, and nothing
   // alike in how you pick one (see the IconBlock header).
@@ -14318,7 +17055,7 @@ const ELEMENTS_CATEGORIES: { id: string; label: string; icon: string; group?: El
    Interactive: "interactive" is an adjective with nothing after it, and a field
    saying "Search interactive" asks you to supply the noun yourself. */
 const ELEMENTS_SEARCH_LABELS: Record<ElementsCategory, string> = {
-  Shapes: 'shapes', Icons: 'icons', Charts: 'charts', Worksheets: 'worksheets',
+  Blocks: 'blocks', Shapes: 'shapes', Icons: 'icons', Charts: 'charts', Worksheets: 'worksheets',
   Forms: 'forms', Interactive: 'interactive blocks',
 };
 
@@ -14368,63 +17105,52 @@ function PanelBackRow({ title, backTo, onBack, aside }: { title: string; backTo:
   );
 }
 
-/* The collapse control, straddling a panel's inner border — the one visible way
-   to hand the panel's width back to the canvas, and the same control that brings
-   it back. Everything else in this editor that hides a panel is either invisible
-   (clicking the active rail tab, which nobody finds) or automatic (Wordgenie
-   taking the space, the narrow-viewport auto-hide), so a book this portrait had
-   no deliberate way to widen its own canvas.
+/* The collapse control: a 28px chip centred on a panel's inner border — the one
+   visible way to hand the panel's width back to the canvas, and the same control
+   that brings it back. Everything else in this editor that hides a panel is
+   either invisible (clicking the active rail tab) or automatic (Wordgenie taking
+   the space, the narrow-viewport auto-hide), so a book this portrait had no
+   deliberate way to widen its own canvas.
 
-   Surveyed before building: Canva puts an arrow on the panel edge, Google Slides
-   shipped its collapsible filmstrip as a triangle on the same edge, and Figma
-   UI2 had a per-panel collapse arrow — UI3 replaced it with one control that
-   folds both panels together and users are still filing complaints, which is why
-   these two are independent. PowerPoint's drag-the-divider-to-zero needs
-   resizable panels; ours are fixed-width.
+   This replaced a 96px moulded lobe whose outline continued the panel's 1px
+   border out around the handle and back, so the panel kept one unbroken outline.
+   That shape came from a survey that had gone stale — it cited Canva's edge
+   arrow and Figma UI2, and Canva no longer has one. A fresh pass over ~45 current
+   web editors found the tall edge lobe shipping in exactly one product
+   (GoDaddy's); everything else either moved the toggle into the chrome (Craft,
+   Framer, WRITER, ClickUp) or shrank the edge handle to a chip about this size
+   (Sweatpals, Semrush). At 96px a stuck-on shape reads as a growth, which is why
+   the lobe had to be moulded; at 28px it just reads as a button, so the chip can
+   carry ordinary chrome — white fill, the system border, a soft shadow.
 
-   On the border rather than in the panel header, because a control inside the
-   panel disappears with it and then the only way back is the rail — the trip
-   people don't make, since nothing tells them the panel went somewhere
-   recoverable. The arrow points the way the panel travels: out to collapse,
-   back at the canvas to return. */
-/* Geometry of the bump, in the SVG's own coordinates. The panel edge is x=0 and
-   the handle swells 16px out of it: 30px of fillet out, a 36px face, 30px back.
-   Each fillet's control points sit 15px in from both ends on the same axis the
-   edge runs on, which is what makes the curve leave the straight edge and arrive
-   at the face vertically — the S-bend that reads as moulded rather than stuck
-   on. Any other control placement gives a lobe with a visible corner where it
-   meets the panel. */
-const EDGE_HANDLE_W = 16;
-const EDGE_HANDLE_H = 96;
-/* Starts and ends at -0.5 rather than 0: that is the centre line of the panel's
-   own 1px border, so the bump's outline continues the border exactly instead of
-   meeting it half a pixel off and kinking. */
-const EDGE_HANDLE_OUTLINE = `M-0.5,0 C-0.5,15 ${EDGE_HANDLE_W},15 ${EDGE_HANDLE_W},30 V66 C${EDGE_HANDLE_W},81 -0.5,81 -0.5,${EDGE_HANDLE_H}`;
-/* The same silhouette closed back over the panel's border, 2px past it, so the
-   border line doesn't run straight across the mouth of the bump. */
-const EDGE_HANDLE_FILL = `M-2,0 H-0.5 C-0.5,15 ${EDGE_HANDLE_W},15 ${EDGE_HANDLE_W},30 V66 C${EDGE_HANDLE_W},81 -0.5,81 -0.5,${EDGE_HANDLE_H} H-2 Z`;
+   Mid-height rather than aligned to the panel's header row, because that row is
+   not one thing: the index shows a plain title, a drill-down shows a back arrow
+   and can carry an `aside` at its right end, and Properties has its own header.
+   A chip at header height would have to agree with all three. Mid-height agrees
+   with nothing, which is the point.
 
-/* The collapse control: a bump in the panel's own edge, not a tab laid on it.
-   Drawn as one silhouette that continues the panel's 1px border out around the
-   handle and back, so the panel keeps a single unbroken outline — which is the
-   difference between a control that belongs to the panel and a chip parked on
-   the seam. Everything else in this editor that hides a panel is either
-   invisible (clicking the active rail tab, which nobody finds) or automatic
-   (Wordgenie taking the space, the narrow-viewport auto-hide), so a book this
-   portrait had no deliberate way to widen its own canvas.
+   It straddles the border, half over the panel and half over the gutter. The
+   known cost is the panel's own scrollbar, which runs down the edge the inner
+   half covers, so a 28px band of that bar is not draggable; insetting it would
+   mean a reserved lane on all nine of the panel's scroll containers and 14px off
+   every panel's content width.
 
-   Surveyed before building: Canva puts an arrow on the panel edge, Google Slides
-   shipped its collapsible filmstrip as a triangle on the same edge, and Figma
-   UI2 had a per-panel collapse arrow — UI3 replaced it with one control that
-   folds both panels together and users are still filing complaints, which is why
-   these two are independent. PowerPoint's drag-the-divider-to-zero needs
-   resizable panels; ours are fixed-width.
+   It fades in on hover of the whole working area (see book-editor-body), not of
+   the seam — a reveal zone the width of the chip is a control you have to
+   already know about to find. It stays put for keyboard focus, and it is pinned
+   visible whenever its panel is folded, which is the one state where it is the
+   only visible way back.
 
-   On the border rather than in the panel header, because a control inside the
-   panel disappears with it and then the only way back is the rail — the trip
-   people don't make, since nothing tells them the panel went somewhere
-   recoverable. The arrow points the way the panel travels: out to collapse,
-   back at the canvas to return. */
+   Both panels keep their own, independently: Figma UI3 merged its two into one
+   control that folds both, and is still collecting complaints about it. The
+   arrow points the way the panel travels: out to collapse, back at the canvas to
+   return. */
+const EDGE_HANDLE_W = 28;
+/* How far the chip hangs past the panel's edge — half of it, so it sits centred
+   on the border. The canvas reserves exactly this much transparent border on its
+   own right edge so the right panel's chip never lands on the canvas scrollbar. */
+const EDGE_HANDLE_OVERHANG = EDGE_HANDLE_W / 2;
+
 function PanelEdgeToggle({ side, open, label, onToggle }: {
   side: 'left' | 'right';
   open: boolean;
@@ -14439,31 +17165,38 @@ function PanelEdgeToggle({ side, open, label, onToggle }: {
       aria-expanded={open}
       aria-label={title}
       title={title}
-      className={`book-edge-toggle book-edge-toggle--${side} flex items-center justify-center cursor-pointer`}
+      /* Pinned visible while the panel is folded. Hover-reveal is right for a
+         control sitting on a seam you aren't using, but a folded panel has no
+         other visible way back — the rail-tab gesture is the one nobody finds —
+         so the one state where the chip is load-bearing is the one where it
+         can't be allowed to hide. */
+      className={`book-edge-toggle book-edge-toggle--${side}${open ? '' : ' book-edge-toggle--pinned'} flex items-center justify-center cursor-pointer`}
     >
-      {/* Mirrored for the right panel rather than drawn twice — one path means
-          one shape to keep true. */}
-      <svg
-        className="book-edge-toggle__shape"
-        width={EDGE_HANDLE_W + 2}
-        height={EDGE_HANDLE_H}
-        viewBox={`-2 0 ${EDGE_HANDLE_W + 2} ${EDGE_HANDLE_H}`}
-        fill="none"
-        aria-hidden
-        style={side === 'right' ? { transform: 'scaleX(-1)' } : undefined}
-      >
-        <path className="book-edge-toggle__fill" d={EDGE_HANDLE_FILL} />
-        <path className="book-edge-toggle__line" d={EDGE_HANDLE_OUTLINE} strokeWidth="1" strokeLinecap="round" />
-      </svg>
       {/* One chevron that turns, not two that swap. The arrow points the way the
           panel travels, and rotating the same node through the flip is both the
           cheaper animation and the one that reads as the panel folding rather
           than as an icon being replaced. */}
+      {/* The 1px is optical, not geometric. The chevron's path is symmetric
+          about the viewBox centre, but its ink is not: both strokes run out to
+          the open side, so the mark measures centred and looks shoved that way.
+          The nudge is composed INTO the rotation rather than applied beside it,
+          so it moves toward the apex in both orientations — a `left` offset in
+          page space would push the correct way at 0deg and the wrong way at
+          180deg, and a second transform would have to be kept in sync through
+          the flip. */}
       <span
         className="book-edge-toggle__icon flex"
-        style={{ transform: `rotate(${(side === 'left') === open ? 0 : 180}deg)` }}
+        style={{ transform: `rotate(${(side === 'left') === open ? 0 : 180}deg) translateX(-1px)` }}
       >
-        <Icon d={ICONS.chevronLeft} size={15} />
+        {/* 20, not the 15 this started at, and the number is doing more work
+            than it looks. A chevron fills only 6 of its 24 viewBox units across
+            — it is a narrow glyph in a square box — so at 15 it rendered a mark
+            3.75px wide whose 1.7-unit stroke came out at 1.06px: a sub-pixel
+            hairline adrift in a 28px disc. At 20 (what the rails render at) the
+            mark is 5x10 with a 1.42px stroke, which is the first size where it
+            holds the circle. Sizing a glyph by its box rather than by its ink is
+            how narrow icons end up looking timid next to square ones. */}
+        <Icon d={ICONS.chevronLeft} size={20} />
       </span>
     </button>
   );
@@ -14581,6 +17314,20 @@ const CATEGORY_PREVIEWS: Record<string, React.ReactNode> = {
        glyph's own box is 0.79 left of where its origin suggests. */
     <g transform="translate(12.29 12) scale(0.67)" fill="none" stroke={MARK_INK} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M13 4v16M17 4v16M17 4h-6.5a4.5 4.5 0 0 0 0 9H13" />
+    </g>
+  ),
+  /* Blocks: the page split in two, with a photo filling one half — the two things
+     this category actually holds (columns, and photo grids / photo-and-text) in one
+     mark. Drawn as areas of the sheet rather than as a pictogram of a grid, because
+     that is what these blocks do: they divide the page up. The gutter is the sheet
+     showing through, so the mark reads as one page in two parts rather than as two
+     separate tiles. */
+  blocks: (
+    <g>
+      <rect x="8.5" y="11" width="10.2" height="18" rx="1.2" fill={MARK_FAINT} />
+      <rect x="21.3" y="11" width="10.2" height="8.4" rx="1.2" fill={MARK_INK} />
+      <rect x="21.3" y="21.2" width="10.2" height="2" rx="1" fill={MARK_MID} />
+      <rect x="21.3" y="25" width="7.4" height="2" rx="1" fill={MARK_MID} />
     </g>
   ),
   shapes: (
@@ -15279,55 +18026,56 @@ function InsertPanel({ currentPlan, groups, searchScope, searchLabel, index, hea
 // 236px card and left a 24px grey gutter down the right of the gallery.
 const TEMPLATE_ROW_PAD = 14;
 const TEMPLATE_ROW_W = PANEL_W - TEMPLATE_ROW_PAD * 2;
+/* Page designs first, then everything else in THEMES order.
+   The gallery can't just read THEMES: that array's head is the DEFAULT template
+   (THEMES[0] is what a new book opens on and what every lookup falls back to),
+   so putting Career Pathways at the top of it would silently make it the design
+   every new book starts in. The order the panel shows is a separate question
+   from the order the data is stored in, so it's asked separately here.
+   `pageDesign` is the test rather than a list of two ids: those templates are
+   whole designed books — their own sheets, openers, TOC, running pages — against
+   nine that are a palette and a type pairing, which is exactly the difference
+   worth leading with, and a third one lands in the right place on its own. */
+const GALLERY_ORDER: ThemeDef[] = [
+  ...THEMES.filter((t) => t.pageDesign),
+  ...THEMES.filter((t) => !t.pageDesign),
+];
 // A 1px overscan: at a fractional scale the rendered page can land a hair short
 // of its container and re-open a hairline of the background down one edge. The
 // card clips (overflow: hidden), so covering past the edge costs nothing and
-// removes the whole class of sub-pixel seam.
-const TEMPLATE_ROW_SCALE = (TEMPLATE_ROW_W + 1) / PAGE_W;
-const TEMPLATE_ROW_H = Math.round(PAGE_MIN_H * TEMPLATE_ROW_SCALE);
+// removes the whole class of sub-pixel seam. Both that and the row's HEIGHT now
+// live in BookTemplateCover, which sizes each card to the sheet its own template
+// was drawn on — a card whose height is a constant is a card that clips the
+// moment a template ships a different trim (see the comment there).
 
 /* A template is a cover layout + chapter/TOC/back-matter theme, applied together —
    see THEMES above. Clicking a card applies it directly: each card already
-   renders the real cover in that template's style (see previewPage below), so
-   the card itself is the look-before-you-leap step — a confirm modal in between
-   was showing the same thing twice. applyTemplate takes its own snapshot and
+   renders that template's own design (see previewPage below), and clicking one
+   previews it on the canvas with the author's book in it — the look-before-you-
+   leap step is that preview, which is why no confirm modal sits in between. applyTemplate takes its own snapshot and
    offers an undo toast, the same safety net used for chapter delete/reorder/
    split elsewhere in this file. */
-function TemplatesPanel({ currentPlan, activeTheme, pages, fieldContent, coverOverrides, onApplyTemplate }: {
+/* Nothing of the author's book reaches a card: no fieldContent, so every text
+   slot falls back to DEFAULT_COVER_TEXT and each card shows the template's own
+   sample copy and its own stock photo.
+
+   It used to run the real merge, so a card showed YOUR cover in that template —
+   the argument being that a card should be what applying it produces. That was
+   right while clicking a card APPLIED it. Preview-then-apply took the job over:
+   the canvas now shows your book in the template, full size, before anything is
+   committed. What the gallery is for is the other question — which design do I
+   want — and forty cards carrying a half-typed title answer it worse than forty
+   designs do. */
+const NO_FIELDS: Record<string, string> = {};
+function TemplatesPanel({ currentPlan, activeTheme, previewTemplateId, onPreviewTemplate }: {
   currentPlan: string;
   activeTheme: ThemeId;
-  pages: PageMeta[];
-  fieldContent: Record<string, string>;
-  coverOverrides: CoverOverrides;
-  onApplyTemplate: (templateId: string) => void;
+  previewTemplateId: ThemeId | null;
+  onPreviewTemplate: (templateId: string) => void;
 }) {
   const [search, setSearch] = useState('');
   const q = search.toLowerCase();
-  const visibleTemplates = THEMES.filter((t) => t.name.toLowerCase().includes(q));
-  const coverPage = pages.find((p) => p.type === 'cover') as SimplePage | undefined;
-  /* What each card will actually produce, run through the same merge the apply
-     does — so a carried photo and any hand-added element appear in the preview
-     rather than the card promising a clean template and delivering your cover.
-     Memoised because mergeCoverElements mints ids: recomputing it inside the map
-     would burn a fresh batch on every keystroke in the search field. */
-  const previewElements = useMemo(() => {
-    const outgoing = THEMES.find((t) => t.id === activeTheme) ?? THEMES[0];
-    const current = coverPage?.coverElements ?? [];
-    return new Map(THEMES.map((t) => [
-      t.id,
-      /* Same three steps in the same order as applyTemplate, because the card's
-         whole job is to be what applying it produces — including the slots this
-         template has no home for, which is how the gallery answers "where does
-         my subtitle go?" before you commit rather than after. */
-      applyCoverOverrides(
-        autoPlaceCoverText(
-          mergeCoverElements(current, t.coverElements, outgoing.coverElements),
-          t, coverPage?.id ?? '', fieldContent,
-        ),
-        coverOverrides,
-      ),
-    ]));
-  }, [coverPage?.coverElements, coverPage?.id, activeTheme, coverOverrides, fieldContent]);
+  const visibleTemplates = GALLERY_ORDER.filter((t) => t.name.toLowerCase().includes(q));
   return (
     <div style={{ padding: '16px 14px', overflowY: 'auto', height: '100%' }}>
       <input
@@ -15340,22 +18088,18 @@ function TemplatesPanel({ currentPlan, activeTheme, pages, fieldContent, coverOv
         {visibleTemplates.map((t) => {
           const locked = shouldShowTierBadge(currentPlan as never, t.requiredPlan);
           const active = t.id === activeTheme;
-          /* bg is overridden, not inherited from the live cover. Spreading
-             coverPage carried its current background onto every card, so the
-             moment a dark-cover template (Growth) or a hand-picked page colour
-             was applied, all nine previews repainted in that colour — white-ground
-             templates showed as near-black with their dark type invisible. The
-             card has to show the same thing applyTemplate produces: the template's
-             own coverBg, falling back to its theme bg exactly as CoverCanvas does
-             when coverBg is unset (8 of 9 templates). */
-          const previewPage: SimplePage | undefined = coverPage ? { ...coverPage, bg: coverOverrides.bg ?? t.coverBg, coverElements: previewElements.get(t.id) ?? t.coverElements } : undefined;
+          /* Said in words rather than with a second ring. A ring here means "this
+             is the template your book uses", and that has to stay true while you
+             look at another one — two rings competing for the same meaning is how
+             you lose track of what you actually have. */
+          const previewing = t.id === previewTemplateId;
           return (
             <button
               key={t.id}
               // A locked card still shows what you'd be paying for (the real
               // cover in that template's style, badge in the corner) — clicking
-              // it routes to the upgrade prompt instead of applying.
-              onClick={() => onApplyTemplate(t.id)}
+              // it routes to the upgrade prompt instead of previewing.
+              onClick={() => onPreviewTemplate(t.id)}
               className="w-full cursor-pointer text-left"
               style={{ background: 'none', border: 'none', padding: 0 }}
             >
@@ -15371,13 +18115,17 @@ function TemplatesPanel({ currentPlan, activeTheme, pages, fieldContent, coverOv
                 style={{ position: 'relative', borderRadius: RADIUS_MD, overflow: 'hidden' }}
               >
                 {locked && <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', zIndex: 1 }}><TierBadge tier={t.requiredPlan!} size="sm" /></div>}
-                <div style={{ width: '100%', height: TEMPLATE_ROW_H, overflow: 'hidden', position: 'relative', background: WELL_PAGE }}>
-                  {previewPage && (
-                    <div style={{ width: PAGE_W, transform: `scale(${TEMPLATE_ROW_SCALE})`, transformOrigin: 'top left' }}>
-                      <CoverCanvasStatic page={previewPage} theme={t} fieldContent={fieldContent} />
-                    </div>
-                  )}
-                </div>
+                {/* Over the preview, not under the name. In flow it added ~16px to
+                    the card, so every card below the one you had just clicked
+                    jumped down while the cursor was still there and the next click
+                    could land on a different template. Same corner treatment the
+                    tier badge already uses, so it costs the layout nothing. */}
+                {previewing && (
+                  <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 3, ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: '#fff', background: BLUE, borderRadius: 4, padding: '3px 7px' }}>
+                    Previewing
+                  </div>
+                )}
+                <BookTemplateCover template={t} width={TEMPLATE_ROW_W} fields={NO_FIELDS} />
                 {/* The ring, above the preview. Resting state is the image-outline
                     value — pure black at 10%, never a tinted neutral, which would
                     pick up whatever cover sits under it and read as dirt along the
@@ -16542,9 +19290,13 @@ type MetricKind = 'lineHeight' | 'letterSpacing';
    what makes it recoverable. */
 const METRIC_BARE_CUTOFF: Record<MetricKind, number> = { lineHeight: 4, letterSpacing: 1 };
 
+/* The unit a bare number carries internally. Never printed — see the suffix in
+   TypeMetricField — but the nudge and the round-trip both need a name for it. */
+const MULTIPLIER = '\u00d7';
+
 /* Arrow-key nudge per unit. One step for all four would be wrong for three of
    them — a multiplier moves in 0.05s where a percentage moves in 5s. */
-const METRIC_STEP: Record<string, number> = { '×': 0.05, '%': 5, px: 1, em: 0.01 };
+const METRIC_STEP: Record<string, number> = { [MULTIPLIER]: 0.05, '%': 5, px: 1, em: 0.01 };
 
 const METRIC_RE = /^(-?\d*\.?\d+)\s*(%|px|em)?$/;
 
@@ -16578,12 +19330,14 @@ function parseTypeMetric(raw: string, kind: MetricKind): string | null | undefin
 }
 
 /* Splits a stored value into the number the field shows and the unit printed
-   beside it. A unitless line height reads as x — the one unit the CSS itself
-   doesn't spell out, and the one a reader would otherwise have to infer. */
+   beside it. A unitless line height is the multiplier — the one unit CSS itself
+   doesn't spell out. It carries this sentinel through the nudge step (which
+   needs to know a multiplier moves in 0.05s) but is never printed; see the
+   suffix in TypeMetricField. */
 function splitTypeMetric(value: string | null | undefined): { num: string; unit: string } | null {
   if (!value) return null;
   const m = METRIC_RE.exec(String(value).trim());
-  return m ? { num: m[1], unit: m[2] ?? '×' } : null;
+  return m ? { num: m[1], unit: m[2] ?? MULTIPLIER } : null;
 }
 
 /* NumField's well with a parsed unit in place of a fixed suffix, and an empty
@@ -16609,7 +19363,7 @@ function TypeMetricField({ kind, value, onChange, title }: {
   const nudge = (dir: 1 | -1, big: boolean) => {
     if (!parts) return;
     const by = (METRIC_STEP[parts.unit] ?? 1) * (big ? 10 : 1);
-    onChange(`${tidyMetricNum(parseFloat(parts.num) + dir * by)}${parts.unit === '×' ? '' : parts.unit}`);
+    onChange(`${tidyMetricNum(parseFloat(parts.num) + dir * by)}${parts.unit === MULTIPLIER ? '' : parts.unit}`);
   };
   return (
     <div
@@ -16642,8 +19396,18 @@ function TypeMetricField({ kind, value, onChange, title }: {
           width: '100%', minWidth: 0, padding: 0,
         }}
       />
-      {/* Only once there's a value: "Auto x" would be a unit on nothing. */}
-      {parts && <span className="flex-shrink-0" style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#9AA5B4' }}>{parts.unit}</span>}
+      {/* Only once there's a value: "Auto %" would be a unit on nothing. And
+          never for the bare multiplier, which prints no unit at all. A grey
+          glyph at a field's right edge is where every clear/dismiss control in
+          this product lives, so an "×" there was read as a button to press
+          rather than as "times the font size" — which is also why it only ever
+          appeared on Line height and never on Letter spacing beside it, leaving
+          nothing to compare it against. A multiplier with no unit printed is
+          what Figma and InDesign both show, and the absence is unambiguous
+          here: the only other line heights are % and px, and both print. */}
+      {parts && parts.unit !== MULTIPLIER && (
+        <span className="flex-shrink-0" style={{ ...ns, fontSize: 10.5, fontWeight: 700, color: '#9AA5B4' }}>{parts.unit}</span>
+      )}
     </div>
   );
 }
@@ -19713,20 +22477,40 @@ function ImageInspector({ editor, onGoToMedia, onStartCrop, onTransform }: { edi
         {!inGrid && (
           <>
             <FieldLabel>Size</FieldLabel>
-            <SelectField
-              value={isFixed ? 'fixed' : 'column'}
-              onChange={(v) => editor.chain().focus().updateAttributes('image', v === 'fixed'
-                ? { sizeMode: 'fixed', boxW: shownW, boxH: shownH }
-                : { sizeMode: 'column', boxW: 0, boxH: 0 }).run()}
-              options={[
-                { id: 'column' as const, label: 'Fill column' },
-                { id: 'fixed' as const, label: 'Fixed size' },
-              ]}
-            />
-            {isFixed && (
-              <div className="flex items-center" style={{ gap: 6, marginTop: 8 }}>
-                <NumField icon={<span style={{ ...ns, fontSize: 10.5, fontWeight: 700 }}>W</span>} title="Width"
-                  value={shownW} min={1} max={4000} onChange={(v) => setSize('w', v)} />
+            {/* The mode lives INSIDE the W field, which is where Figma UI3 put it
+                and where DimensionField already puts it for cover elements and
+                for a question's width. This panel had the older dialect: a
+                separate dropdown naming the mode, with the W/H fields appearing
+                and disappearing under it — two controls and a jumping layout for
+                one property. Typing a number still means "fixed" on its own (see
+                setSize), so the menu is the way back to Fill column, not the way
+                into a size.
+
+                Height carries no menu of its own: one sizeMode governs both axes
+                here, so an independent "fixed height" is not a state this image
+                can be in. It reads Auto and takes a number, which is the truth —
+                not a disabled field. */}
+            {/* Equal columns, the way the cover panel's W/H/X/Y grid is equal:
+                the fields size to their own content otherwise, so "Fill column"
+                made W half again as wide as H and the pair read as two unrelated
+                controls. */}
+            <div className="flex items-center" style={{ gap: 6 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+              <DimensionField
+                label="W"
+                px={shownW}
+                /* dim 100 makes the percentage the number — see DimensionField. */
+                dim={100}
+                mode={isFixed ? 'fixed' : 'auto'}
+                autoLabel="Fill column"
+                modeLabels={['Fill column', 'Fixed width']}
+                onMode={(m) => editor.chain().focus().updateAttributes('image', m === 'fixed'
+                  ? { sizeMode: 'fixed', boxW: shownW, boxH: shownH }
+                  : { sizeMode: 'column', boxW: 0, boxH: 0 }).run()}
+                onChangePct={(v) => setSize('w', Math.round(Math.max(1, Math.min(4000, v))))}
+              />
+              </div>
+              {isFixed && (
                 <Tooltip label={lockAspect ? 'Proportions locked' : 'Proportions unlocked'} position="bottom">
                   <button
                     onClick={() => editor.chain().focus().updateAttributes('image', { lockAspect: !lockAspect }).run()}
@@ -19742,10 +22526,18 @@ function ImageInspector({ editor, onGoToMedia, onStartCrop, onTransform }: { edi
                     </svg>
                   </button>
                 </Tooltip>
-                <NumField icon={<span style={{ ...ns, fontSize: 10.5, fontWeight: 700 }}>H</span>} title="Height"
-                  value={shownH} min={1} max={4000} onChange={(v) => setSize('h', v)} />
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+              <DimensionField
+                label="H"
+                px={shownH}
+                dim={100}
+                mode={isFixed ? 'fixed' : 'auto'}
+                autoLabel="Auto"
+                onChangePct={(v) => setSize('h', Math.round(Math.max(1, Math.min(4000, v))))}
+              />
               </div>
-            )}
+            </div>
           </>
         )}
       </PanelGroup>
@@ -20070,6 +22862,8 @@ const FONT_OPTIONS: FontOption[] = [
   { id: "'Nunito Sans', sans-serif", label: 'Nunito Sans', group: 'Sans serif' },
   { id: "'Source Sans 3', sans-serif", label: 'Source Sans', group: 'Sans serif' },
   { id: "'Inter', sans-serif", label: 'Inter', group: 'Sans serif' },
+  { id: "'Inter Tight', sans-serif", label: 'Inter Tight', group: 'Sans serif' },
+  { id: "'DM Sans', sans-serif", label: 'DM Sans', group: 'Sans serif' },
   { id: "'Manrope', sans-serif", label: 'Manrope', group: 'Sans serif' },
   { id: "'Montserrat', sans-serif", label: 'Montserrat', group: 'Sans serif' },
   { id: "'Poppins', sans-serif", label: 'Poppins', group: 'Sans serif' },
@@ -20900,7 +23694,12 @@ function TextInspector({ editor, variant = 'prose' }: { editor: Editor; variant?
                    The single-field editors behind a cover line or the ToC heading
                    have no chapter to start, and listing it there would be a row
                    that silently does nothing. */
-                ...(editor.schema.nodes.chapterTitle ? [{ id: 'chapterTitle', label: 'Chapter title', group: 'Basic', style: { fontSize: 17, fontWeight: 700 } }] : []),
+                /* Optional for the same reason `headingLevels` above is: this
+                   can render against a DESTROYED editor, whose schema is null,
+                   and an unguarded read here crashed the panel with "Cannot read
+                   properties of null (reading 'nodes')". The guard was on one of
+                   the two reads and not the other. */
+                ...(editor.schema?.nodes?.chapterTitle ? [{ id: 'chapterTitle', label: 'Chapter title', group: 'Basic', style: { fontSize: 17, fontWeight: 700 } }] : []),
                 { id: 'heading', label: 'Section heading', group: 'Basic', style: { fontSize: 15, fontWeight: 700 } },
                 /* Only offered where the editor actually registers a second level —
                    a field that has one heading has no "inner" one to demote to. */
@@ -21301,6 +24100,31 @@ const SPECIAL_CHARACTERS: { char: string; name: string }[] = [
    putting them with the rest of the left rail's insert tools instead. Needs
    an active chapter editor to insert into; with none focused yet, the grids
    go inert with a one-line hint rather than silently doing nothing on click. */
+/* The cover's four text slots, offered where every other "put something new on
+   the page" lives. Only on the cover: these are slots a cover template draws, and
+   on a chapter page the four words would name nothing. */
+function CoverTextInsert({ page, onPick }: { page: SimplePage; onPick: (role: CoverSlotRole) => void }) {
+  const els = page.coverElements ?? [];
+  return (
+    <div>
+      <PanelSectionBreak label="Cover text" hint="Pick one to select it on the cover, or to add it if it isn't there." />
+      <div style={{ marginTop: 12 }}>
+        <OptionGrid
+          value={null}
+          onChange={(role) => onPick(role as CoverSlotRole)}
+          options={COVER_SLOT_ROLES.map((role) => ({
+            id: role,
+            label: COVER_SLOT_LABELS[role],
+            title: els.some((e) => e.type === 'text' && e.origin !== 'author' && e.role === role)
+              ? `Select the ${COVER_SLOT_LABELS[role].toLowerCase()} on the cover`
+              : `Add a ${COVER_SLOT_LABELS[role].toLowerCase()} to the cover`,
+          }))}
+        />
+      </div>
+    </div>
+  );
+}
+
 function TextToolsPanel({ editor }: { editor: Editor | null }) {
   return (
     <div>
@@ -23032,19 +25856,17 @@ function TableInspector({ editor }: { editor: Editor }) {
 
 /* Cover inspector — reached both when an element is selected (kind:'coverElement')
    and when just the cover page itself is (kind:'page'). */
-function CoverInspector({ page, theme, selectedElementId, coverOverrides, fieldContent, currentPlan, onUpdateElement, onChangeTextRole, onStartCrop, onSetPageBg, onResetSlot, onAddSlot, onDeleteElement, onDragTile }: {
+function CoverInspector({ page, theme, selectedElementId, coverOverrides, currentPlan, onUpdateElement, onChangeTextRole, onStartCrop, onSetPageBg, onResetSlot, onDeleteElement, onDragTile }: {
   page: SimplePage;
   theme: ThemeDef;
   selectedElementId: string | null;
   coverOverrides: CoverOverrides;
-  fieldContent: Record<string, string>;
   currentPlan: string;
   onUpdateElement: (pageId: string, elementId: string, patch: CoverElementPatch) => void;
   onChangeTextRole: (pageId: string, elementId: string, role: CoverTextElement['role']) => void;
   onStartCrop: (elementId: string) => void;
   onSetPageBg: (pageId: string, bg: string | undefined) => void;
   onResetSlot: (pageId: string, role: CoverSlotRole) => void;
-  onAddSlot: (pageId: string, role: CoverSlotRole) => void;
   onDeleteElement: (pageId: string, elementId: string) => void;
   onDragTile: (id: string | null) => void;
 }) {
@@ -23233,6 +26055,24 @@ function CoverInspector({ page, theme, selectedElementId, coverOverrides, fieldC
               </div>
             )}
           </div>
+          {/* Here rather than under Photo, because Photo answers "which picture,
+              and how does it sit in its frame" — Replace, Remove, Crop, Fill/Fit
+              — and a scrim laid over the picture answers none of that. It belongs
+              beside Opacity: the two properties that change how the image LOOKS
+              without changing which image it is. The group is already conditional
+              (corner radius only appears on an element that can take one), so a
+              photo-only field is the shape it already has.
+
+              The hint rides the toggle rather than the group: a PanelGroup hint
+              renders after every child, so it would explain whatever happened to
+              be last rather than the switch. */}
+          {selected.type === 'image' && selected.src && (
+            <div style={{ marginTop: 14 }}>
+              <InspectorSection label="" hint="The dark overlay keeps any text over the photo legible.">
+                <ToggleRow label="Dark overlay" checked={selected.overlayDark !== false} onChange={(v) => update({ overlayDark: v })} />
+              </InspectorSection>
+            </div>
+          )}
         </PanelGroup>
       )}
 
@@ -23449,14 +26289,17 @@ function CoverInspector({ page, theme, selectedElementId, coverOverrides, fieldC
       )}
 
       {selected?.type === 'image' && (
-        <PanelGroup label="Photo" hint={selected.src ? 'The dark overlay keeps any text over the photo legible.' : undefined}>
+        <PanelGroup label="Photo">
           {/* The automatic pair. Fill has always been the only behaviour a cover
               photo had — object-fit: cover, hardcoded — so until now there was no
               way to place a picture on a cover and see all of it. */}
           {selected.src && <InspectorSection label="Sizing">
             <SegmentedControl
               label="Sizing"
-              value={selected.fit ?? 'cover'}
+              /* A template's own generated artwork carries `fill`, which is not
+                 one of these two (see CoverImageElement.fit) — it reads as Fill,
+                 the nearest of the pair, rather than leaving both unlit. */
+              value={selected.fit === 'contain' ? 'contain' : 'cover'}
               /* Fill and Fit, not a plainer invention: these are the words
                  Figma, Word and InDesign all use for exactly these two
                  behaviours, so they are learnable once and transfer. */
@@ -23464,31 +26307,19 @@ function CoverInspector({ page, theme, selectedElementId, coverOverrides, fieldC
               onChange={(v) => update({ fit: v })}
             />
           </InspectorSection>}
-          {/* The one genuinely useful fitting COMMAND, and the reason Fit is not
-              enough on its own: "Show all" letterboxes the photo inside a box
-              shaped for something else, which on a cover means gaps. Reshaping
-              the box to the photo gives you the whole picture with no gaps, and
-              it is the thing you cannot do by hand because you do not know the
-              photo's ratio. InDesign calls it Fit Frame to Content. */}
-          {selected.src && <div style={{ marginTop: 10 }}>
-            <FullButton
-              label="Match box to photo"
-              onClick={() => {
-                const img = new window.Image();
-                img.onload = () => {
-                  if (!img.naturalWidth || !img.naturalHeight) return;
-                  // Keep the width, solve the height, in the same percent space
-                  // the element is stored in — coverGeo is what makes a percent
-                  // height and a percent width mean the same number of pixels.
-                  const ratio = img.naturalHeight / img.naturalWidth;
-                  const pxW = (selected.w / 100) * coverGeo.w;
-                  const h = clampPct((pxW * ratio) / coverGeo.h * 100, 2, 100 - selected.y);
-                  update({ h, fit: 'cover' });
-                };
-                img.src = selected.src;
-              }}
-            />
-          </div>}
+          {/* "Match box to photo" stood here — a command that reshaped the box to
+              the photo's own proportions, the third outcome Fill and Fit cannot
+              give you (whole picture, no gaps). Removed because nobody could tell
+              what it did: "box" was a word from these comments that appeared
+              nowhere else in the interface, and the outcome only reads in
+              contrast to Fit, which sat three controls away. The capability goes
+              with it; Layout's H is the manual route. */}
+          {/* The commands are one block, not peers of the toggle below. They used
+              to run at three different gaps with the switch styled in the same
+              white box as the buttons — so the property read as a last command
+              that happened to carry a switch. One section, one 8px rhythm, and
+              the section's own 18 separates verbs from properties. */}
+          <InspectorSection label="">
           {/* Replace leads, because swapping the picture is the commonest thing
               anyone wants from a selected photo and it was the one thing this
               panel could not do. Every other property of the image was here;
@@ -23530,11 +26361,7 @@ function CoverInspector({ page, theme, selectedElementId, coverOverrides, fieldC
               </div>
             )}
           </div>}
-          {selected.src && (
-            <div style={{ marginTop: 10 }}>
-              <ToggleRow label="Dark overlay" checked={selected.overlayDark !== false} onChange={(v) => update({ overlayDark: v })} />
-            </div>
-          )}
+          </InspectorSection>
         </PanelGroup>
       )}
 
@@ -23647,11 +26474,6 @@ function CoverInspector({ page, theme, selectedElementId, coverOverrides, fieldC
       {!selected && (
         <>
           <PageBackgroundGroup page={page} theme={theme} onChange={(bg) => onSetPageBg(page.id, bg)} first />
-          <CoverTextSlotsGroup
-            page={page}
-            fieldContent={fieldContent}
-            onAdd={(role) => onAddSlot(page.id, role)}
-          />
           <div style={{ ...ns, fontSize: 11.5, color: SLATE, lineHeight: 1.55, marginTop: 16 }}>
             Click an element on the cover to edit it, or apply a different layout from the Templates tab.
           </div>
@@ -23671,65 +26493,6 @@ function CoverInspector({ page, theme, selectedElementId, coverOverrides, fieldC
    Unset tracks the template's own bg (the same "auto until you touch it"
    relationship ChapterOverrides uses for chapter type), so Reset is offered only
    once there's an override to undo rather than sitting there permanently. */
-/* ── the cover's four text slots, and where each one currently is ────────────
-   Templates do not all draw the same slots — Forgotten Memories has no category
-   and no subtitle, Gradient Tech has no subtitle, Growth has no category. The
-   words are stored by role rather than by element (see fieldKeyForCoverText), so
-   switching to one of those never deleted anything: the text simply stopped
-   being drawn, silently, with nothing anywhere saying so. You could export a
-   book missing its subtitle and never learn that you had one.
-
-   So this lists all four and says where each stands. Two different absences land
-   in the same place because they are the same state — a role that holds text and
-   is not on the cover — one because the template does not offer it, one because
-   the author removed it. One list, one Add, both answered. */
-function CoverTextSlotsGroup({ page, fieldContent, onAdd }: {
-  page: SimplePage;
-  fieldContent: Record<string, string>;
-  onAdd: (role: CoverSlotRole) => void;
-}) {
-  const els = page.coverElements ?? [];
-  const missing = COVER_SLOT_ROLES
-    .filter((role) => !els.some((e) => e.type === 'text' && e.origin !== 'author' && e.role === role))
-    .map((role) => ({ role, text: stripTags(fieldContent[`${page.id}::${role}`] ?? '').trim() }))
-    // The ones holding words first: those are the only rows carrying news
-    // rather than an offer.
-    .sort((a, b) => Number(!!b.text) - Number(!!a.text));
-  // Nothing absent, nothing to say. A roster of four rows reading "On cover"
-  // was three quarters noise and made the one row that mattered look like the
-  // rest of them.
-  if (!missing.length) return null;
-  return (
-    <PanelGroup label="Not on this cover">
-      {missing.map(({ role, text }) => (
-        <div key={role} style={{ marginBottom: 10 }}>
-          <div className="flex items-center justify-between" style={{ gap: 8 }}>
-            <span style={{ ...ns, fontSize: 12, color: INK, fontWeight: text ? 600 : 400 }}>
-              {COVER_SLOT_LABELS[role]}
-            </span>
-            <PanelCta onClick={() => onAdd(role)}>Add</PanelCta>
-          </div>
-          {/* The words themselves, not a note saying words exist. "has text"
-              made you take it on trust and go looking; the sentence you wrote is
-              both the evidence and the reason to press Add, and it is the thing
-              that makes this read as content rather than as a status table. */}
-          {text && (
-            <div
-              style={{
-                ...ns, fontSize: 12, color: SLATE, lineHeight: 1.4, marginTop: 2,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}
-              title={text}
-            >
-              &ldquo;{text}&rdquo;
-            </div>
-          )}
-        </div>
-      ))}
-    </PanelGroup>
-  );
-}
-
 function PageBackgroundGroup({ page, theme, onChange, first }: {
   page: PageMeta;
   theme: ThemeDef;
@@ -23753,11 +26516,236 @@ function PageBackgroundGroup({ page, theme, onChange, first }: {
 /* TOC and back-matter pages have nothing to configure — they're generated or
    plain text — but selecting one should still land on something contextual
    rather than the generic "select a chapter" placeholder. */
-function PageInfoInspector({ page, theme, onSetPageBg, onSetBackQr }: {
+/* The page designs this template can put UNDER the page you are on. Chrome only:
+   the bands and the bled photo. The two-column designs in the add-page gallery are
+   deliberately absent — turning one column of running text into two is a content
+   edit with no right answer about where to split, not a restyle, so it stays a
+   choice you make when you insert the page (or by dropping in a columns block).
+
+   This is the control that was removed from the Pages-panel row menu, where it was
+   five design NAMES in a list of verbs. Everything the survey found says it belongs
+   here and belongs visual: Keynote puts Slide Layout in the Format sidebar and
+   leaves the navigator's menu to actions, Figma Slides puts template style in the
+   right inspector, and Canva, BookWright and Mixbook all show the layout rather
+   than naming it. */
+/* The Layout tab. It takes the page you are ON rather than a selection, because
+   this rail is reference about the current page — you should not have to click the
+   page before the panel about it has anything in it. Both empty states say which
+   of the two reasons it is blank: the template has no page designs, or the page you
+   are on is not one that can take them. */
+function LayoutPanel({ page, theme, pages, chapterContent, fieldContent, metadata, titled, sheetIndex, onPick }: {
+  page: PageMeta | undefined; theme: ThemeDef; pages: PageMeta[];
+  chapterContent: Record<string, string>; fieldContent: Record<string, string>; metadata: BookMetadata;
+  titled: boolean;
+  /** Which sheet of the page you are on — the one a pick lands on. */
+  sheetIndex: number;
+  onPick: (pageId: string, patch: Partial<ChapterPage> | Partial<SimplePage>, seedBody?: (html: string) => string, note?: string) => void;
+}) {
+  const geo = useContext(PageGeometryContext);
+  /* A 2-up grid that fills the panel, derived rather than guessed: the panel is a
+     fixed PANEL_W, so the tile width is what's left after the padding and the one
+     gutter. A fixed 84px tile left half the column empty and the two columns
+     drifting apart under `space-between`. */
+  const PAD = 12;
+  const GAP = 12;
+  const w = Math.floor((PANEL_W - PAD * 2 - GAP) / 2);
+  const blank = (msg: string) => (
+    <div style={{ padding: '14px 14px', ...ns, fontSize: 12.5, color: SLATE, lineHeight: 1.5 }}>{msg}</div>
+  );
+  const design = pageDesignOf(theme);
+  if (!design) return blank(`${theme.name} draws one design per page, so there is nothing to choose here. Templates that ship several put them on this tab.`);
+  if (!page) return blank('Scroll to a page and its designs appear here.');
+
+  /* The set depends on what KIND of page you are on, which is the whole point of
+     the split: Add a page picks the kind, this picks its design. A titled chapter
+     container is an OPENER and wears one of the four opener designs; an untitled
+     one is a content page and wears one of the five content designs. They are both
+     `type: 'chapter'`, which is exactly the conflation this used to have — it
+     offered content designs on an opener, where the choice lands on sheet 1 and
+     the page in front of you does not change. */
+  type Choice = { key: string; label: string; on: boolean; preview: React.ReactNode; apply: () => void };
+  const chapterPreview = (sheet: string | undefined, lead: boolean, opener?: number, cols?: number): React.ReactNode => {
+    const { page: cp, html } = cpPreviewChapter({ id: `l-${sheet ?? 'op'}-${opener ?? ''}`, sheet, lead, opener, cols: cols === 2 ? 2 : undefined });
+    return <PreviewPage page={cp} pages={[...pages, cp]} theme={theme} chapterContent={{ ...chapterContent, [cp.id]: html }} fieldContent={fieldContent} metadata={metadata} sheet={0} />;
+  };
+  const flat = (pg: SimplePage): React.ReactNode => <PreviewPage page={pg} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} />;
+
+  let choices: Choice[] = [];
+  if (page.type === 'chapter' && titled) {
+    const cur = (page as ChapterPage).openerIndex ?? 0;
+    /* An opener's design IS its seeded objects — the builder lays down the
+       ground, the blocks and the numeral once, and from then on they are
+       ordinary canvas objects you can move. So picking a design re-seeds them;
+       storing an index alone would change nothing on the page. */
+    const photo = (page as ChapterPage).openerImage;
+    choices = Array.from({ length: design.openerCount }, (_, i) => ({
+      key: `op-${i}`, label: `Opener ${i + 1}`, on: cur === i,
+      preview: flat({
+        id: `l-op-${i}`, type: 'chapter', title: 'Navigating Career Transitions',
+        layout: 'opener', overrides: {}, titleHtml: '<h2>Navigating Career Transitions</h2>',
+        initialHtml: '', openerIndex: i,
+        coverElements: design.openerElements(i + 1, i, photo),
+      } as unknown as SimplePage),
+      apply: () => onPick(page.id, {
+        openerIndex: i,
+        coverElements: design.openerElements(i + 1, i, photo),
+      } as Partial<ChapterPage>),
+    }));
+  } else if (page.type === 'chapter') {
+    /* The chapter's own style, and the one THIS sheet wears — which is the one
+       the tiles ring, because the panel is about the page in front of you. */
+    const chapterStyle = (page as ChapterPage).sheetStyle ?? design.defaultSheet;
+    const overrides = (page as ChapterPage).sheetStyles;
+    const cur = overrides?.[sheetIndex] ?? chapterStyle;
+    const colsOf = (id: string) => design.sheetStyles.find((st) => st.id === id)?.cols ?? 1;
+    const chapterCols = colsOf(chapterStyle);
+    choices = design.sheetStyles.map((l) => ({
+      key: l.id, label: l.label, on: cur === l.id,
+      preview: chapterPreview(l.id, false, undefined, l.cols),
+      /* A style that seeds CONTENT rewrites the page's body as well as its
+         furniture — a two-column design is not a thing you can paint on. The
+         rewrite is handed over rather than applied here, because the words are
+         in the live editor and only the document owns that. */
+      apply: () => {
+        /* The room a style takes off the head or the foot of its sheet is the
+           paginator's to vary page by page, so a pick lands on the sheet you
+           are looking at and nothing else moves.
+
+           Its COLUMN COUNT is not. A chapter is one editor, and a multi-column
+           chapter is one multi-column box whose sheets are windows onto it — the
+           browser breaks the columns in a single pass, so the count cannot
+           change halfway down. A style that changes it therefore changes the
+           chapter, and says so rather than appearing to do what it can't. The
+           per-sheet picks go with it: their head and foot claims were measured
+           against a flow that no longer exists. */
+        if ((l.cols ?? 1) !== chapterCols) {
+          onPick(
+            page.id,
+            { sheetStyle: l.id, sheetStyles: undefined } as Partial<ChapterPage>,
+            l.seed,
+            `${l.label} sets the text in ${l.cols ?? 1} column${(l.cols ?? 1) > 1 ? 's' : ''}, which runs through the whole chapter${overrides && Object.keys(overrides).length ? ' — the styles you picked for single sheets were cleared' : ''}.`,
+          );
+          return;
+        }
+        onPick(page.id, { sheetStyles: { ...overrides, [sheetIndex]: l.id } } as Partial<ChapterPage>, l.seed);
+      },
+    }));
+  } else if (page.type === 'toc') {
+    choices = design.layouts.toc.map((tl) => ({
+      key: tl.id, label: tl.label, on: (page.tocLayout ?? design.defaults.toc) === tl.id,
+      preview: flat(design.seedPage({ id: `l-toc-${tl.id}`, type: 'toc', tocLayout: tl.id, title: 'Table of Contents' }, tl.id)),
+      apply: () => onPick(page.id, design.seedPage({ ...page, tocLayout: tl.id }, tl.id)),
+    }));
+  } else if (page.type === 'cover') {
+    /* Like an opener: the design IS the objects, so picking one re-seeds them. The
+       author's own words are carried across rather than reset — swapping the
+       arrangement should not retype your title. */
+    const txt = (k: string, fallback: string) => stripTags(fieldContent[`${page.id}::${k}`] ?? '') || fallback;
+    const title = txt('title', metadata.title || theme.name);
+    const sub = txt('subtitle', metadata.subtitle || 'Navigating Your Professional Path');
+    const author = txt('author', metadata.author || 'Author Name');
+    const cur = page.coverLayout ?? design.defaults.cover;
+    choices = design.layouts.cover.map((cl) => ({
+      key: cl.id, label: cl.label, on: cur === cl.id,
+      preview: flat({
+        id: `l-cv-${cl.id}`, type: 'cover', title: 'Cover', bg: design.coverBg(cl.id, theme.coverBg),
+        coverElements: design.coverElements(cl.id, title, sub, author),
+      }),
+      apply: () => onPick(page.id, {
+        coverLayout: cl.id,
+        bg: design.coverBg(cl.id, theme.coverBg),
+        coverElements: design.coverElements(cl.id, title, sub, author),
+      }),
+    }));
+  } else if (page.type === 'backmatter') {
+    choices = design.layouts.back.map((bl) => ({
+      key: bl.id, label: bl.label, on: (page.backLayout ?? design.defaults.back) === bl.id,
+      preview: flat(design.seedPage({ id: `l-back-${bl.id}`, type: 'backmatter', backLayout: bl.id, title: 'About the Author' }, bl.id)),
+      apply: () => onPick(page.id, design.seedPage({ ...page, backLayout: bl.id }, bl.id)),
+    }));
+  } else if (page.type === 'image') {
+    choices = design.layouts.image.map((il) => ({
+      key: il.id, label: il.label, on: page.imageLayout === il.id,
+      preview: flat(design.seedPage({ id: `l-im-${il.id}`, type: 'image', imageLayout: il.id, title: 'Image' }, il.id)),
+      apply: () => onPick(page.id, design.seedPage({ ...page, imageLayout: il.id }, il.id)),
+    }));
+  } else if (page.type === 'cta') {
+    /* A CTA stores its design in `imageLayout` rather than growing a fifth
+       field for one template's two arrangements — the field already means
+       "which design this page wears", and no page is both an image and a CTA. */
+    choices = design.layouts.cta.map((cl) => ({
+      key: cl.id, label: cl.label, on: (page.imageLayout ?? design.defaults.cta) === cl.id,
+      preview: flat(design.seedPage({ id: `l-cta-${cl.id}`, type: 'cta', imageLayout: cl.id, title: 'Call to action' }, cl.id)),
+      apply: () => onPick(page.id, design.seedPage({ ...page, imageLayout: cl.id }, cl.id)),
+    }));
+  } else if (page.type === 'workbook') {
+    choices = design.layouts.worksheet.map((wsl) => ({
+      key: wsl.id, label: wsl.label, on: page.workbook === wsl.id,
+      preview: flat(design.seedPage({ id: `l-wb-${wsl.id}`, type: 'workbook', workbook: wsl.id as CpWorkbookKind, title: wsl.label }, `wb-${wsl.id}`)),
+      apply: () => onPick(page.id, { workbook: wsl.id as CpWorkbookKind, title: wsl.label } as Partial<SimplePage>),
+    }));
+  }
+  if (!choices.length) return blank(`${theme.name} has one ${page.type === 'cover' ? 'cover' : page.type === 'toc' ? 'contents page' : page.type === 'backmatter' ? 'back page' : 'design'} for now. More will appear here when the template is updated.`);
+  return (
+    <div style={{ padding: PAD }}>
+      {/* A fixed 2-up grid, sized to the panel
+          instead of leaving a ragged second column; `align-items: start` so a row
+          whose neighbour is taller doesn't centre against it.
+
+          The ring is drawn INSIDE the tile's own box (inset box-shadow, not an
+          outline with an offset), because an outline that only the selected tile
+          carries makes that tile measurably bigger than the other four and the
+          whole grid shifts as you click along it. */}
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(2, ${w}px)`, gap: GAP, alignItems: 'start' }}>
+        {choices.map((c) => {
+          const on = c.on;
+          return (
+            <button
+              key={c.key}
+              onClick={c.apply}
+              aria-label={c.label}
+              aria-pressed={on}
+              className="cursor-pointer"
+              style={{ display: 'block', padding: 0, border: 'none', background: 'none', textAlign: 'left', width: w }}
+            >
+              <div style={{
+                position: 'relative', width: w, height: Math.round(w * (geo.h / geo.w)),
+                boxSizing: 'content-box',
+                borderRadius: RADIUS_SM, overflow: 'hidden', background: '#fff',
+                /* Every tile carries a border, not just the selected one: these are
+                   mostly white pages on a white panel, so without it a tile has no
+                   edge and the grid reads as floating scraps of text. */
+                border: `1px solid ${on ? BLUE : BORDER}`,
+                boxShadow: on ? `inset 0 0 0 1px ${BLUE}` : 'none',
+              }}>
+                <div style={{
+                  width: geo.w, height: geo.h, transformOrigin: 'top left', pointerEvents: 'none',
+                  position: 'absolute', top: 0, left: 0, transform: `scale(${w / geo.w})`,
+                }}>
+                  {c.preview}
+                </div>
+              </div>
+              <div style={{ ...ns, fontSize: 11.5, lineHeight: 1.3, marginTop: 6, width: w, color: on ? BLUE : INK, fontWeight: on ? 600 : 400 }}>
+                {c.label}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PageInfoInspector({ page, theme, pages, chapterContent, fieldContent, metadata, onSetPageBg, onSetBackQr, onSetCtaHref }: {
   page: PageMeta;
   theme: ThemeDef;
+  pages: PageMeta[];
+  chapterContent: Record<string, string>;
+  fieldContent: Record<string, string>;
+  metadata: BookMetadata;
   onSetPageBg: (pageId: string, bg: string | undefined) => void;
   onSetBackQr: (pageId: string, qr: { url: string; color: string } | null) => void;
+  onSetCtaHref: (pageId: string, href: string) => void;
 }) {
   const backQr = page.type === 'backmatter' ? page.backQr : undefined;
   /* PageMeta, not SimplePage. Selecting a CHAPTER page in the Pages rail lands
@@ -23771,10 +26759,36 @@ function PageInfoInspector({ page, theme, onSetPageBg, onSetBackQr }: {
          opens, and with the per-chapter opt-out gone this line was the only
          thing on the panel still claiming a chapter could be opened its own
          way. Openings are a book-wide setting and the note says where. */
-      : 'Click into the text to format it. Chapter openings are set for the whole book under Settings ▸ Paragraphs.';
+      : page.type === 'cta'
+        ? 'The headline, the sentence under it and the button label are all edited on the page itself. The button needs an address below.'
+        : page.type === 'workbook'
+          ? 'The title and any prompt on this sheet are edited on the page itself. The ruling is part of the design.'
+          : 'Click into the text to format it. Chapter openings are set for the whole book under Settings ▸ Paragraphs.';
   return (
     <InspectorShell>
       <PageBackgroundGroup page={page} theme={theme} onChange={(bg) => onSetPageBg(page.id, bg)} first />
+
+      {/* The one thing on a call-to-action page that cannot be typed on the page
+          itself. A button whose address is unset is the defect the Button block
+          was built to fix (see its own note), so it is asked for here rather
+          than left to be discovered after export. */}
+      {page.type === 'cta' && (
+        <div style={{ marginTop: 16 }}>
+          <InspectorSection label="Button">
+            <FieldInput
+              label="Address"
+              value={page.ctaHref ?? ''}
+              placeholder="https://…"
+              onChange={(v) => onSetCtaHref(page.id, v)}
+            />
+            {!(page.ctaHref ?? '').trim() && (
+              <InspectorWarning>
+                This button goes nowhere yet. It still prints, and a reader who taps it gets nothing.
+              </InspectorWarning>
+            )}
+          </InspectorSection>
+        </div>
+      )}
       {/* The end of a book is where a printed QR belongs — "find me here" next to
           the bio. It is a slot rather than a positioned element because this page
           is a fixed two-column layout, not the cover's free canvas. */}
@@ -23892,10 +26906,29 @@ function PageNumberInspector({ pageNumbers, setPageNumbers }: {
   );
 }
 
-/* ── Pre-publish checklist modal ──────────────────────────────────────────── */
+/* ── Publish ─────────────────────────────────────────────────────────────────
+   The same screen as the create wizard's last step, because it is the same act:
+   name a format, publish, get a link. publishFormats.tsx holds everything the
+   two share and records what this screen used to be — two cards offering EPUB
+   (the one format the real product gates) and a greyed "Print PDF — Not built",
+   which on the default Standard plan left Publish with one possible action:
+   "Upgrade to Pro". ───────────────────────────────────────────────────────── */
+function PublishCoverThumb({ width, children }: { width: number; children: React.ReactNode }) {
+  const geo = useContext(PageGeometryContext);
+  const scale = width / geo.w;
+  return (
+    <div style={{ width, height: Math.round(geo.h * scale), overflow: 'hidden', lineHeight: 0 }}>
+      <div style={{ width: geo.w, height: geo.h, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function PublisherOverlay({
   metadata, chapters, coverImage, coverAlt, coverTitle, coverSubtitle, backMatterHtml, onClose,
-  currentPlan, onLockedExport, theme, tocHeading, includeTocPage, paragraphStyle, paragraphIndentPct, paragraphSpacePct, chapterOpener,
+  currentPlan, onUpgrade, onEditDetails, onTurnIntoPresentation, cover, coverBg, pageCount, wordCount,
+  theme, tocHeading, includeTocPage, paragraphStyle, paragraphIndentPct, paragraphSpacePct, chapterOpener,
 }: {
   paragraphStyle: ParagraphStyle;
   paragraphIndentPct: number;
@@ -23909,7 +26942,20 @@ function PublisherOverlay({
   backMatterHtml: string;
   onClose: () => void;
   currentPlan: string;
-  onLockedExport: () => void;
+  onUpgrade: (ctx: { message: string; planId: GateTier; feature: string }) => void;
+  /** Opens Book settings › Book details, where the metadata shown here is edited. */
+  onEditDetails: () => void;
+  onTurnIntoPresentation: () => void;
+  /** The real cover, rendered small — what is being published. */
+  cover: React.ReactNode;
+  coverBg: string;
+  /** Sheets in the book. Counted by the editor, which is the only thing that knows. */
+  pageCount: number;
+  /* Both numbers come from the editor rather than being recounted here. Counting
+     the packaged HTML instead gave a different total from the one in the toolbar
+     — resolved field tokens and footnote markers are words in the file that
+     nobody typed — and one book cannot have two word counts. */
+  wordCount: number;
   /* The look the book was designed in. The packager used to emit one fixed generic
      serif sheet, so every float, column, callout and text style arrived in the
      reader unstyled — the theme and the chapter layouts have to travel with it. */
@@ -23918,31 +26964,46 @@ function PublisherOverlay({
   includeTocPage: boolean;
   chapterOpener: ChapterOpener;
 }) {
-  const [exportState, setExportState] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
+  /* PDF first and selected, matching the wizard and the real product: it is the
+     free default, and it is what most of this product's books are. */
+  const [format, setFormat] = useState('pdf');
+  const [working, setWorking] = useState(false);
   const [exportNote, setExportNote] = useState('');
-  // Images that couldn't be fetched at package time — reported rather than swallowed,
-  // since the whole point of this panel is that nothing looks silently fine.
+  const [exportError, setExportError] = useState('');
+  // Images that couldn't be fetched at package time — reported rather than swallowed.
   const [exportWarning, setExportWarning] = useState('');
+  const [published, setPublished] = useState(false);
 
   // Matches PreviewOverlay's identical listener — every other full-screen overlay
   // in this file closes on Escape, and this one (reached at the single highest-
   // stakes moment in the flow) was the one exception.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // The success screen is a layer above this one, so it goes first.
+      if (published) setPublished(false); else onClose();
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, published]);
 
-  // EPUB is Pro+ in the real product (see PUBLISH_FORMATS in EbookCreateFlow.tsx) — this
-  // overlay had no plan check at all before, so Standard accounts could export it for free.
-  // Named rather than a bare 'pro' literal so the gate check and the badge below can't
-  // drift apart if a second export format (and its own required tier) gets added later.
-  const EPUB_REQUIRED_PLAN: GateTier = 'pro';
-  const epubLocked = shouldShowTierBadge(currentPlan as never, EPUB_REQUIRED_PLAN);
+  const fmt = PUBLISH_FORMATS.find((f) => f.id === format) ?? PUBLISH_FORMATS[0];
+  /* Only a gate this viewer is actually behind — a Premium account choosing a Pro
+     format should publish, not be asked to upgrade into something it already has. */
+  const lockedPlan = shouldShowTierBadge(currentPlan as PlanId, fmt.requiredPlan) ? fmt.requiredPlan : undefined;
 
-  const runExport = async () => {
-    setExportState('working');
-    setExportNote('');
+  const stats = useMemo(
+    // 200wpm, the same rate the wizard's publish step reads at.
+    () => ({ pages: pageCount, chapters: chapters.length, words: wordCount, readTime: Math.max(1, Math.round(wordCount / 200)) }),
+    [chapters.length, pageCount, wordCount],
+  );
+
+  const slug = (metadata.title || 'book').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
+  const publishedUrl = `https://designrr.s3.amazonaws.com/klimiashvilinn_568/${slug || 'book'}`;
+
+  const runExport = async (): Promise<boolean> => {
+    setWorking(true);
+    setExportError('');
     setExportWarning('');
     try {
       /* Fetching the images is the reason this is async. Every image in the product
@@ -23987,74 +27048,147 @@ function PublisherOverlay({
         paragraphSpacePct,
       });
       const bytes = buildEpub(input);
-      const safeName = (metadata.title || 'book').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
-      downloadEpub(bytes, `${safeName || 'book'}.epub`);
-      setExportState('done');
+      downloadEpub(bytes, `${slug || 'book'}.epub`);
       setExportNote(`${(bytes.length / 1024).toFixed(0)} KB · ${chapters.length} chapters`);
       if (unresolved.length > 0) {
         setExportWarning(`${unresolved.length} image${unresolved.length === 1 ? '' : 's'} could not be read and ${unresolved.length === 1 ? 'was' : 'were'} left out of the file.`);
       }
+      return true;
     } catch (err) {
-      setExportState('error');
-      setExportNote(err instanceof Error ? err.message : 'Packaging failed');
+      setExportError(err instanceof Error ? err.message : 'Packaging failed');
+      return false;
+    } finally {
+      setWorking(false);
     }
   };
 
+  const publish = async () => {
+    if (lockedPlan) {
+      onUpgrade({ message: `Unlock ${fmt.label} export`, planId: lockedPlan, feature: `${fmt.label} export` });
+      return;
+    }
+    /* EPUB and Kindle are the two this prototype can really package (epub.ts, and
+       Kindle's own row calls itself "E-pub export"). The other three publish to the
+       hosted link, which is what the wizard's Publish does for all five. */
+    if (fmt.real && !(await runExport())) return;
+    /* Fires on the publish that went through, not on the click — the wizard's
+       template_published follows the same rule, and a click that opened the
+       upgrade modal produced no book. Which format wins is the question this
+       screen exists to answer, so it is the one prop. */
+    track('book_published', { format: fmt.id, plan: currentPlan, from: 'editor' });
+    setPublished(true);
+  };
+
+  /* Read-only here on purpose. These are edited in Book settings › Book details,
+     and a second set of inputs for the same four values would be a second place
+     they disagree. Shown at all because publish is the moment an empty Identifier
+     starts to cost something. */
+  const detailRows: { label: string; value: string; required: boolean }[] = [
+    { label: 'Title', value: metadata.title, required: true },
+    { label: 'Author', value: metadata.author, required: false },
+    { label: 'Identifier', value: metadata.identifier, required: true },
+    { label: 'Language', value: metadata.language, required: true },
+  ];
+
   return (
-    <div style={{ position: 'fixed', inset: 0, background: '#EEF0F3', zIndex: 200, display: 'flex', flexDirection: 'column' }}>
-      <div className="flex-shrink-0 flex items-center justify-between" style={{ height: 56, padding: '0 20px', borderBottom: `1px solid ${BORDER}`, background: '#fff' }}>
-        <button onClick={onClose} className="flex items-center cursor-pointer" style={{ gap: 6, ...ns, fontSize: 13, fontWeight: 500, color: SLATE, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: '7px 14px' }}>
-          <Icon d={ICONS.back} size={14} /> Back to editing
-        </button>
+    <div style={{ position: 'fixed', inset: 0, background: '#fff', zIndex: 200, display: 'flex', flexDirection: 'column' }}>
+      <div className="flex-shrink-0 flex items-center" style={{ height: 56, padding: '0 20px', borderBottom: `1px solid ${BORDER}` }}>
+        <div className="flex-1 flex">
+          <button onClick={onClose} className="flex items-center cursor-pointer" style={{ gap: 6, ...ns, fontSize: 13, fontWeight: 500, color: SLATE, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: '7px 14px' }}>
+            <Icon d={ICONS.back} size={14} /> Back to editing
+          </button>
+        </div>
         <div style={{ ...ns, fontSize: 13.5, fontWeight: 700, color: INK }}>Publish</div>
-        <div style={{ width: 140 }} />
-      </div>
-
-      <div className="flex-1 overflow-y-auto" style={{ padding: '32px 24px 80px' }}>
-        <div style={{ maxWidth: 720, margin: '0 auto' }}>
-
-          <div style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: EYEBROW_COLOR, margin: '26px 0 8px' }}>Export</div>
-          <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_LG, padding: '18px 20px' }}>
-            <div className="flex items-start justify-between" style={{ gap: 16, flexWrap: 'wrap' }}>
-              <div style={{ flex: 1, minWidth: 240 }}>
-                <div className="flex items-center" style={{ gap: 8, marginBottom: 3 }}>
-                  <div style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: INK }}>EPUB 3</div>
-                  {epubLocked && <TierBadge tier={EPUB_REQUIRED_PLAN} />}
-                </div>
-                <div style={{ ...ns, fontSize: 13, color: SLATE, lineHeight: 1.55 }}>
-                  Reflowable, the format Kindle, Apple Books, Kobo and Google Play all accept. Packaged in your browser: chapters become XHTML, images are unpacked out of the document, and a linked navigation document is generated.
-                  {' '}Reflowable means the reader&rsquo;s device sets the page, so your page size, margins and page numbers don&rsquo;t carry over — everything else does.
-                </div>
-                {exportState === 'done' && <div style={{ ...ns, fontSize: 12.5, color: '#2A7A57', marginTop: 8 }}>Downloaded · {exportNote}</div>}
-                {exportState === 'error' && <div style={{ ...ns, fontSize: 12.5, color: '#B91C1C', marginTop: 8 }}>{exportNote}</div>}
-                {exportWarning && <div style={{ ...ns, fontSize: 12.5, color: '#8A5A08', marginTop: 6 }}>{exportWarning}</div>}
-              </div>
-              <button
-                onClick={epubLocked ? onLockedExport : runExport}
-                disabled={!epubLocked && exportState === 'working'}
-                title={epubLocked ? 'Unlock EPUB export' : 'Package and download an EPUB'}
-                style={{
-                  ...ns, fontSize: 13, fontWeight: 600, color: '#fff', border: 'none', borderRadius: RADIUS_MD, padding: '10px 20px',
-                  background: BLUE, cursor: !epubLocked && exportState === 'working' ? 'default' : 'pointer', flexShrink: 0,
-                }}
-              >
-                {epubLocked ? 'Upgrade to Pro' : exportState === 'working' ? 'Packaging…' : 'Export EPUB'}
-              </button>
-            </div>
-          </div>
-
-          <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_LG, padding: '18px 20px', marginTop: 10, opacity: 0.72 }}>
-            <div className="flex items-start justify-between" style={{ gap: 16 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ ...ns, fontSize: 14.5, fontWeight: 700, color: INK, marginBottom: 3 }}>Print PDF</div>
-                <div style={{ ...ns, fontSize: 13, color: SLATE, lineHeight: 1.55 }}>Fixed layout with trim size, margins and a spine. Needs server-side rendering — not built yet.</div>
-              </div>
-              <span style={{ ...ns, fontSize: 11.5, fontWeight: 600, color: SLATE, background: '#F0F2F5', borderRadius: RADIUS_PILL, padding: '4px 11px', flexShrink: 0 }}>Not built</span>
-            </div>
-          </div>
-
+        {/* The one action, where the wizard puts it. It used to live inside the
+            format's own card, which is why there were two of them and why a
+            format with no button looked like a format with no answer. */}
+        <div className="flex-1 flex justify-end">
+          <button
+            onClick={() => { void publish(); }}
+            disabled={working}
+            style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: BLUE, border: 'none', borderRadius: RADIUS_MD, padding: '8px 20px', cursor: working ? 'default' : 'pointer' }}
+          >
+            {lockedPlan ? `Upgrade to ${PLAN_LABELS[lockedPlan]}` : working ? 'Packaging…' : 'Publish'}
+          </button>
         </div>
       </div>
+
+      <div className="flex-1 overflow-y-auto">
+        <div style={{ padding: '32px 48px 80px', maxWidth: 1100, margin: '0 auto', width: '100%' }}>
+          <div className="flex items-start justify-between" style={{ marginBottom: 32, gap: 24 }}>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ ...ns, fontSize: 12, color: '#8596AD', marginBottom: 5 }}>E-book name</p>
+              <h1 style={{ ...ns, fontSize: 20, fontWeight: 700, color: INK, lineHeight: 1.35, marginBottom: 6, maxWidth: 420 }}>{metadata.title || 'Untitled book'}</h1>
+              <p style={{ ...ns, fontSize: 13, color: '#8596AD' }}>{metadata.author || 'No author set'}</p>
+            </div>
+            <div style={{ flexShrink: 0 }}><PublishStatsRow stats={stats} /></div>
+          </div>
+
+          <div className="flex" style={{ gap: 40 }}>
+            <div className="flex-1 min-w-0">
+              <h2 style={{ ...ns, fontSize: 18, fontWeight: 700, color: INK, marginBottom: 20 }}>How would you like to publish?</h2>
+              <PublishFormatList value={format} onChange={setFormat} currentPlan={currentPlan as PlanId} />
+              {/* One line, about the selected format only — what you get, not how
+                  it is made. */}
+              <p style={{ ...ns, fontSize: 13, color: SLATE, lineHeight: 1.55, margin: '14px 2px 0' }}>{FORMAT_NOTES[fmt.id]}</p>
+              {exportError && (
+                <p style={{ ...ns, fontSize: 13, color: '#B91C1C', lineHeight: 1.5, margin: '10px 2px 0' }}>{exportError}</p>
+              )}
+            </div>
+
+            <div style={{ width: 340, flexShrink: 0 }}>
+              <div style={{ border: `1px solid ${BORDER}`, borderRadius: RADIUS_LG, overflow: 'hidden' }}>
+                {/* A neutral well, not the cover's own ground. Most of the
+                    templates ship a white or off-white cover, so a well painted
+                    to match would leave only the shadow to say where the book is. */}
+                <div className="flex justify-center" style={{ background: '#F6F7F9', padding: '22px 0' }}>
+                  <div style={{ borderRadius: 4, overflow: 'hidden', boxShadow: '0 10px 30px rgba(15,23,51,0.35)', lineHeight: 0 }}>{cover}</div>
+                </div>
+                <div style={{ padding: '14px 16px 16px' }}>
+                  <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
+                    <span style={{ ...ns, fontSize: 13, fontWeight: 700, color: INK }}>Book details</span>
+                    <button onClick={onEditDetails} className="cursor-pointer" style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: BLUE, background: 'none', border: 'none', padding: 0 }}>Edit</button>
+                  </div>
+                  {detailRows.map((r) => {
+                    const empty = !r.value.trim();
+                    return (
+                      <div key={r.label} className="flex items-baseline" style={{ gap: 12, padding: '6px 0', borderTop: `1px solid ${BORDER}` }}>
+                        <span style={{ ...ns, fontSize: 12.5, color: SLATE, width: 86, flexShrink: 0 }}>{r.label}</span>
+                        {empty ? (
+                          /* Amber only where the field is one a reader or a retailer
+                             expects on the finished file — the same three
+                             missingMetadata() marks in the settings panel. An empty
+                             optional field is just an em dash. */
+                          <span style={{ ...ns, fontSize: 12, fontWeight: 600, color: r.required ? '#8A5A08' : '#9AA5B4', background: r.required ? '#FDF6E7' : 'none', border: r.required ? '1px solid #F2DDB0' : 'none', borderRadius: RADIUS_PILL, padding: r.required ? '1px 8px' : 0 }}>
+                            {r.required ? 'Not set' : '—'}
+                          </span>
+                        ) : (
+                          <span className="truncate" style={{ ...ns, fontSize: 12.5, color: INK, minWidth: 0 }}>{r.value}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {published && (
+        <PublishedPanel
+          position="fixed"
+          cover={cover}
+          coverBg={coverBg}
+          url={publishedUrl}
+          onClose={() => setPublished(false)}
+          onDownload={fmt.real ? () => { void runExport(); } : undefined}
+          currentPlan={currentPlan as PlanId}
+          onUpgrade={onUpgrade}
+          onTurnIntoPresentation={onTurnIntoPresentation}
+          note={fmt.real ? [exportNote, exportWarning].filter(Boolean).join(' · ') || undefined : undefined}
+        />
+      )}
     </div>
   );
 }
@@ -24066,7 +27200,131 @@ function PublisherOverlay({
    full-screen overlay on top of the still-mounted editor, so the shared
    .book-chapter-prose global styles (emitted by the live ChapterEditors) stay
    in the document and this reuses them rather than re-declaring its own. */
-function PreviewPage({ page, pages, theme, chapterContent, fieldContent, metadata }: { page: PageMeta; pages: PageMeta[]; theme: ThemeDef; chapterContent: Record<string, string>; fieldContent: Record<string, string>; metadata: BookMetadata }) {
+/** A chapter's running text, drawn as the pages it actually comes to.
+
+    The read-only renderer used to draw a chapter as ONE sheet that simply grew:
+    `minHeight: geo.h` and no pagination at all. So Preview, the Layout tiles and
+    the Pages-panel fallback all showed a chapter as a single page several feet
+    long, a page design's foot band had nothing to hold the text off (the comment
+    that used to sit here said as much — "long copy will still run behind it…
+    that wants the preview to paginate"), and nothing here agreed with the page
+    count the canvas was reporting in the same window.
+
+    It paginates the same way the canvas's column chapters do, and for the same
+    reason: give a multi-column box a height and the overflow does not spill, it
+    starts another column beside the last one. At one column per page that makes
+    each column a page, so the browser breaks the text and the count is read off
+    `scrollWidth` rather than decided here. Page `i` is a window onto columns
+    `i * cols` to `i * cols + cols - 1`.
+
+    `sheet` draws one page of the chapter; leaving it out draws all of them. */
+function ChapterFlow({
+  html, bodyFont, cols, gap, reserveBottom, lead, sheet, chrome, className, renderSheet,
+}: {
+  html: string;
+  bodyFont: string;
+  cols: number;
+  gap: number;
+  /** Room a page design takes off the foot of EVERY sheet — a bled photo, a
+      foot band. Taken off the column height, so it shortens the text rather
+      than being drawn over by it. */
+  reserveBottom: number;
+  /** Room at the head of the sheet the text starts on, for whatever stands
+      above it. A block at the head of a column flow occupies the FIRST column
+      only, which is what a chapter title does. */
+  lead: number;
+  sheet?: number;
+  /** Drawn on the chapter's first sheet only, at the top of the text band. */
+  chrome?: React.ReactNode;
+  className?: string;
+  renderSheet: (index: number, children: React.ReactNode) => React.ReactNode;
+}) {
+  const geo = useContext(PageGeometryContext);
+  const width = geo.w - geo.padLeft - geo.padRight;
+  const colW = cols > 1 ? (width - gap * (cols - 1)) / cols : width;
+  const pitch = colW + gap;
+  const height = Math.max(40, geo.h - geo.padTop - reserveBottom);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const chromeRef = useRef<HTMLDivElement>(null);
+  const [count, setCount] = useState(1);
+  const [chromeH, setChromeH] = useState(0);
+  /* Bumped when something lands that changes the layout after the first
+     measurement. It only has to differ from last time — the measurement itself
+     reads the DOM, not this. */
+  const [, setTick] = useState(0);
+  /* The lead is a real block at the head of the flow, not padding on the box:
+     padding would indent every column, and this belongs above the first. */
+  const head = Math.round(lead + chromeH);
+  const body = (head > 0 ? `<div data-column-lead="true" style="height:${head}px"></div>` : '') + html;
+
+  /* Deliberately on every render with its own equality guards rather than on a
+     dependency list: both numbers are the laid-out size of markup this renders
+     from a string, and there is no value held here that changes when they do. */
+  useLayoutEffect(() => {
+    const el = stripRef.current;
+    if (el) {
+      const total = Math.max(1, Math.round((el.scrollWidth + gap) / pitch));
+      const next = Math.max(1, Math.ceil(total / cols));
+      setCount((prev) => (prev === next ? prev : next));
+    }
+    const ch = chromeRef.current;
+    if (ch) {
+      const next = Math.round(ch.offsetHeight);
+      setChromeH((prev) => (Math.abs(prev - next) < 1 ? prev : next));
+    }
+  });
+  /* A picture that has not arrived yet is a column count that is about to
+     change, and nothing else here re-renders when it lands. */
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const pending = Array.from(el.querySelectorAll('img')).filter((img) => !img.complete);
+    if (!pending.length) return;
+    /* A real bump. `setCount(prev => prev)` was the obvious thing to write and
+       does nothing at all: React bails out on an unchanged value, so there is no
+       re-render, so the measurement above never runs again and the chapter keeps
+       the page count it had before its pictures arrived. */
+    const bump = () => setTick((n) => n + 1);
+    pending.forEach((img) => img.addEventListener('load', bump, { once: true }));
+    return () => pending.forEach((img) => img.removeEventListener('load', bump));
+  });
+
+  const indices = sheet != null ? [sheet] : Array.from({ length: count }, (_, i) => i);
+  return (
+    <>
+      {indices.map((i, n) => (
+        <div key={i} style={{ marginBottom: n < indices.length - 1 ? PAGE_GAP : undefined }}>
+          {renderSheet(i, (
+        <>
+          {i === 0 && chrome != null && (
+            <div ref={chromeRef} style={{ position: 'absolute', left: geo.padLeft, top: geo.padTop, width }}>
+              {chrome}
+            </div>
+          )}
+          <div style={{ position: 'absolute', left: geo.padLeft, top: geo.padTop, width, height, overflow: 'hidden' }}>
+            <div
+              /* One strip is measured, and any of them will do — they are the
+                 same box at the same width, which is why they break in the same
+                 places. */
+              ref={n === 0 ? stripRef : undefined}
+              className={`book-chapter-prose${className ? ` ${className}` : ''}`}
+              style={{
+                fontFamily: bodyFont,
+                columnCount: cols, columnGap: gap, columnFill: 'auto',
+                width, height, marginLeft: -Math.round(i * cols * pitch),
+              }}
+              dangerouslySetInnerHTML={{ __html: body }}
+            />
+          </div>
+        </>
+          ))}
+        </div>
+      ))}
+    </>
+  );
+}
+
+function PreviewPage({ page, pages, theme, chapterContent, fieldContent, metadata, sheet }: { page: PageMeta; pages: PageMeta[]; theme: ThemeDef; chapterContent: Record<string, string>; fieldContent: Record<string, string>; metadata: BookMetadata; sheet?: number }) {
   const geo = useContext(PageGeometryContext);
   if (page.type === 'chapter') {
     const bodyFont = page.overrides.bodyFont ?? theme.bodyFont;
@@ -24089,48 +27347,216 @@ function PreviewPage({ page, pages, theme, chapterContent, fieldContent, metadat
       applyFootnoteNumbering(chapterContent[page.id] ?? page.initialHtml, page.id),
       { author: metadata.author, bookTitle: metadata.title, chapterTitle: stripTags(titleHtml) || page.title, chapterNumber },
     );
+    /* A designed chapter reads as two sheets here the way it does on the canvas:
+       the opener is a whole page, and the prose starts on the next one. Preview
+       is not paginated, so the second sheet simply grows — it is one long page
+       in every other template too. */
+    const design = pageDesignOf(theme);
+    if (design) {
+      const isOpener = page.layout === 'opener' && hasTitle;
+      const title = isOpener ? design.openerTitle(chapterNumber, page.openerIndex ?? undefined) : null;
+      /* The chapter's own style — what the flow-level claims below ask, since
+         Preview is not paginated and has one flow for the whole chapter. */
+      const sheetVariant: string = page.sheetStyle ?? design.defaultSheet;
+      /* And what each SHEET wears, which is what its furniture asks. A style
+         picked for sheet 3 has to show on sheet 3 here too, or Preview and the
+         page thumbnails disagree with the canvas about what the book looks
+         like. */
+      const variantAt = (i: number): string => page.sheetStyles?.[i] ?? sheetVariant;
+      /* The opener's own ground is the first element its builder seeds, so the
+         sheet behind it does not need a second copy of that colour — reading
+         the stored object is what keeps a design change visible here without
+         Preview knowing anything about the design. */
+      const openerBg = (page.coverElements ?? []).find((el) => el.type === 'shape' && el.x === 0 && el.y === 0);
+      const openerPhoto = design.sheetHasPhoto(sheetVariant)
+        /* The photograph the photo content pages are DRAWN around (frame 2168:4672),
+       not the opener stock they were borrowing. The author's own `openerImage`
+       still outranks it — this is only what the design shows untouched. */
+    ? (page.openerImage ?? CP_FIELD.contentPhoto)
+        : undefined;
+      return (
+        <>
+          <style jsx global>{`.book-preview-title h2 { margin: 0; font: inherit; color: inherit; }`}</style>
+          <design.Styles />
+          {title && (
+            <div style={{ marginBottom: PAGE_GAP }}>
+              <CpSheet geo={geo} bg={(openerBg as CoverShapeElement | undefined)?.color ?? (page.bg ?? theme.bg)}>
+                <CoverCanvasStatic
+                  page={page}
+                  theme={theme}
+                  fieldContent={fieldContent}
+                  elements={(page.coverElements ?? []).map((el) => (el.id === design.numeralId && el.type === 'text'
+                    /* Never 0. A page outside the book's own chapter run — a Layout tile's
+                       specimen — computes no number, and a chapter numeral is 1-based
+                       everywhere a reader sees one. */
+                    ? { ...el, defaultHtml: design.numeralHtml(chapterNumber) }
+                    : el))}
+                  bare
+                />
+                <div
+                  className="book-preview-title cp-trim lv-trim"
+                  style={{
+                    position: 'absolute',
+                    left: (title.x + title.pad) / design.w * geo.w,
+                    top: (title.y + title.pad) / design.h * geo.h,
+                    width: (title.w - title.pad * 2) / design.w * geo.w,
+                    fontFamily: title.font,
+                    fontSize: fitOpenerTitleSize(title, design, geo, stripTags(titleHtml)),
+                    fontWeight: title.weight,
+                    lineHeight: title.lineHeight,
+                    color: title.color,
+                  }}
+                  dangerouslySetInnerHTML={{ __html: titleHtml }}
+                />
+              </CpSheet>
+            </div>
+          )}
+          {/* Both of a page design's claims on the text, expressed the way the
+              canvas expresses them rather than as padding on one long sheet.
+
+              A FOOT claim — a bled photo, a foot band — comes off every sheet,
+              so it shortens the column. That is what finally holds the text off
+              the photo on the "Photo in the column" design: before, the sheet
+              simply grew and there was no page bottom to reserve from, so long
+              copy ran behind the picture.
+
+              A HEAD claim cannot be a reserve (a reserve shortens a page from
+              the bottom), so it is a block at the head of the flow — which in a
+              column flow occupies the first column only, which is the one sheet
+              the band is painted on. */}
+          <ChapterFlow
+            html={html}
+            bodyFont={bodyFont}
+            /* The page's own column count, asked the same way the canvas asks
+               it. A Layout tile that drew one column over the words "Two
+               columns" was this branch never asking at all. */
+            cols={sheetColumns(theme, page)}
+            gap={(design.prose.colGap * geo.w) / design.w}
+            reserveBottom={design.footReserve(sheetVariant) > 0
+              ? Math.max(geo.padBottom, geo.h - ((design.h - design.footReserve(sheetVariant)) / design.h) * geo.h)
+              : geo.padBottom}
+            lead={design.headTextTop(sheetVariant) > 0
+              ? Math.max(0, (design.headTextTop(sheetVariant) / design.h) * geo.h - geo.padTop)
+              : 0}
+            sheet={sheet}
+            renderSheet={(i, flow) => (
+              <div
+                key={i}
+                style={{
+                  position: 'relative', background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`, borderRadius: 3,
+                  boxShadow: PAGE_SHADOW, height: geo.h, overflow: 'hidden',
+                  marginBottom: i < 0 ? 0 : undefined,
+                }}
+              >
+                {/* A head-set design belongs to the first sheet that carries
+                    running text, not to every sheet of a long chapter — the same
+                    call the canvas hands to the design. */}
+                {design.ContentSheet({ geo, variant: variantAt(i), photo: openerPhoto ?? CP_OPENER_STOCK[0], sheetIndex: i, textSheet: 0 })}
+                {flow}
+              </div>
+            )}
+          />
+        </>
+      );
+    }
     return (
-      <div style={{ background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`, borderRadius: 3, boxShadow: PAGE_SHADOW, minHeight: geo.h, padding: `${geo.padTop}px ${geo.padRight}px ${geo.padBottom}px ${geo.padLeft}px` }}>
+      <>
         {/* titleHtml is a real <h2> now (for a real document outline) — its own UA
             defaults (bold, ~1.5em) would otherwise fight the sizing set here, since
             inline styles on this wrapper don't cascade onto dangerouslySetInnerHTML
             children the way they would onto plain text. */}
         <style jsx global>{`.book-preview-title h2 { margin: 0; font: inherit; color: inherit; }`}</style>
-        {page.layout === 'opener' && hasTitle && (
-          page.openerImage ? (
-            <div style={{ position: 'relative', margin: '-55px -63px 20px', height: 220, overflow: 'hidden' }}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={page.openerImage} alt="" style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }} />
-              <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(0,0,0,0) 45%, rgba(0,0,0,0.78) 100%)' }} />
-              <div className="flex items-center justify-between" style={{ position: 'absolute', left: 24, right: 24, bottom: 16 }}>
-                <div style={{ ...ns, fontSize: 11.5, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#fff' }} dangerouslySetInnerHTML={{ __html: eyebrowHtml }} />
-                <span style={{ fontFamily: theme.headingFont, fontWeight: 800, fontSize: 40, lineHeight: 1, color: '#fff' }}>{chapterNumber}</span>
-              </div>
+        <ChapterFlow
+          html={html}
+          bodyFont={bodyFont}
+          cols={sheetColumns(theme, page)}
+          gap={28}
+          reserveBottom={geo.padBottom}
+          lead={0}
+          sheet={sheet}
+          className={page.layout === 'image-led' ? 'is-image-led' : undefined}
+          /* The chapter's opening furniture, drawn on its first sheet and
+             measured so the flow starts under it. A chapter title appears on
+             one page of the chapter, so it cannot be room taken off the top of
+             the column — a column flow has one height for every column it will
+             ever make. */
+          chrome={(page.layout === 'opener' && hasTitle) || hasTitle ? (
+            <>
+              {/* The opener band bleeds to the page edge, so the pull-out below is the
+                  page's own margins and the band's depth is a share of its width. Both
+                  were hardcoded to what the default Letter sheet happens to measure,
+                  which bled past the edge on any other margin and in every scaled
+                  device frame. */}
+              {page.layout === 'opener' && hasTitle && (
+                page.openerImage ? (
+                  <div style={{ position: 'relative', margin: `-${geo.padTop}px -${geo.padRight}px 20px -${geo.padLeft}px`, height: Math.round(geo.w * 0.3), overflow: 'hidden' }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={page.openerImage} alt="" style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(0,0,0,0) 45%, rgba(0,0,0,0.78) 100%)' }} />
+                    <div className="flex items-center justify-between" style={{ position: 'absolute', left: 24, right: 24, bottom: 16 }}>
+                      <div style={{ ...ns, fontSize: 11.5, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#fff' }} dangerouslySetInnerHTML={{ __html: eyebrowHtml }} />
+                      <span style={{ fontFamily: theme.headingFont, fontWeight: 800, fontSize: 40, lineHeight: 1, color: '#fff' }}>{chapterNumber}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ height: openerRule.thickness, width: openerRule.width, background: openerRule.color, borderRadius: 2, marginBottom: 14 }} />
+                    <div style={{ ...ns, marginBottom: 6, fontSize: 11.5, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: theme.accentColor }} dangerouslySetInnerHTML={{ __html: eyebrowHtml }} />
+                  </div>
+                )
+              )}
+              {hasTitle && (
+                <div
+                  className="book-preview-title"
+                  style={{
+                    fontFamily: theme.headingFont, color: headingColor,
+                    fontSize: page.layout === 'opener' ? 38 : 26,
+                    margin: page.layout === 'opener' ? '0 0 20px' : '0 0 14px',
+                    /* On a two-column page the title sets to the first column's
+                       measure — see the canvas, where the full measure printed it
+                       over the first lines of column two. */
+                    maxWidth: sheetColumns(theme, page) > 1 ? (geo.w - geo.padLeft - geo.padRight - 28) / 2 : undefined,
+                  }}
+                  dangerouslySetInnerHTML={{ __html: titleHtml }}
+                />
+              )}
+            </>
+          ) : undefined}
+          renderSheet={(i, flow) => (
+            <div
+              key={i}
+              style={{
+                position: 'relative', background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`,
+                borderRadius: 3, boxShadow: PAGE_SHADOW, height: geo.h, overflow: 'hidden',
+              }}
+            >
+              {flow}
             </div>
-          ) : (
-            <div>
-              <div style={{ height: openerRule.thickness, width: openerRule.width, background: openerRule.color, borderRadius: 2, marginBottom: 14 }} />
-              <div style={{ ...ns, marginBottom: 6, fontSize: 11.5, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: theme.accentColor }} dangerouslySetInnerHTML={{ __html: eyebrowHtml }} />
-            </div>
-          )
-        )}
-        {hasTitle && (
-          <div
-            className="book-preview-title"
-            style={{
-              fontFamily: theme.headingFont, color: headingColor,
-              fontSize: page.layout === 'opener' ? 38 : 26,
-              margin: page.layout === 'opener' ? '0 0 20px' : '0 0 14px',
-            }}
-            dangerouslySetInnerHTML={{ __html: titleHtml }}
-          />
-        )}
-        <div
-          className={`book-chapter-prose${page.layout === 'two-column' ? ' is-two-col' : page.layout === 'image-led' ? ' is-image-led' : ''}`}
-          style={{ fontFamily: bodyFont }}
-          dangerouslySetInnerHTML={{ __html: html }}
+          )}
         />
-      </div>
+      </>
+    );
+  }
+  const design = pageDesignOf(theme);
+  /* Preview's counterpart to SimplePageBlock's `cpField`: the same body
+     components, with the text rendered rather than made editable. */
+  const cpField: CpRenderField = ({ fieldKey, initialHtml, className, style }) => (
+    <div key={fieldKey} className={className} style={style} dangerouslySetInnerHTML={{ __html: fieldContent[fieldKey] ?? initialHtml }} />
+  );
+  const cpKind = design ? design.pageKindOf(page, true) : null;
+  if (cpKind && design) {
+    return (
+      <>
+        <design.Styles />
+        <CoverCanvasStatic page={page} theme={theme} fieldContent={fieldContent}>
+          {/* Any of the contents designs — the list is the same rows whichever
+              ground they sit on. Testing for 'toc' alone meant the two panel
+              designs drew their furniture and no entries at all. */}
+          {cpKind?.startsWith('toc') && (
+            <CpTocEntries page={page} geo={geo} pages={pages} fieldContent={fieldContent} field={cpField} />
+          )}
+        </CoverCanvasStatic>
+      </>
     );
   }
   if (page.type === 'cover') {
@@ -24164,7 +27590,10 @@ function PreviewPage({ page, pages, theme, chapterContent, fieldContent, metadat
   return (
     <div style={{ background: page.bg ?? theme.bg, border: `1px solid ${BORDER}`, borderRadius: 3, boxShadow: PAGE_SHADOW, minHeight: geo.h, display: 'flex', overflow: 'hidden' }}>
       <AuthorAvatarPanel accentColor={theme.accentColor} photo={page.authorPhoto} />
-      <div style={{ flex: 1, minWidth: 0, padding: '56px 48px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+      {/* The page's own margins rather than a fixed 56/48: the avatar panel beside
+          this takes a third of the sheet, so hardcoded inches of padding left the
+          bio about a hundred pixels wide in a phone frame. */}
+      <div style={{ flex: 1, minWidth: 0, padding: `${geo.padTop}px ${geo.padRight}px`, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <h2 style={{ fontFamily: theme.headingFont, color: theme.headingColor, fontSize: 22, margin: '0 0 10px' }}>About the Author</h2>
         <div style={{ fontSize: 14.5, color: theme.bodyColor, maxWidth: 420 }} dangerouslySetInnerHTML={{ __html: bioHtml }} />
         {page.backQr && (
@@ -24177,8 +27606,14 @@ function PreviewPage({ page, pages, theme, chapterContent, fieldContent, metadat
   );
 }
 
-const DEVICE_FRAMES: { id: 'desktop' | 'tablet' | 'mobile'; label: string; icon: string; width: number }[] = [
-  { id: 'desktop', label: 'Desktop', icon: ICONS.desktop, width: PAGE_W },
+/* Tablet and phone are real device widths. "Desktop" is not a device at all —
+   it is the book's own sheet at its own size — so it carries no width and takes
+   the live geometry instead. It used to be the DEFAULT page width, which is the
+   same number only for a Letter book: an A4 template (Career Pathways, Lovable)
+   laid its pages out 701px wide inside a 720px frame and scaled its cover UP to
+   fill the difference. */
+const DEVICE_FRAMES: { id: 'desktop' | 'tablet' | 'mobile'; label: string; icon: string; width: number | null }[] = [
+  { id: 'desktop', label: 'Desktop', icon: ICONS.desktop, width: null },
   { id: 'tablet', label: 'Tablet', icon: ICONS.tablet, width: 460 },
   { id: 'mobile', label: 'Mobile', icon: ICONS.mobile, width: 320 },
 ];
@@ -24188,7 +27623,7 @@ const DEVICE_FRAMES: { id: 'desktop' | 'tablet' | 'mobile'; label: string; icon:
    page-thumbnail rail vocabulary the Pages panel and NarrationViewV4's
    filmstrip use. */
 function PreviewOverlay({
-  pages, theme, chapterContent, fieldContent, metadata, pageNumbers, title, onClose,
+  pages, theme, chapterContent, fieldContent, metadata, pageNumbers, onClose, onPublish,
 }: {
   pages: PageMeta[];
   theme: ThemeDef;
@@ -24198,12 +27633,54 @@ function PreviewOverlay({
   // keeps displaying the token — so the book's own metadata has to reach here.
   metadata: BookMetadata;
   pageNumbers: PageNumberSettings;
-  title: string;
   onClose: () => void;
+  onPublish: () => void;
 }) {
   const geo = useContext(PageGeometryContext);
   const [device, setDevice] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
   const frame = DEVICE_FRAMES.find((d) => d.id === device) ?? DEVICE_FRAMES[0];
+  const frameW = frame.width ?? geo.w;
+  const scale = frameW / geo.w;
+  /* Fit-to-window, measured rather than assumed. The reading pane is whatever is
+     left after the thumbnail rail, and on a laptop at 1024 or a tablet in
+     portrait that is narrower than the sheet — which clipped the right edge of
+     every page, with no horizontal scrollbar to reach it, because the pane only
+     scrolls down. Shrinking beats scrolling sideways through a book. */
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  const [paneW, setPaneW] = useState(0);
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setPaneW(entry.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // The bezel is drawn outside the screen width, so it counts towards the fit.
+  const fit = paneW > 0 ? Math.min(1, paneW / (frameW + (device === 'desktop' ? 0 : 20))) : 1;
+  /* Two ways a page can meet a narrower frame, and which one a page gets is not
+     a style choice — it follows from what the page is made of.
+
+     A FLOWING page (a plain template's chapter, contents or back matter) is text
+     in a box. It reflows, so it keeps its type size and takes a page box scaled
+     to the frame — margins included, which is the point: at the unscaled 0.75in
+     the text column on a 320px phone came out 174px wide, around twenty-five
+     characters a line, with the rest of the sheet left empty below it.
+
+     A FIXED-LAYOUT page (every cover, and every page of a template that ships a
+     whole page design) is artwork positioned against the page box, mixing
+     geometry-derived positions with px type sizes. None of it reflows — scaling
+     the box alone moved the artwork and left the type behind, which is how the
+     Career Pathways contents page ran "Table Of Cont…" off the side of the
+     phone frame — so those are zoomed whole, the way a PDF reader zooms a sheet. */
+  const flowGeo: PageGeometry = useMemo(() => (scale === 1 ? geo : {
+    w: frameW,
+    h: Math.round(geo.h * scale),
+    padTop: Math.round(geo.padTop * scale),
+    padRight: Math.round(geo.padRight * scale),
+    padBottom: Math.round(geo.padBottom * scale),
+    padLeft: Math.round(geo.padLeft * scale),
+  }), [geo, scale, frameW]);
+  const pageDesign = pageDesignOf(theme);
   const previewRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const jumpToPreviewPage = (id: string) => previewRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   // Tracks which page is nearest the top of the scroll pane, so the rail can
@@ -24240,9 +27717,14 @@ function PreviewOverlay({
         className="flex-shrink-0 flex justify-between"
         style={{ alignItems: 'center', height: 60, padding: '0 20px', borderBottom: `1px solid ${BORDER}`, background: '#fff', flexWrap: 'wrap', gap: 10 }}
       >
-        <button onClick={onClose} className="flex items-center cursor-pointer" style={{ gap: 6, ...ns, fontSize: 13, fontWeight: 500, color: SLATE, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: '7px 14px' }}>
-          <Icon d={ICONS.back} size={14} /> Back to editing
-        </button>
+        {/* Both end slots take the same share of the bar so the switcher sits on
+            its true centre — the two buttons are different widths, and with plain
+            space-between the middle group rides wherever the difference puts it. */}
+        <div style={{ flex: 1 }}>
+          <button onClick={onClose} className="flex items-center cursor-pointer" style={{ gap: 6, ...ns, fontSize: 13, fontWeight: 500, color: SLATE, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: RADIUS_MD, padding: '7px 14px' }}>
+            <Icon d={ICONS.back} size={14} /> Back to editing
+          </button>
+        </div>
 
         {/* Device-frame switcher — the desktop/tablet/mobile row every Kindle/Print
             preview step in the real product shows above the mockup. */}
@@ -24251,6 +27733,10 @@ function PreviewOverlay({
             <Tooltip key={d.id} label={d.label} position="bottom">
               <button
                 onClick={() => setDevice(d.id)}
+                // The glyph is the whole button, and a tooltip is not a name —
+                // without this the three read as "button, button, button".
+                aria-label={d.label}
+                aria-pressed={device === d.id}
                 className="flex items-center justify-center cursor-pointer"
                 style={{ width: 32, height: 28, borderRadius: RADIUS_SM, border: 'none', background: device === d.id ? '#fff' : 'transparent', color: device === d.id ? BLUE : SLATE, boxShadow: device === d.id ? '0px 1px 2px rgba(15,23,51,0.12)' : 'none' }}
               >
@@ -24259,36 +27745,63 @@ function PreviewOverlay({
             </Tooltip>
           ))}
         </div>
-        <div style={{ ...ns, fontSize: 13.5, fontWeight: 700, color: INK }}>{title} — Preview</div>
+        {/* Publish, in the same corner and the same button it occupies in the
+            editor's own top bar, so entering Preview doesn't move it. The book's
+            name used to sit here: it named a view you can only reach from that
+            book, under a header that already names it, and it made the last look
+            before publishing a dead end — the only way on was back the way you came. */}
+        <div className="flex justify-end" style={{ flex: 1 }}>
+          <button
+            onClick={onPublish}
+            style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: BLUE, border: 'none', borderRadius: RADIUS_MD, padding: '8px 18px', cursor: 'pointer' }}
+          >
+            Publish
+          </button>
+        </div>
       </div>
       <div className="flex-1 flex overflow-hidden" style={{ minHeight: 0 }}>
-        <div className="flex-1 overflow-y-auto" style={{ padding: '40px 24px 120px' }} onScroll={handlePreviewScroll}>
+        <div ref={paneRef} className="flex-1 overflow-y-auto" style={{ padding: '40px 24px 120px' }} onScroll={handlePreviewScroll}>
           <div
             style={{
-              width: frame.width, margin: '0 auto',
-              ...(device !== 'desktop' ? { border: '10px solid #1F2430', borderRadius: 22, boxShadow: '0px 16px 40px rgba(15,23,51,0.22)', overflow: 'hidden', background: '#1F2430' } : {}),
+              /* content-box so the bezel sits OUTSIDE the screen rather than
+                 eating 20px of it: under the app's border-box default every
+                 page inside laid out 20px narrower than the width the scaling
+                 below was computed from, so each one was drawn 10px right of
+                 centre with its right edge clipped by the frame. */
+              width: frameW, margin: '0 auto', boxSizing: 'content-box', zoom: fit,
+              /* The book's own paper, not the bezel colour. Inside a device the
+                 pages are flush, and anything between them — a page-number
+                 strip, the gap under a short page — was landing on near-black. */
+              ...(device !== 'desktop' ? { border: '10px solid #1F2430', borderRadius: 22, boxShadow: '0px 16px 40px rgba(15,23,51,0.22)', overflow: 'hidden', background: theme.bg } : {}),
             }}
           >
-            {pages.map((p) => (
-              <div key={p.id} ref={(el) => { previewRefs.current[p.id] = el; }} style={{ marginBottom: device === 'desktop' ? 40 : 0 }}>
-                <PageNumberStrip settings={pageNumbers} index={chapterCountForNumbering(p.id)} edge="header" />
-                {/* The cover is a percent-positioned canvas at a fixed intrinsic
-                    PAGE_W — unlike flowing chapter/toc/backmatter text, it visibly
-                    distorts if just given a narrower width with no matching scale,
-                    so it's the one page type that needs an explicit scale wrapper
-                    to fit a narrower device frame. */}
-                {p.type === 'cover' && frame.width !== geo.w ? (
-                  <div style={{ width: frame.width, height: geo.h * (frame.width / geo.w), overflow: 'hidden' }}>
-                    <div style={{ width: geo.w, transform: `scale(${frame.width / geo.w})`, transformOrigin: 'top left' }}>
-                      <PreviewPage page={p} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} />
-                    </div>
-                  </div>
-                ) : (
+            {pages.map((p) => {
+              const sheet = (
+                <>
+                  <PageNumberStrip settings={pageNumbers} index={chapterCountForNumbering(p.id)} edge="header" />
                   <PreviewPage page={p} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} />
-                )}
-                <PageNumberStrip settings={pageNumbers} index={chapterCountForNumbering(p.id)} edge="footer" />
-              </div>
-            ))}
+                  <PageNumberStrip settings={pageNumbers} index={chapterCountForNumbering(p.id)} edge="footer" />
+                </>
+              );
+              // Which of the two treatments this page takes, and why, is set out
+              // at flowGeo above.
+              const fixedLayout = p.type === 'cover' || pageDesign !== null;
+              return (
+                <div key={p.id} ref={(el) => { previewRefs.current[p.id] = el; }} style={{ marginBottom: device === 'desktop' ? 40 : 0 }}>
+                  {fixedLayout ? (
+                    /* `zoom`, not `transform: scale()`. A designed page is not a
+                       fixed height — its text sheet grows past the page box and
+                       Preview does not paginate — and a transform reserves the
+                       UNSCALED box whatever it draws, so a scaled column of them
+                       left a growing gap under every page. zoom scales the layout
+                       itself, so the column still adds up. */
+                    <div style={{ zoom: scale }}>{sheet}</div>
+                  ) : (
+                    <PageGeometryContext.Provider value={flowGeo}>{sheet}</PageGeometryContext.Provider>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -24328,7 +27841,7 @@ function PreviewOverlay({
                 >
                   <div style={{ width: railThumbW, height: railThumbH, overflow: 'hidden', borderRadius: 5 }}>
                     <div style={{ width: geo.w, height: geo.h, transform: `scale(${railThumbW / geo.w})`, transformOrigin: 'top left', pointerEvents: 'none' }}>
-                      <PreviewPage page={p} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} />
+                      <PreviewPage page={p} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} sheet={0} />
                     </div>
                   </div>
                   <div className="absolute flex items-center justify-center" style={{ bottom: 5, left: 5, minWidth: 17, height: 17, borderRadius: 4, background: 'rgba(15,23,51,0.55)', padding: '0 4px' }}>
@@ -24449,6 +27962,11 @@ function sanitizeThumbClone(src: HTMLElement, clone: HTMLElement) {
   for (let i = kids.length - 1; i >= 0; i--) {
     const el = kids[i] as HTMLElement;
     if (el.hasAttribute('data-page-sheet')) continue;
+    /* A multi-column chapter's text is absolutely positioned too — each sheet
+       is a window onto the column strip (see ColumnMirror) — and dropping it
+       here is what left those pages' thumbnails blank. Position alone cannot
+       tell chrome from content, so content says so. */
+    if (el.hasAttribute('data-page-content')) continue;
     if (getComputedStyle(el).position !== 'absolute') continue;
     clone.children[i]?.remove();
   }
@@ -24778,7 +28296,188 @@ function RowMenu({ items, ariaLabel, persistent = false }: {
    of a chapter was Pages doing that tab's job in the room it needed for its
    own. The name moves to the tooltip. (QuickBooks is the one counter-example:
    it captions every page. Its documents have four sections, not forty.) */
-function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, metadata, activePageId, activeSheetIndex, getPageEl, onJump, onAddPageAt, onDuplicatePage, onDeletePage, onReorder }: {
+/* ── "Add a page" gallery ─────────────────────────────────────────────────────
+   A template is a SET OF PAGES you insert from, not a skin plus a per-page style
+   property. Visme's "Add a Page", Canva's Layouts and Designrr's own live editor
+   all land in the same place: the page IS the design, and you choose it when you
+   add it, from pictures rather than from names. The five-entry `sheetStyle` picker
+   in the row menu was the third surface answering this one question, and the
+   only one that answered it in words.
+
+   Each tile is the page you will actually get — the same scaled PreviewPage the
+   Pages panel and the Preview rail already render, seeded through `cpSeedPage`,
+   so there is no second drawing of the template to keep in sync with the first.
+   Blank leads, as it does in every gallery of this shape, because it is the one
+   option that is not a design. */
+/* Specimen copy for a content-page tile. A tile has to show the SHAPE of the
+   page — one column or two, where the photo and the bands sit — so it needs body
+   text, and the real page is empty when you insert it. Short enough to set in a
+   155px-wide thumbnail without turning to grey mush. */
+const CP_SPECIMEN = '<p>In the ever-evolving landscape of modern careers, finding your path can feel like navigating a complex maze. Gone are the days of linear career paths and lifelong commitments to a single profession.</p><p>Today\u2019s professional world is dynamic, offering countless opportunities for growth, pivot, and redefinition.</p>';
+
+const CP_LEAD = '<p><em>Written by John Jonhson</em></p><h2>Embracing Growth, Fueling Motivation, and Achieving Your Goals</h2>';
+
+function cpPreviewChapter(spec: { id: string; sheet?: string; cols?: 2; lead?: boolean; opener?: number; blank?: boolean; full?: boolean }): { page: ChapterPage; html: string } {
+  const id = `cp-preview-${spec.id}`;
+  return {
+    page: {
+      id, type: 'chapter',
+      title: spec.opener != null ? 'Navigating Career Transitions' : '',
+      layout: spec.opener != null ? 'opener' : 'standard', overrides: {},
+      titleHtml: spec.opener != null ? '<h2>Navigating Career Transitions</h2>' : '', initialHtml: '',
+      ...(spec.opener != null ? { openerIndex: spec.opener } : {}),
+      ...(spec.sheet ? { sheetStyle: spec.sheet } : {}),
+    } as ChapterPage,
+    html: spec.blank ? '<p></p>'
+      /* A two-column tile needs enough running text to FILL two columns —
+         half the measure takes roughly twice the depth, and a specimen that
+         only filled one of them is what made the tile draw a single column
+         under the words "Two columns". It used to pour the specimen into a
+         two-cell table instead, which drew the furniture of columns without
+         ever being any: no text crossed between the cells. */
+      : spec.cols === 2 ? CP_SPECIMEN + CP_SPECIMEN + CP_SPECIMEN + CP_SPECIMEN
+      /* A content page is a page of RUNNING TEXT, so the tile has to be full of
+         it. One specimen left five-sixths of the sheet white, which read as an
+         empty page rather than as the kind you were picking. */
+      : spec.full ? CP_SPECIMEN + CP_SPECIMEN + CP_SPECIMEN
+      : (spec.lead ? CP_LEAD : '') + CP_SPECIMEN,
+  };
+}
+
+function cpPreviewPage(kind: string, theme: ThemeDef, design: PageDesign): SimplePage {
+  const id = `cp-preview-${kind}`;
+  const d = design.defaults;
+  /* The cover is the one kind that isn't seeded from `pageElements` — a theme
+     carries its cover as `coverElements` because every theme has one, designed
+     page or not. So the tile is built the way applyTemplate builds a real
+     cover, not from a per-template branch. */
+  if (kind === 'cover') return { id, type: 'cover', title: 'Cover', bg: theme.coverBg, coverElements: theme.coverElements };
+  if (kind === 'toc') return design.seedPage({ id, type: 'toc', tocLayout: d.toc, title: 'Table of Contents' }, d.toc);
+  if (kind === 'back') return design.seedPage({ id, type: 'backmatter', backLayout: d.back, title: 'About the Author' }, d.back);
+  if (kind === 'cta') return design.seedPage({ id, type: 'cta', title: 'Call to action' }, d.cta);
+  if (kind === 'image') return design.seedPage({ id, type: 'image', imageLayout: d.image, title: 'Image' }, d.image);
+  const first = design.layouts.worksheet[0];
+  return design.seedPage({ id, type: 'workbook', workbook: first.id as CpWorkbookKind, title: first.label }, `wb-${first.id}`);
+}
+
+function AddPageGallery({ pages, theme, chapterContent, fieldContent, metadata, onPick, onClose }: {
+  pages: PageMeta[];
+  theme: ThemeDef;
+  chapterContent: Record<string, string>;
+  fieldContent: Record<string, string>;
+  metadata: BookMetadata;
+  onPick: (kind: AddPageKind) => boolean;
+  onClose: () => void;
+}) {
+  const geo = useContext(PageGeometryContext);
+  const [hover, setHover] = useState<string | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const thumbW = 168;
+  const thumbH = thumbW * (geo.h / geo.w);
+  /* 'page' leads the grid as its own tile rather than sitting in the flow with
+     the designed pages — it is the one entry that isn't a design, so it gets the
+     dashed outline every gallery of this shape gives that slot. It keeps the
+     option's own label: under a template with page chrome a content page is not
+     "blank", it is the template's ordinary page with nothing written on it. */
+  /* Which kinds this template offers. Falls back to Career Pathways' list only
+     so the gallery has something to draw if it is ever opened under a theme
+     with no page design at all — in practice the rail hides it there. */
+  const design = pageDesignOf(theme) ?? PAGE_DESIGNS['career-pathways'];
+  const designed = design.addPageOptions;
+  const caption = { ...ns, fontSize: 12, color: INK, marginTop: 8, textAlign: 'left' as const };
+
+  return (
+    <div
+      className="flex items-center justify-center"
+      style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(15,23,51,0.38)' }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 'min(880px, 92vw)', maxHeight: '86vh', background: '#fff', borderRadius: RADIUS_LG,
+          boxShadow: '0 24px 60px rgba(15,23,51,0.28)', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        }}
+      >
+        <div className="flex items-center justify-between flex-shrink-0" style={{ padding: '15px 18px', borderBottom: `1px solid ${BORDER}` }}>
+          <div>
+            <div style={{ ...ns, fontSize: 15, fontWeight: 700, color: INK }}>Add a page</div>
+            <div style={{ ...ns, fontSize: 12, color: SLATE, marginTop: 2 }}>From the {theme.name} template</div>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="flex items-center justify-center cursor-pointer hover:bg-[#F6F7F9]"
+            style={{ width: 28, height: 28, border: 'none', background: 'none', borderRadius: RADIUS_SM, color: SLATE }}
+          >
+            <Icon d="M18 6L6 18M6 6l12 12" size={14} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto" style={{ padding: 18 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${thumbW}px, 1fr))`, gap: 20, justifyItems: 'start' }}>
+            {designed.map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => { if (onPick(opt.id)) onClose(); }}
+                onMouseEnter={() => setHover(opt.id)}
+                onMouseLeave={() => setHover(null)}
+                className="cursor-pointer"
+                style={{ border: 'none', background: 'none', padding: 0, textAlign: 'left' }}
+              >
+                <div style={{
+                  width: thumbW, height: thumbH, borderRadius: RADIUS_MD, overflow: 'hidden', background: '#fff',
+                  border: `1px solid ${BORDER}`, outlineOffset: 1,
+                  outline: hover === opt.id ? `2px solid ${BLUE}` : '2px solid transparent',
+                  transition: 'outline-color .1s ease',
+                }}>
+                  <div style={{
+                    width: geo.w, height: geo.h, transform: `scale(${thumbW / geo.w})`,
+                    transformOrigin: 'top left', pointerEvents: 'none',
+                  }}>
+                    {/* A kind's tile shows that kind in its FIRST design — the
+                        one you get on insert. Which design it ends up wearing is
+                        the Layout panel's business. */}
+                    {opt.id === 'chapter' ? (
+                      /* The opener, because that is what inserting a chapter gives
+                         you: addPageAfter seeds a titled page with
+                         chapterLayoutOf(theme), which is 'opener' under this
+                         template. The tile drew a plain sheet of running text —
+                         the one thing a new chapter is NOT. Built the way the
+                         Layout panel builds its opener tiles, from
+                         cpOpenerElements, so the two galleries cannot drift. */
+                      <PreviewPage
+                        page={{
+                          id: 'cp-preview-chapter', type: 'chapter', title: 'Navigating Career Transitions',
+                          layout: 'opener', overrides: {}, titleHtml: '<h2>Navigating Career Transitions</h2>',
+                          initialHtml: '', openerIndex: 0, coverElements: design.openerElements(1, 0, undefined),
+                        } as unknown as SimplePage}
+                        pages={pages} theme={theme} chapterContent={chapterContent}
+                        fieldContent={fieldContent} metadata={metadata} sheet={0}
+                      />
+                    ) : opt.id === 'page' || opt.id === 'blank' ? (() => {
+                      const { page: cp, html } = cpPreviewChapter({ id: opt.id, sheet: opt.id === 'blank' ? 'bare' : undefined, blank: opt.id === 'blank', full: opt.id === 'page' });
+                      return <PreviewPage page={cp} pages={[...pages, cp]} theme={theme} chapterContent={{ ...chapterContent, [cp.id]: html }} fieldContent={fieldContent} metadata={metadata} sheet={0} />;
+                    })() : (
+                      <PreviewPage page={cpPreviewPage(opt.id, theme, design)} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} sheet={0} />
+                    )}
+                  </div>
+                </div>
+                <div style={caption}>{opt.label}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, metadata, activePageId, activeSheetIndex, getPageEl, onJump, onAddPageAt, onDuplicatePage, onDeletePage, onAddTemplatePage, onReorder }: {
   pages: PageMeta[];
   theme: ThemeDef;
   chapterContent: Record<string, string>;
@@ -24803,6 +28502,11 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
   metadata: BookMetadata;
   onDuplicatePage: (id: string) => void;
   onDeletePage: (id: string) => void;
+  /* Which of the active template's page designs a content page takes. Only a
+     template that ships more than one offers it (see ThemeDef.pageDesign), so
+     the menu carries nothing on the templates that don't. */
+  /** Adds one of the active template's own designed pages after `afterId`. */
+  onAddTemplatePage: (afterId: string, kind: AddPageKind, closeGallery?: () => void) => boolean;
   // Same reorderChapter ChaptersPanel already drives — the Pages tab was the
   // one place you couldn't reorder anything without switching tabs, which is
   // backwards: every thumbnail panel researched for this (PowerPoint, Google
@@ -24810,6 +28514,9 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
   // primary way to reorder, more so than a plain text list.
   onReorder: (draggedId: string, targetId: string, pos: 'before' | 'after') => void;
 }) {
+  /* Open state for "+ Add page" when the template turns it into a choice — see
+     the button at the foot of this panel. */
+  const [addMenu, setAddMenu] = useState(false);
   // Derived from the panel's own width and padding, not a fixed guess — a
   // narrower fixed number here left a wide dead strip of white between each
   // card and the panel's right edge (where the canvas begins), reading
@@ -24911,14 +28618,16 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
             const inSection = p.id === activePageId;
             const active = inSection && (activeSheetIndex == null ? isFirstOfSection : bp.indexInSection === activeSheetIndex);
             const canDuplicate = p.type === 'chapter';
-            /* The contents page is deletable from here. deletePage has always
-               handled it — see the "at least one chapter" note where it's
-               declared, which exists precisely so removing the TOC isn't
-               blocked — and only this panel's own guard was stopping it,
-               sending you to the Chapters tab for something this row can do.
-               Cover and back matter stay put: a book with neither isn't a state
-               this editor has. */
-            const canDelete = p.type === 'chapter' ? chapterCount > 1 : p.type === 'toc';
+            /* Every page is deletable from here. `deletePage` has always been
+               type-agnostic — its only floor is "at least one chapter", which is
+               the one page a book genuinely cannot be without — and this panel's
+               own guard was the single thing stopping the rest. It had grown
+               wrong twice over: it blocked removing a CTA or workbook page the
+               add-page gallery had just inserted, and it treated cover and back
+               matter as fixed furniture. They aren't. A book that ends without a
+               back page, or one assembled cover-last, are both states an author
+               can want, and either is one undo away. */
+            const canDelete = p.type !== 'chapter' || chapterCount > 1;
             /* Disabled ONLY where the state is recoverable — which is the line
                the guidance actually draws, and not the one this menu drew first.
                Nielsen's rule for inactive controls turns on whether the user can
@@ -25021,20 +28730,24 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
                            See LiveSheetThumb for why a re-render can't produce
                            sheet 2 of a chapter at all. */
                         <LiveSheetThumb getPageEl={getPageEl} pageId={p.id} sheetIndex={bp.indexInSection} width={thumbW} rev={rev}>
-                          {isFirstOfSection ? (
-                            <PreviewPage page={p} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} />
-                          ) : (
-                            /* Only while the canvas is unreadable — before
-                               hydration, or on a version checkpoint. Ruled lines
-                               rather than an empty box: it still reads as a page
-                               of prose at this size, without claiming to show
-                               the real text. */
-                            <div className="flex flex-col justify-start" style={{ padding: `${geo.padTop}px ${geo.padRight}px ${geo.padBottom}px ${geo.padLeft}px`, gap: 4 }}>
-                              {Array.from({ length: 8 }, (_, k) => (
-                                <div key={k} style={{ height: 14, borderRadius: 2, background: BORDER, width: k % 4 === 3 ? '62%' : '100%' }} />
-                              ))}
-                            </div>
-                          )}
+                          {/* Only while the canvas is unreadable: before hydration,
+                              on a version checkpoint, and — the common one — while
+                              a template is being PREVIEWED, where the canvas is the
+                              read-only renderer and has no paginated stack to clone
+                              at all. Every continuation row used to be eight grey
+                              ruled lines in that state, so previewing a template
+                              turned most of the navigator into placeholders.
+
+                              The read-only renderer pours a whole chapter into one
+                              elastic page, which means it cannot draw sheet N — but
+                              it does contain sheet N's words, at a known offset. So
+                              the same trick LiveSheetThumb plays on the canvas is
+                              played on this render: ask it for the sheet. It
+                              paginates now (see ChapterFlow), so this is the page
+                              itself rather than a whole chapter slid under a
+                              window — which is what it used to be, and why the
+                              break landed wherever the arithmetic put it. */}
+                          <PreviewPage page={p} pages={pages} theme={theme} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} sheet={bp.indexInSection} />
                         </LiveSheetThumb>
                       ) : (
                         /* Cover, contents and back matter are one sheet each and
@@ -25078,6 +28791,14 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
                     ariaLabel={`Actions for ${cellLabel}`}
                     items={[
                       { label: 'Add page after', icon: <PlusIcon />, onClick: () => onAddPageAt(p.id) },
+                      /* No page-style entries here. They were a set of designs
+                         listed as words in a menu of verbs — the third surface
+                         answering "which design is this page", after the add-page
+                         gallery and the template's own openers. A template's
+                         designed pages are things you INSERT (see
+                         AddPageGallery); `sheetStyle` stays in the model for a
+                         template to assign, but it is not a per-page choice the
+                         author makes from here. */
                       ...(canDuplicate ? [{ label: 'Duplicate page', icon: <DuplicateIcon color="currentColor" />, onClick: () => onDuplicatePage(p.id) }] : []),
                       /* A chapter's Delete stays on the menu even when it's the
                          last one — that's the recoverable case. Cover and back
@@ -25098,8 +28819,31 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
           No "add table of contents" here: a ToC isn't a page you decide to add,
           it's a view of the chapters, so it's added and removed from Chapters —
           which is also where the chapters it lists are. */}
-      <div style={{ padding: '12px', borderTop: `1px solid ${BORDER}`, flexShrink: 0 }}>
-        <FullButton label="+ Add page" onClick={() => onAddPageAt(lastChapterId ?? pages[pages.length - 1].id)} />
+      <div style={{ padding: '12px', borderTop: `1px solid ${BORDER}`, flexShrink: 0, position: 'relative' }}>
+        {/* A template that ships designed pages of its own — a call to action, a
+            planner, a to-do sheet — turns this into a choice. Every other
+            template adds the one kind of page it has, so it stays a button. */}
+        {/* A template with page designs opens the gallery — a grid of its own
+            pages, where a tile IS the page you get. One without has nothing to
+            show, so the button inserts a plain page directly. */}
+        {theme.pageDesign ? (
+          <>
+            {addMenu && (
+              <AddPageGallery
+                pages={pages}
+                theme={theme}
+                chapterContent={chapterContent}
+                fieldContent={fieldContent}
+                metadata={metadata}
+                onPick={(kind) => onAddTemplatePage(lastChapterId ?? pages[pages.length - 1].id, kind, () => setAddMenu(false))}
+                onClose={() => setAddMenu(false)}
+              />
+            )}
+            <FullButton label="+ Add page" onClick={() => setAddMenu((v) => !v)} />
+          </>
+        ) : (
+          <FullButton label="+ Add page" onClick={() => onAddPageAt(lastChapterId ?? pages[pages.length - 1].id)} />
+        )}
       </div>
     </div>
   );
@@ -25118,6 +28862,22 @@ function PagesPanel({ pages, bookPages, theme, chapterContent, fieldContent, met
    structure — rather than Chapters duplicating Pages' job from the other rail.
    Same reorder/delete/jump controls as before, plus a direct "Add chapter"
    entry point since dragging a tile in from Insert is no longer how you do that. ── */
+/* What a page row calls itself. It used to print the raw `type` under a
+   capitalize rule, which was fine while the four types were words a reader
+   already knew — and stopped being fine the moment a template added pages whose
+   type is an abbreviation ("Cta") or a category rather than a name ("Workbook",
+   for a page the row above it already calls "Weekly planner"). */
+function pageKindLabel(p: PageMeta): string {
+  switch (p.type) {
+    case 'cover': return 'Cover';
+    case 'toc': return 'Table of contents';
+    case 'backmatter': return 'Back page';
+    case 'cta': return 'Call to action';
+    case 'workbook': return 'Workbook sheet';
+    default: return 'Chapter';
+  }
+}
+
 function ChaptersPanel({ pages, fieldContent, wordTotal, wordCounts, titleWordCounts, onJump, onMoveToEdge, onReorder, onDelete, onAddChapter, onAddToc }: {
   pages: PageMeta[];
   /* Needed only to tell a chapter from a continuation page — see isChapterStart.
@@ -25178,6 +28938,13 @@ function ChaptersPanel({ pages, fieldContent, wordTotal, wordCounts, titleWordCo
       <div className="flex flex-col" style={{ gap: 4 }}>
         {rows.map((p, i) => {
           const isChapter = p.type === 'chapter';
+          /* Also the row's printed number. The list used to number every row
+             1..n — cover, contents and back matter included — so a four-chapter
+             book showed rows numbered to 7 under a header that said "4
+             chapters". Numbering only the chapters makes the two agree, and
+             makes the number mean the same thing it means on the chapter
+             opener and in the table of contents (see chapterNumberOf). The
+             other rows are already named by their own type underneath. */
           const posAmongChapters = isChapter ? chapterOrder.indexOf(p.id) : -1;
           const canMoveToTop = isChapter && posAmongChapters > 0;
           const canMoveToBottom = isChapter && posAmongChapters < chapterOrder.length - 1;
@@ -25254,10 +29021,10 @@ function ChaptersPanel({ pages, fieldContent, wordTotal, wordCounts, titleWordCo
                       ("The Weight of Everything That Came Before"). Past two the
                       title attribute takes over, which is what the surveyed
                       products lean on from line one. */}
-                  <div title={p.title} style={{ ...ns, fontSize: 13, fontWeight: 600, color: INK, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i + 1}. {p.title}</div>
-                  <div style={{ ...ns, fontSize: 11, color: SLATE, textTransform: 'capitalize', marginTop: 2 }}>
-                    {p.type}
-                    {isChapter && <span style={{ textTransform: 'none' }}> · {wordsInChapter(p.id)} words</span>}
+                  <div title={p.title} style={{ ...ns, fontSize: 13, fontWeight: 600, color: INK, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textOverflow: 'ellipsis' }}>{posAmongChapters >= 0 ? `${posAmongChapters + 1}. ` : ''}{p.title}</div>
+                  <div style={{ ...ns, fontSize: 11, color: SLATE, marginTop: 2 }}>
+                    {pageKindLabel(p)}
+                    {isChapter && <span> · {wordsInChapter(p.id)} words</span>}
                   </div>
                 </button>
                 {/* In the row's flow now, not overlaid on it: a button that is
@@ -25411,11 +29178,14 @@ const SURFACE_REFUSAL: Record<SimplePage['type'], string> = {
   cover: 'The cover holds text, photos, shapes and a QR code only.',
   toc: 'The contents page is generated from your chapters.',
   backmatter: 'The author page holds the bio, photo and a QR code only.',
+  cta: 'The call to action holds its headline, its text and its button.',
+  workbook: 'A workbook sheet holds its title and prompts — the ruling is part of the design.',
+  image: 'An image page holds its photo and its caption — the field behind them is part of the design.',
 };
 
 function UndoToast({ label, onUndo, onDismiss }: { label: string; onUndo: () => void; onDismiss: () => void }) {
   useEffect(() => {
-    const t = setTimeout(onDismiss, 9000);
+    const t = setTimeout(onDismiss, 5000);
     return () => clearTimeout(t);
   }, [onDismiss, label]);
   return (
@@ -25466,7 +29236,7 @@ function NoticeToast({ label, action, onDismiss }: {
   onDismiss: () => void;
 }) {
   useEffect(() => {
-    const t = setTimeout(onDismiss, 9000);
+    const t = setTimeout(onDismiss, 5000);
     return () => clearTimeout(t);
   }, [onDismiss]);
   return (
@@ -25497,6 +29267,33 @@ function NoticeToast({ label, action, onDismiss }: {
       >
         <Icon d="M14 4L4 14M4 4l10 10" size={13} />
       </button>
+    </div>
+  );
+}
+
+/* The same pill as NoticeToast — same ink, same radius, same place — because it is
+   the same channel saying "the editor is doing something" rather than "the editor
+   has something to tell you". A spinner instead of a dismiss: there is nothing to
+   decide, and a close button on a thing that closes itself invites a click that
+   does nothing useful. */
+function BusyToast({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center"
+      style={{
+        position: 'fixed', left: '50%', transform: 'translateX(-50%)', bottom: 28, zIndex: 400,
+        gap: 12, padding: '11px 20px 11px 16px', borderRadius: RADIUS_PILL,
+        background: INK, boxShadow: '0px 10px 30px rgba(15,23,51,0.28)',
+      }}
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style={{ animation: 'cp-spin 0.7s linear infinite' }}>
+        <circle cx="8" cy="8" r="6.4" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="2" />
+        <path d="M8 1.6a6.4 6.4 0 0 1 6.4 6.4" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+      <span style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#fff' }}>{label}</span>
+      <style jsx>{`@keyframes cp-spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
@@ -25532,13 +29329,321 @@ interface PersistedBook {
   savedAt: number;
 }
 
+/* ── seeding a book from the create wizard ────────────────────────────────────
+   The wizard owns the content (the manuscript the author generated) and the
+   choice of template; everything about what a BOOK is — how a chapter becomes a
+   page, what a cover's objects are under a given template, which fields the
+   cover text lands in — belongs here, and the wizard used to carry a second,
+   drifting copy of it. That copy produced a four-page book with one chapter of
+   placeholder prose and `activeTheme: 'statement-lettering'` hardcoded, whatever
+   the author had actually picked two screens earlier, which is why the editor
+   opened with the wrong template lit in the gallery.
+
+   Exported rather than inlined so there is exactly one answer, and so a template
+   applied at seed time goes through the same mergeCoverElements/autoPlaceCoverText
+   path an in-editor template switch does. */
+export interface SeedChapter {
+  id: string;
+  title: string;
+  /** Body HTML, without the chapter's own title heading — that is built here. */
+  html: string;
+}
+
+export interface BookSeed {
+  title: string;
+  subtitle?: string;
+  author?: string;
+  templateId: string;
+  chapters: SeedChapter[];
+}
+
+/** Every template the editor can apply, in gallery order. */
+export type BookTemplate = ThemeDef;
+export const BOOK_TEMPLATES: readonly BookTemplate[] = THEMES;
+export function bookTemplateById(id: string): BookTemplate {
+  return THEMES.find((t) => t.id === id) ?? THEMES[0];
+}
+
+/* Everything a seeded book is, before it is either serialised for the editor or
+   drawn by the wizard. One function so the preview the author approves and the
+   book the editor opens cannot disagree. */
+export interface ComposedBook {
+  pages: PageMeta[];
+  template: BookTemplate;
+  chapterContent: Record<string, string>;
+  fieldContent: Record<string, string>;
+  metadata: BookMetadata;
+  pageNumbers: PageNumberSettings;
+}
+
+export function composeBookSeed(seed: BookSeed): ComposedBook {
+  const tpl = bookTemplateById(seed.templateId);
+  /* Nothing was there before, so the "outgoing" template is the one whose stock
+     artwork must not be carried forward — there is none. An empty cover makes
+     mergeCoverElements take the template's own arrangement whole, which is what
+     a brand-new book wants. */
+  const empty: ThemeDef = { ...tpl, coverElements: [] };
+  const fieldContent: Record<string, string> = {
+    'p-cover::title': `<p>${escapeHtml(seed.title)}</p>`,
+    ...(seed.subtitle ? { 'p-cover::subtitle': `<p>${escapeHtml(seed.subtitle)}</p>` } : null),
+    ...(seed.author ? { 'p-cover::author': `<p>${escapeHtml(seed.author)}</p>` } : null),
+  };
+  const cover = coverPageForTemplate(
+    { id: 'p-cover', type: 'cover', title: 'Cover' },
+    tpl, empty, fieldContent, EMPTY_COVER_OVERRIDES,
+  );
+
+  /* A template that is a whole page design owns the interior too, so the
+     chapters, the contents page and the back page are seeded with ITS objects —
+     the same three branches applyTemplate walks when a template is swapped in
+     an open book. Without this a Career Pathways book came out with the right
+     cover in front of a white contents page and chapter openers with no ground,
+     no numeral and no band: the template, applied to one page out of thirteen. */
+  const design = pageDesignOf(tpl);
+
+  const chapterContent: Record<string, string> = {};
+  const chapters: PageMeta[] = seed.chapters.map((ch, i) => {
+    chapterContent[ch.id] = ch.html;
+    return {
+      id: ch.id, type: 'chapter', title: ch.title,
+      layout: chapterLayoutOf(tpl), overrides: {},
+      titleHtml: `<h2>${escapeHtml(ch.title)}</h2>`,
+      initialHtml: ch.html,
+      ...(design ? { coverElements: design.openerElements(i + 1, undefined, undefined) } : null),
+    };
+  });
+
+  const designed = (page: SimplePage, kind: string | undefined): SimplePage => (
+    design && kind ? design.seedPage(page, kind) : page
+  );
+
+  return {
+    pages: [
+      cover,
+      designed(
+        { id: 'p-toc', type: 'toc', title: 'Table of Contents', tocLayout: design?.defaults.toc },
+        design?.defaults.toc,
+      ),
+      ...chapters,
+      designed(
+        { id: 'p-back', type: 'backmatter', title: 'About the Author', backLayout: design?.defaults.back },
+        design?.defaults.back,
+      ),
+    ],
+    template: tpl,
+    chapterContent,
+    fieldContent,
+    metadata: {
+      ...DEFAULT_METADATA,
+      title: seed.title,
+      subtitle: seed.subtitle ?? '',
+      author: seed.author ?? '',
+    },
+    /* The template's own folio opinion, where it has one — the same merge
+       applyTemplate does, so a book seeded on Career Pathways opens with the
+       bottom-right 12pt folio the design was drawn with rather than the
+       editor's centred default. */
+    pageNumbers: { ...DEFAULT_PAGE_NUMBERS, ...(tpl.pageNumbers ?? {}) },
+  };
+}
+
+/** The composed book as the editor stores it. */
+export function buildBookSeed(seed: BookSeed): string {
+  const composed = composeBookSeed(seed);
+  const book: PersistedBook = {
+    version: 1,
+    pages: composed.pages,
+    metadata: composed.metadata,
+    pageNumbers: composed.pageNumbers,
+    activeTheme: composed.template.id,
+    chapterContent: composed.chapterContent,
+    fieldContent: composed.fieldContent,
+    coverOverrides: EMPTY_COVER_OVERRIDES,
+    savedAt: Date.now(),
+  };
+  return JSON.stringify(book);
+}
+
+export const BOOK_STORAGE_KEY = STORAGE_KEY;
+
+/* One page of a composed book, drawn read-only at any width — the same
+   PreviewPage the editor's own Preview overlay and page thumbnails use, under
+   the TEMPLATE's page geometry rather than the editor's default, so an A4
+   template previews at A4 and its bands land where they were drawn. */
+export function BookPagePreview({ book, page, width, clip = true }: {
+  book: ComposedBook;
+  page: PageMeta;
+  width: number;
+  /* A thumbnail is one page tall, full stop — anything past the first sheet is
+     cropped, which is what the editor's own Pages panel does. The full-size
+     preview is not: a chapter under a page-designed template is an OPENER sheet
+     plus the sheet its prose starts on, and clipping to one page height showed
+     the opener and silently dropped every word of the chapter. */
+  clip?: boolean;
+}) {
+  const geo = pageGeometry(book.template.pageSize ?? DEFAULT_PAGE_SIZE, book.template.margins ?? DEFAULT_MARGINS);
+  const scale = width / geo.w;
+  const innerRef = useRef<HTMLDivElement>(null);
+  const [grownH, setGrownH] = useState(0);
+  useLayoutEffect(() => {
+    if (clip) return;
+    const el = innerRef.current;
+    if (!el) return;
+    const measure = () => setGrownH(el.offsetHeight * scale);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [clip, scale, page.id]);
+  return (
+    <PageGeometryContext.Provider value={geo}>
+      {/* The book's own prose CSS, which otherwise exists only while a chapter
+          editor is mounted — the same reason version history and the template
+          preview mount it. Without it a chapter page renders its paragraphs
+          with no measure and no leading, stacked on one line. */}
+      <BookProseStyles
+        theme={book.template}
+        bodyFont={book.template.bodyFont}
+        bodyColor={book.template.bodyColor}
+        headingColor={book.template.headingColor}
+        bandTint={bandTintFor(book.template.bg)}
+      />
+      <div style={{ width, height: clip ? Math.round(geo.h * scale) : Math.round(grownH || geo.h * scale), overflow: 'hidden', position: 'relative' }}>
+        <div ref={innerRef} style={{ width: geo.w, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+          <PreviewPage
+            page={page}
+            pages={book.pages}
+            theme={book.template}
+            chapterContent={book.chapterContent}
+            fieldContent={book.fieldContent}
+            metadata={book.metadata}
+            /* Exactly what the note on `clip` says: a thumbnail is page one, and
+               the full-size preview is however many pages the chapter runs to. */
+            sheet={clip ? 0 : undefined}
+          />
+        </div>
+      </div>
+    </PageGeometryContext.Provider>
+  );
+}
+
+/* A template's cover, drawn at any width — the gallery card the editor's own
+   Templates panel uses, lifted out so the create wizard's gallery can show the
+   same thing. `fields` is normally empty: a card answers "which design do I
+   want", and forty cards carrying a half-typed title answer it worse than forty
+   designs do (see TemplatesPanel). The wizard's full-size preview passes the
+   real title, because there the question has become "what does MY book look
+   like in this". */
+const NO_COVER_FIELDS: Record<string, string> = {};
+/* The sheet a template was DRAWN on — its own trim, not the open book's. Career
+   Pathways and Lovable are A4 designs (ThemeDef.pageSize); every other theme is
+   a palette and a type pairing with no opinion, so it falls back to the editor's
+   default sheet. */
+export function templateGeometry(template: BookTemplate): PageGeometry {
+  return pageGeometry(template.pageSize ?? DEFAULT_PAGE_SIZE, template.margins ?? DEFAULT_MARGINS);
+}
+export function BookTemplateCover({ template, width, fields }: {
+  template: BookTemplate;
+  width: number;
+  fields?: Record<string, string>;
+}) {
+  /* Both the scale AND the frame come from the TEMPLATE's own sheet. They used
+     to come from the module-level default box (PAGE_W/PAGE_MIN_H) while the page
+     inside drew itself at whatever PageGeometryContext held — the open book's
+     trim. Those agree only while the book is on the default sheet: apply an A4
+     template and every card in the gallery rendered a 700×990 page into a
+     254×330 frame, slicing the byline off the foot of all forty of them and
+     leaving a grey gutter down the right. A card shows a design, so it is sized
+     by that design and the context is set to match rather than inherited. */
+  const geo = templateGeometry(template);
+  const scale = (width + 1) / geo.w; // the 1px overscan TemplatesPanel explains
+  /* Built from the template alone, never from the author's cover page. Spreading
+     the live page used to carry its background onto every card, so the moment a
+     dark-cover template or a hand-picked page colour was applied, every preview
+     repainted in that colour — white-ground templates showed as near-black with
+     their dark type invisible. Taking nothing from the book makes that structural
+     rather than a thing to remember: bg is the template's own coverBg, falling
+     back to its theme bg exactly as CoverCanvas does when coverBg is unset. */
+  const page: SimplePage = {
+    id: `tpl-${template.id}`, type: 'cover', title: template.name,
+    bg: template.coverBg, coverElements: template.coverElements,
+  };
+  return (
+    <div style={{ width, height: Math.round(geo.h * scale), overflow: 'hidden', position: 'relative' }}>
+      <div style={{ width: geo.w, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+        <PageGeometryContext.Provider value={geo}>
+          <CoverCanvasStatic page={page} theme={template} fieldContent={fields ?? NO_COVER_FIELDS} />
+        </PageGeometryContext.Provider>
+      </div>
+    </div>
+  );
+}
+
+/** Undoes the two-column layout we used to apply by rewriting the body.
+
+    Picking "Two columns" once poured the whole chapter into the first cell of a
+    two-cell table. Three things were wrong with that and all three outlive the
+    code that did it, because it edited the DOCUMENT: the text sets at half the
+    page's measure and stays there when you go back to one column, nothing ever
+    flows into the second cell, and the chapter is now a single layout table —
+    which the paginator moves whole rather than splitting — so a long one runs
+    straight through the page gap and off the foot of the sheet. Columns are a
+    property of the flow now (see sheetColumns) and no design rewrites a body.
+
+    Only a table that IS the whole body, with nothing in any cell but the first.
+    A column block somebody inserted on purpose has its own copy in its own
+    cells and is left alone. */
+function unwrapLegacyColumnTable(html: string): string {
+  if (!html || html.indexOf('book-split-columns') === -1) return html;
+  if (typeof DOMParser === 'undefined') return html;
+  const doc = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html');
+  let changed = false;
+  /* A snapshot, because the loop replaces nodes as it goes. Every top-level
+     table is considered rather than only a body that is nothing BUT the table:
+     ProseMirror keeps a trailing empty paragraph after a table, so in practice
+     no real book ever had one as its only node, and testing for that found the
+     shape in a fixture and never in the wild. */
+  for (const el of Array.from(doc.body.children)) {
+    if (el.tagName !== 'TABLE' || !el.classList.contains('book-split-columns')) continue;
+    const rows = el.querySelectorAll('tr');
+    if (rows.length !== 1) continue;
+    const cells = Array.from(rows[0].children);
+    if (cells.length < 2) continue;
+    /* "Empty" is the `<p></p>` the old rewrite left behind. A column block
+       somebody inserted on purpose has its own copy in its own cells, so it
+       fails here and is left alone. */
+    if (cells.slice(1).some((c) => c.textContent?.trim())) continue;
+    /* And it has to be a CHAPTER rather than a block: the old rewrite moved a
+       whole body in, which is always several blocks. A one-paragraph column
+       block whose second cell happens to be empty is somebody's layout, not
+       this bug, and unwrapping it would quietly undo their work. */
+    if (cells[0].children.length < 2) continue;
+    el.replaceWith(...Array.from(cells[0].childNodes));
+    changed = true;
+  }
+  return changed ? doc.body.innerHTML : html;
+}
+
 function loadBook(): PersistedBook | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedBook;
     if (parsed?.version !== 1 || !Array.isArray(parsed.pages) || parsed.pages.length === 0) return null;
-    return parsed;
+    /* Migrated on the way in rather than on the way out: every surface that
+       draws a chapter reads one of these two, and a book that only healed when
+       it was next saved would draw wrong until then. */
+    const chapterContent = Object.fromEntries(
+      Object.entries(parsed.chapterContent ?? {}).map(([k, v]) => [k, unwrapLegacyColumnTable(v)]),
+    );
+    return {
+      ...parsed,
+      chapterContent,
+      pages: parsed.pages.map((pg) => ('initialHtml' in pg && typeof pg.initialHtml === 'string'
+        ? { ...pg, initialHtml: unwrapLegacyColumnTable(pg.initialHtml) }
+        : pg)),
+    };
   } catch {
     return null;
   }
@@ -25621,6 +29726,11 @@ interface Snapshot {
   chapterContent: Record<string, string>;
   fieldContent: Record<string, string>;
   activeTheme: ThemeId;
+  /* Frozen cover styling and the roles the author deleted. Without this, undoing
+     a slot deletion put the element back but left its role in `removed`, so the
+     slot survived until the next template switch and then vanished again with no
+     action in between. */
+  coverOverrides: CoverOverrides;
   touched: string[];
 }
 
@@ -25842,8 +29952,10 @@ function FindPanel({ registry, pages, onJump, inputRef, activeChapterId }: {
 
   return (
     <div style={{ padding: '16px 14px', overflowY: 'auto', height: '100%' }}>
-      <div style={{ ...ns, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: EYEBROW_COLOR, marginBottom: 10 }}>Find &amp; replace</div>
-
+      {/* No "Find & replace" eyebrow here — the overlay header that hosts this
+          panel already names it, and two titles stacked read as a nesting that
+          isn't there. Same call HistoryPanel makes, for the same reason: the two
+          share one header, so they can't disagree about whether to repeat it. */}
       {/* Count and stepper live INSIDE the field, where Rows, Dovetail and Fabric all
           put them. That retires a whole row of panel furniture you walk past on every
           search — and searching, not replacing, is what this panel is mostly open for. */}
@@ -25990,7 +30102,7 @@ export function BookEditorView() {
      thing we deliberately don't copy is putting *properties* on the right, which
      no document-shaped product does either. */
   const [railTab, setRailTab] = useState<
-    'text' | 'photos' | 'elements' | 'layouts' | 'templates' | 'import' | 'booksettings'
+    'text' | 'photos' | 'elements' | 'layout' | 'templates' | 'import' | 'booksettings'
   >('templates');
 
   /* Import state is now one flag and one message — there is no queue to hold,
@@ -26070,11 +30182,16 @@ export function BookEditorView() {
   // the left rail already uses for Pages/Chapters.
   const [panelForcedOpen, setPanelForcedOpen] = useState(false);
   useEffect(() => { if (!narrowViewport) setPanelForcedOpen(false); }, [narrowViewport]);
-  /* Something else owns the width — Wordgenie, or a window too narrow to hold
-     both panels. The edge toggle hides while either is true rather than offering
-     to reopen a panel it can't keep open. */
-  const leftPanelYielded = aiPanelOpen || (narrowViewport && !panelForcedOpen);
-  const leftPanelHidden = leftPanelYielded || !leftOpen;
+  /* A window too narrow to hold both panels, with the click-to-reveal escape
+     hatch not taken. Wordgenie is no longer one of these: it doesn't need the
+     width, it needs the panel. */
+  const narrowYield = narrowViewport && !panelForcedOpen;
+  /* Wordgenie no longer takes the panel's place, it IS the panel for as long as
+     it's open — so it forces the panel open instead of folding it away. The edge
+     toggle still hides: Wordgenie's own close button is the way out, and two
+     controls that both make it disappear, meaning different things, is one more
+     than the panel needs. */
+  const leftPanelHidden = !aiPanelOpen && (narrowYield || !leftOpen);
   // pills mirrors Presentation's own aiMessages shape — quick-reply chips under
   // an AI message, same as its "notes for every slide" flow offers there. Ours
   // just needs one entry point (the welcome message) rather than a whole
@@ -26102,6 +30219,15 @@ export function BookEditorView() {
      is live can read it again without re-plumbing the chain. */
   const [, setMovingBlock] = useState(false);
   const [activeTheme, setActiveTheme] = useState<ThemeId>('statement-lettering');
+  /* A template you are LOOKING at, not one you have chosen. Clicking a card used
+     to apply straight away on the theory that the card is the preview and undo is
+     the way back. That holds at nine templates and stops holding at forty:
+     applying rewrites coverElements — re-deriving every template-owned position,
+     re-minting ids — and pushes a structural entry plus a toast each time, so
+     browsing twenty covers silently re-placed any title you had nudged and filled
+     version history with window-shopping. Previewing touches nothing: the canvas
+     renders what applying WOULD produce, and nothing is written until Apply. */
+  const [previewTemplateId, setPreviewTemplateId] = useState<ThemeId | null>(null);
   // Cover styling the author has frozen by hand — see CoverOverrides.
   const [coverOverrides, setCoverOverrides] = useState<CoverOverrides>(EMPTY_COVER_OVERRIDES);
   // Defaults to the cover rather than nothing, so the inspector opens already
@@ -26140,7 +30266,10 @@ export function BookEditorView() {
   const [titleWordCounts, setTitleWordCounts] = useState<Record<string, number>>({});
   const [metadata, setMetadata] = useState<BookMetadata>(DEFAULT_METADATA);
   const [pageNumbers, setPageNumbers] = useState<PageNumberSettings>(DEFAULT_PAGE_NUMBERS);
-  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; feature: string } | null>(null);
+  /* planId is optional because nearly every gate in this editor is the Pro one;
+     Publish is the first surface with a Premium format (HTML) in the same list. */
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; feature: string; planId?: GateTier } | null>(null);
+  const router = useRouter();
   const [showPublishModal, setShowPublishModal] = useState(false);
   const [activeEditor, setActiveEditor] = useState<Editor | null>(null);
   /* ── book-wide undo/redo ──────────────────────────────────────────────────
@@ -26237,7 +30366,17 @@ export function BookEditorView() {
      remounts on every Apply, which would snap a metric reader back to inches
      the moment they changed a margin. */
   const [pageUnit, setPageUnit] = useState<LengthUnit>('in');
-  const geometry = useMemo(() => pageGeometry(pageSizeId, margins), [pageSizeId, margins]);
+  /* While a template is being previewed, the page is ITS page. A template that is
+     a whole page design is drawn for a particular trim (see ThemeDef.pageSize)
+     and applying it changes the book's — so previewing it on the book's old
+     sheet showed every band, bleed and photo panel stretched to a proportion the
+     design was never drawn for, and the preview disagreed with the apply that
+     followed it. Nothing is written: leave the preview and the book's own sheet
+     comes straight back. */
+  const geometry = useMemo(() => {
+    const preview = previewTemplateId ? THEMES.find((t) => t.id === previewTemplateId) : null;
+    return pageGeometry(preview?.pageSize ?? pageSizeId, preview?.margins ?? margins);
+  }, [pageSizeId, margins, previewTemplateId]);
   const [saveState, setSaveState] = useState<SaveState>('saved');
   /* Only ever read by the error label. A failed write tells you something is
      wrong but not how much is at stake — losing 30 seconds and losing 40 minutes
@@ -26309,6 +30448,8 @@ export function BookEditorView() {
   }, [syncHistoryState]);
 
   const theme = THEMES.find((t) => t.id === activeTheme) ?? THEMES[0];
+  const previewTpl = previewTemplateId ? THEMES.find((t) => t.id === previewTemplateId) ?? null : null;
+  const previewLocked = !!previewTpl && shouldShowTierBadge(currentPlan as never, previewTpl.requiredPlan);
   // Non-null only while the canvas is showing a past checkpoint read-only
   // instead of the live, editable book — see the History rail tab.
   const viewingVersionEntry = versions.find((v) => v.id === viewingVersionId) ?? null;
@@ -26400,6 +30541,130 @@ export function BookEditorView() {
     : selection.kind === 'page' ? 'Page'
     : selection.kind === 'chapter' ? 'Text'
     : 'Properties';
+
+  /* Index of a section's FIRST page in the numbering sequence; a sheet adds its
+     own offset within the section on top. -1 means "excluded from numbering",
+     which PageNumberChip already reads as "print nothing". */
+  const chapterCountForNumbering = (id: string) => {
+    const skipped = (p: PageMeta) => pageNumbers.skipCoverAndBackMatter && (p.type === 'cover' || p.type === 'backmatter');
+    const target = pages.find((p) => p.id === id);
+    if (!target || skipped(target)) return -1;
+    let n = 0;
+    for (const p of pages) {
+      if (p.id === id) return n;
+      if (skipped(p)) continue;
+      n += p.type === 'chapter' ? Math.max(1, pageCounts[p.id] ?? 1) : 1;
+    }
+    return n;
+  };
+
+  /* ── where Wordgenie is pointed ────────────────────────────────────────────
+     See AiContext for why this exists at all. Two notes on how it is built:
+
+     The page NUMBER is the folio the book would print here, not an index into
+     the pages array — a chapter is several sheets, so "the fourth entry in the
+     panel" and "page 4" stopped being the same thing when pagination landed.
+     It is the section's own offset plus however many sheets the caret is past
+     inside it, which is the same sum PageNumberChip is handed.
+
+     The sheet the caret is on is counted off the paginator's breaks rather than
+     measured again here. A break that splits a paragraph is counted as soon as
+     the caret is anywhere in that paragraph, so a caret in the two lines before
+     such a split reads one page high; everything else is exact, and a second
+     measurement pass to fix those two lines would be a second source of truth
+     for where the pages fall. */
+  const aiContext = useMemo((): AiContext => {
+    const sel = selection;
+    const selPageId = 'chapterId' in sel ? sel.chapterId : 'pageId' in sel ? sel.pageId : null;
+    const pageId = selPageId ?? activeChapterId;
+    const page = pageId ? pages.find((p) => p.id === pageId) ?? null : null;
+
+    // Only a real object names itself. A caret in prose and a page clicked on
+    // the canvas are both "where you are", which the rest of the line says.
+    const objectLabel = page && sel.kind !== 'chapter' && sel.kind !== 'none' && sel.kind !== 'page'
+      ? selectionLabel
+      : null;
+
+    /* The editor the caret is actually in. An object selection carries its own;
+       a caret in prose doesn't, so activeEditor stands in — and only for a
+       chapter, since on a cover `activeEditor` is a one-line field whose
+       pagination state doesn't exist and whose caret says nothing about pages. */
+    const ed = 'editor' in sel ? sel.editor
+      : (sel.kind === 'chapter' ? activeEditor : null);
+    const selectedText = ed && !ed.state.selection.empty
+      ? ed.state.doc.textBetween(ed.state.selection.from, ed.state.selection.to, ' ').trim()
+      : '';
+    const selectedWords = selectedText ? selectedText.split(/\s+/).length : 0;
+
+    const sheetIndex = (() => {
+      if (!ed) return 0;
+      const pag = paginationKey.getState(ed.state);
+      if (!pag) return 0;
+      const caret = ed.state.selection.from;
+      return pag.breaks.filter((b) => b.pos <= caret).length;
+    })();
+
+    const base = pageId ? chapterCountForNumbering(pageId) : -1;
+    const pageNumber = base < 0 ? null : pageNumbers.startAt + base + sheetIndex;
+
+    /* An untitled chapter container is a continuation page (see
+       chapterTitleText), so it is named by the chapter it belongs to — being
+       further into a chapter is what the page number already says. */
+    const owningId = page?.type === 'chapter' ? owningChapterId(pages, fieldContent, page.id) : null;
+    const owning = owningId ? pages.find((p) => p.id === owningId) ?? null : null;
+    const chapterTitle = owning ? chapterTitleText(owning, fieldContent) : '';
+    const pageTitle = page
+      ? (page.type === 'chapter' ? (chapterTitle || 'Untitled page') : page.title || PAGE_KIND_NAME[page.type])
+      : 'Your book';
+
+    const chapters = chapterStarts(pages, fieldContent);
+    const where = pageNumber ? `${pageTitle} · page ${pageNumber}` : pageTitle;
+    const what = selectedWords > 0
+      ? `${selectedWords} ${selectedWords === 1 ? 'word' : 'words'} selected`
+      : objectLabel;
+
+    return {
+      pageId,
+      pageTitle,
+      chapterTitle: chapterTitle || undefined,
+      pageNumber,
+      objectLabel,
+      selectedWords,
+      // Body plus heading, the same sum the Chapters panel and the status bar
+      // show — a chapter whose word count disagreed with the one two panels
+      // away would be the assistant getting it wrong, not rounding.
+      chapterWords: owningId ? (wordCounts[owningId] ?? 0) + (titleWordCounts[owningId] ?? 0) : 0,
+      chapterPages: owningId ? Math.max(1, pageCounts[owningId] ?? 1) : 0,
+      bookWords: Object.values(wordCounts).reduce((sum, n) => sum + n, 0)
+        + Object.values(titleWordCounts).reduce((sum, n) => sum + n, 0),
+      chapterCount: chapters.length,
+      label: what ? `${where} · ${what}` : where,
+    };
+    // chapterCountForNumbering is a plain function over pages/pageNumbers/
+    // pageCounts, all three of which are listed, so it carries no state of its
+    // own that the deps could miss.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection, activeChapterId, activeEditor, pages, fieldContent, pageNumbers, pageCounts, wordCounts, titleWordCounts, selectionLabel]);
+
+  /* The suggestions follow the context for the same reason the chip does: a pill
+     offering "Rewrite this paragraph" while a photo is selected is a promise the
+     panel can't keep. Three at most — a fourth row of chips reads as a menu of
+     everything the feature does rather than as what to try next. */
+  const aiPills = useMemo(() => {
+    if (aiContext.selectedWords > 0) return ['Rewrite this', 'Make it shorter', 'Fix the grammar'];
+    if (aiContext.objectLabel === 'Photo' || aiContext.objectLabel === 'Photo grid') return ['Write a caption'];
+    if (aiContext.pageId == null) return ['Outline a new chapter', 'Suggest a title for the book'];
+    const page = pages.find((p) => p.id === aiContext.pageId);
+    if (page?.type === 'cover') return ['Suggest a title', 'Write a subtitle'];
+    if (page?.type === 'backmatter') return ['Write my author bio'];
+    if (page?.type === 'chapter') {
+      return aiContext.chapterTitle
+        ? ['Continue this chapter', 'Rewrite this paragraph', 'Suggest a title']
+        : ['Continue from here', 'Rewrite this paragraph'];
+    }
+    return ['Rewrite this paragraph', 'Fix the grammar'];
+  }, [aiContext, pages]);
+
   /* Properties follows the selection: selecting something swaps it over the panel,
      deselecting hands the panel back to whichever rail tab was open — railTab is
      never cleared, so there's always somewhere to return to. Deselection only
@@ -26420,7 +30685,77 @@ export function BookEditorView() {
     }
   }, [selectionKey, selectionGen]);
   useEffect(() => { setPagesActiveId(null); setPagesActiveSheet(null); }, [activePageId]);
-  const pagesPanelActiveId = pagesActiveId ?? activePageId;
+  const [scrollPageId, setScrollPageId] = useState<string | null>(null);
+  const [scrollSheetIndex, setScrollSheetIndex] = useState<number | null>(null);
+  /* Scroll wins. The rail used to mark only what you had clicked, so scrolling the
+     canvas left it pointing at a page you had long since left — and clicking a row
+     scrolls the canvas anyway, which lands the tracker on that same page, so the
+     two agree rather than fight. `activePageId` is the fallback for before the
+     first measure. */
+  const pagesPanelActiveId = scrollPageId ?? pagesActiveId ?? activePageId;
+  /* The page the CANVAS is on, as opposed to the one you last clicked. Layout is
+     about whatever you have scrolled to, so the panel has to follow the scroll —
+     otherwise it sits on its empty state until you remember to select something,
+     and the swatches describe a page that may be nowhere near the viewport.
+
+     Deliberately not routed through `selection`: a page selection opens the
+     properties overlay, which would cover the Layout panel the moment it updated.
+     This is the panel's own notion of "where am I", which is why the ring it
+     drives is also its own (see `scrollPageRing`).
+
+     Nearest to the viewport's own midpoint, measured live rather than off
+     pageRefs' cached rects, because zoom scales them. Tracked only while the tab
+     is open — it is a scroll listener doing layout reads, and nothing else needs
+     the answer. */
+  const layoutTabOpen = railTab === 'layout';
+  useEffect(() => {
+    const sc = scrollerRef.current;
+    if (!sc) { setScrollPageId(null); return; }
+    let frame = 0;
+    const read = () => {
+      frame = 0;
+      const box = sc.getBoundingClientRect();
+      const mid = box.top + box.height / 2;
+      /* SHEETS, not page containers. A chapter is one element holding all of its
+         sheets, so measuring containers rings the whole chapter — the marker ran
+         straight through the gaps between its pages as one tall box. A page in
+         this editor is a sheet, and that is what gets marked. Non-chapter pages
+         carry no [data-page-sheet] of their own, so their container stands in:
+         they are one sheet each, which makes the two the same thing there. */
+      const sheets: { el: HTMLElement; id: string; sheet: number }[] = [];
+      for (const [id, el] of Object.entries(pageRefs.current)) {
+        if (!el) continue;
+        const own = el.querySelectorAll<HTMLElement>('[data-page-sheet]');
+        if (own.length) own.forEach((sh, i) => sheets.push({ el: sh, id, sheet: i }));
+        else sheets.push({ el, id, sheet: 0 });
+      }
+      let best: { el: HTMLElement; id: string; sheet: number; d: number } | null = null;
+      for (const { el, id, sheet } of sheets) {
+        const r = el.getBoundingClientRect();
+        if (r.height === 0) continue;
+        // Inside the sheet wins outright; otherwise the nearest edge.
+        const d = mid >= r.top && mid <= r.bottom ? 0 : Math.min(Math.abs(r.top - mid), Math.abs(r.bottom - mid));
+        if (!best || d < best.d) best = { el, id, sheet, d };
+      }
+      /* Marked on the element rather than threaded down as a prop: the ring is a
+         single sheet out of a stack the chapter component builds from a count, so
+         a prop would have to carry an index through every page type to reach one
+         absolutely-positioned div. An inset shadow also cannot shift the layout,
+         and is clipped by the sheet's own overflow the way the design is. */
+      for (const el of Array.from(sc.querySelectorAll<HTMLElement>('.is-layout-target'))) el.classList.remove('is-layout-target');
+      // The ring is the Layout panel's marker, so it only appears while that tab
+      // is open. The tracked page itself is shared — the Pages rail wants it too.
+      if (layoutTabOpen) best?.el.classList.add('is-layout-target');
+      setScrollPageId(best?.id ?? null);
+      setScrollSheetIndex(best ? best.sheet : null);
+    };
+    const onScroll = () => { if (!frame) frame = requestAnimationFrame(read); };
+    read();
+    sc.addEventListener('scroll', onScroll, { passive: true });
+    return () => { sc.removeEventListener('scroll', onScroll); if (frame) cancelAnimationFrame(frame); };
+  }, [layoutTabOpen, pages]);
+  /* The page Layout is acting on, and the one the canvas rings while it is open. */
+  const layoutPageId = layoutTabOpen ? scrollPageId ?? pagesPanelActiveId : null;
   /* The page being worked on, when it is one that can't take a block.
 
      Not the caret: all three of these pages set activeChapterId to null when one
@@ -26442,6 +30777,25 @@ export function BookEditorView() {
      own id so a second refusal remounts the toast and restarts its timer rather
      than riding out the first one's. */
   const [notice, setNotice] = useState<{ id: number; label: string; action?: { label: string; run: () => void } } | null>(null);
+  /* Work that visibly rebuilds the canvas, with the toast up while it does.
+
+     The work itself is real — applyTemplate re-points every chapter's layout and
+     merges cover elements, and the paginator then re-measures the whole book — but
+     it is SYNCHRONOUS, so without the two frames below React would never paint the
+     toast before the thread blocked, and you would see nothing. The settle after it
+     is the honest part to question: the repagination runs over the following frames
+     and there is no event for "the canvas has stopped moving", so this waits a fixed
+     beat rather than observing one. If the paginator ever exposes a settled signal,
+     clear on that instead. */
+  const [busy, setBusy] = useState<string | null>(null);
+  const runBusy = useCallback((label: string, work: () => void) => {
+    setBusy(label);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      work();
+      setTimeout(() => setBusy(null), 420);
+    }));
+  }, []);
+
   const showNotice = useCallback((label: string, action?: { label: string; run: () => void }) => {
     setNotice({ id: Date.now(), label, action });
   }, []);
@@ -26470,6 +30824,26 @@ export function BookEditorView() {
     });
   }, [pages, activeChapterId, fieldContent, showNotice]);
   const coverPageId = pages.find((p) => p.type === 'cover')?.id ?? 'p-cover';
+  /* The book exactly as applying the previewed template would leave it — the
+     same pagesForTemplate the apply itself runs, so the preview cannot show one
+     thing and the apply produce another. Null when nothing is being previewed,
+     which is also what the canvas branches on. */
+  const previewPages = useMemo(() => {
+    if (!previewTpl) return null;
+    const outgoing = THEMES.find((t) => t.id === activeTheme) ?? THEMES[0];
+    return pagesForTemplate(pages, previewTpl, outgoing, fieldContent, coverOverrides);
+  }, [previewTpl, activeTheme, pages, fieldContent, coverOverrides]);
+  /* Previewing belongs to the Templates tab — leave the tab and you have left the
+     preview, the same way the mode ends if you go and read version history. Both
+     are read-only takeovers of the canvas and only one bar can own the top of it. */
+  useEffect(() => { if (railTab !== 'templates') setPreviewTemplateId(null); }, [railTab]);
+  useEffect(() => { if (viewingVersionId) setPreviewTemplateId(null); }, [viewingVersionId]);
+  useEffect(() => {
+    if (!previewTemplateId) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreviewTemplateId(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewTemplateId]);
   const backMatterPageId = pages.find((p) => p.type === 'backmatter')?.id ?? 'p-back';
 
   /* ── hydrate, then save ────────────────────────────────────────────────────
@@ -26618,14 +30992,16 @@ export function BookEditorView() {
     chapterContent: { ...chapterContent },
     fieldContent: { ...fieldContent },
     activeTheme,
+    coverOverrides,
     touched,
-  }), [pages, chapterContent, fieldContent, activeTheme]);
+  }), [pages, chapterContent, fieldContent, activeTheme, coverOverrides]);
 
   const restoreSnapshot = useCallback((snap: Snapshot) => {
     setPages(snap.pages);
     setChapterContent(snap.chapterContent);
     setFieldContent(snap.fieldContent);
     setActiveTheme(snap.activeTheme);
+    setCoverOverrides(snap.coverOverrides);
     /* Chapters whose live editor was written into need the old content pushed
        back; everything else is restored by `pages` alone.
 
@@ -27134,6 +31510,9 @@ export function BookEditorView() {
   /* One QR per back-matter page: null removes it, an object sets or replaces it.
      No merge — the panel always hands over both fields, and a partial patch would
      be a way to end up with a colour and no address. */
+  const setCtaHref = useCallback((pageId: string, href: string) => {
+    setPages((prev) => prev.map((p) => (p.id === pageId && p.type === 'cta' ? { ...p, ctaHref: href } : p)));
+  }, []);
   const setBackQr = useCallback((pageId: string, qr: { url: string; color: string } | null) => {
     setPages((prev) => prev.map((p) => (
       p.id === pageId && p.type === 'backmatter' ? { ...p, backQr: qr ?? undefined } : p
@@ -27166,36 +31545,51 @@ export function BookEditorView() {
         setCoverOverrides((ov) => ({ ...ov, text: { ...ov.text, [role]: { ...ov.text[role], ...styled } } }));
       }
     }
-    setPages((prev) => prev.map((p) => (p.id === pageId && p.type === 'cover'
+    setPages((prev) => prev.map((p) => (p.id === pageId && holdsObjects(p)
       ? { ...p, coverElements: (p.coverElements ?? []).map((e) => (e.id === elementId ? ({ ...e, ...patch } as CoverElement) : e)) }
       : p)));
   }, [pages]);
-  /* Puts a slot back on the cover — the one way out of both states the slots
-     list can show. If the active template ships this slot, its own element is
-     what returns, styling and position intact; if it never had one, the box is
-     derived from the title. Either way the words come back with it, because they
-     were never deleted: they sat in fieldContent under the role the whole time. */
+  /* Puts a slot on the cover: the template's own element when it ships one,
+     styling and position intact, otherwise a box derived from the title. Reached
+     from the Text tab, where everything else that puts something new on a page
+     lives — it used to hang off a panel group listing absent slots, which made
+     "add a subtitle" a repair for a problem rather than an ordinary insert.
+
+     The words do NOT come back with it. They were cleared when the box was
+     deleted (see deleteCoverElement), so this returns an empty slot to type into;
+     Undo is what recovers a deletion you did not mean. Frozen styling does still
+     apply — a colour you set once should not be lost by removing and re-adding
+     the box it was set on. */
   const addCoverSlot = useCallback((pageId: string, role: CoverSlotRole) => {
     const tpl = THEMES.find((t) => t.id === activeTheme) ?? THEMES[0];
     // Same construction the auto-placer uses, so a slot added by hand and a slot
     // placed for you are the same object rather than two near-identical ones.
     const base = coverSlotElement(tpl, role, nextCoverElId());
-    // Anything the author had already frozen for this role still applies — a
-    // slot coming back should not quietly lose a colour they set on it before.
     const frozen = coverOverrides.text[role];
     const el: CoverTextElement = frozen ? { ...base, ...frozen } : base;
-    setCoverOverrides((ov) => ({ ...ov, removed: (ov.removed ?? []).filter((r) => r !== role) }));
     setPages((prev) => prev.map((p) => {
-      if (p.id !== pageId || p.type !== 'cover') return p;
+      if (p.id !== pageId || !holdsObjects(p)) return p;
       const els = p.coverElements ?? [];
       // Guard against a double-add racing the panel's own re-render.
       if (els.some((e) => e.type === 'text' && e.origin !== 'author' && e.role === role)) return p;
       return { ...p, coverElements: [...els, el] };
     }));
     // Selected on arrival, for the same reason a dropped photo is: a box you
-    // have to find and click before you can move it only half arrived.
+    // have to find and click before you can type in it only half arrived.
     setSelection({ kind: 'coverElement', pageId, elementId: el.id });
   }, [activeTheme, coverOverrides]);
+  /* One control for a slot whether or not it is already there: a role the cover
+     draws is SELECTED, a role it doesn't is INSERTED. No disabled tile and no
+     refusal toast, because there is a sensible thing to do in both states — and
+     the tile stops being a quiz about which slots your template happens to use. */
+  const pickCoverSlot = useCallback((pageId: string, role: CoverSlotRole) => {
+    const page = pages.find((p) => p.id === pageId) as SimplePage | undefined;
+    const existing = (page?.coverElements ?? []).find(
+      (e) => e.type === 'text' && e.origin !== 'author' && e.role === role,
+    );
+    if (existing) { setSelection({ kind: 'coverElement', pageId, elementId: existing.id }); return; }
+    addCoverSlot(pageId, role);
+  }, [pages, addCoverSlot]);
   /* Hands one slot back to the template: drop the frozen properties, then put
      the template's own values back on the element so the release is visible
      immediately rather than at the next template switch. PowerPoint's Reset
@@ -27210,7 +31604,7 @@ export function BookEditorView() {
     });
     if (!tplEl) return;
     const restore = pickCoverStyle(tplEl) ?? {};
-    setPages((prev) => prev.map((p) => (p.id === pageId && p.type === 'cover'
+    setPages((prev) => prev.map((p) => (p.id === pageId && holdsObjects(p)
       ? {
         ...p,
         coverElements: (p.coverElements ?? []).map((e) => (
@@ -27232,7 +31626,7 @@ export function BookEditorView() {
      content travels with it here, in the same commit as the role. */
   const changeCoverTextRole = useCallback((pageId: string, elementId: string, role: CoverTextElement['role']) => {
     const page = pages.find((pg) => pg.id === pageId) as SimplePage | undefined;
-    if (!page || page.type !== 'cover') return;
+    if (!page || !holdsObjects(page)) return;
     const el = (page.coverElements ?? []).find((e) => e.id === elementId);
     if (!el || el.type !== 'text' || el.role === role) return;
     const from = fieldKeyForCoverText(pageId, el);
@@ -27248,27 +31642,46 @@ export function BookEditorView() {
     updateCoverElement(pageId, elementId, { role });
   }, [pages, updateCoverElement]);
   const deleteCoverElement = useCallback((pageId: string, elementId: string) => {
-    /* Removing a template's own slot is a decision about the BOOK — "this book
-       has no subtitle" — not about the layout, so it outlives the template the
-       way the title text does. Without this the slot came back at the next
-       template switch carrying the words that were deleted with it, because the
-       copy lives in fieldContent under the role (see fieldKeyForCoverText) and
-       only the box was ever removed. Getting your own rejected sentence handed
-       back to you on a new cover is the worst of the available behaviours.
-       Reversible from the cover's own panel — see CoverTextSlotsGroup. */
+    /* The words go with the box. A template switch never removes an author's
+       content — anything typed gets a slot placed for it (see autoPlaceCoverText)
+       — but that rule governs what the app does on its own, not what the author
+       may do by hand, and deleting a text box is the author removing their own
+       content on purpose. Keeping the copy alive behind a deleted box was state
+       with nowhere to appear. Words now exist exactly when there is a box to
+       show them in.
+
+       Three ways back, which is what makes destroying the copy acceptable: Undo
+       below; the Text tab's Cover text section, which puts the slot back; and
+       applying any template, which rebuilds the cover from that template and so
+       restores every slot it draws. */
     const page = pages.find((p) => p.id === pageId) as SimplePage | undefined;
     const el = page?.coverElements?.find((e) => e.id === elementId);
-    if (el?.type === 'text' && el.origin !== 'author' && isCoverSlotRole(el.role)) {
-      const role = el.role;
-      setCoverOverrides((ov) => (ov.removed?.includes(role)
-        ? ov
-        : { ...ov, removed: [...(ov.removed ?? []), role] }));
+    if (!el) return;
+    /* Taken before anything is written, and offered as a toast as well as a
+       stack entry — deleting a cover element used to do neither, which made the
+       bin the one destructive control in the editor with no way back. */
+    const snapshot = takeSnapshot();
+    if (el.type === 'text') {
+      const key = fieldKeyForCoverText(pageId, el);
+      setFieldContent((prev) => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
     }
-    setPages((prev) => prev.map((p) => (p.id === pageId && p.type === 'cover'
+    setPages((prev) => prev.map((p) => (p.id === pageId && holdsObjects(p)
       ? { ...p, coverElements: (p.coverElements ?? []).filter((e) => e.id !== elementId) }
       : p)));
     setSelection((prev) => (prev.kind === 'coverElement' && prev.elementId === elementId ? { kind: 'page', pageId } : prev));
-  }, [pages]);
+    /* Names the slot rather than the primitive: "Subtitle deleted" says what is
+       gone, where "Text deleted" would leave you to work out which box it was —
+       and that matters more now the sentence goes with it. */
+    const label = el.type === 'text' && el.origin !== 'author' && isCoverSlotRole(el.role)
+      ? COVER_SLOT_LABELS[el.role]
+      : coverElementLabel(page, elementId);
+    offerUndo(`${label} deleted`, snapshot);
+  }, [pages, takeSnapshot, offerUndo]);
   /* Keyboard delete for cover elements. TipTap already answers Backspace and
      Delete on a NodeSelection (see the atom keymap), so every shape, image and
      embed in a CHAPTER could be removed from the keyboard — but a cover element
@@ -27296,7 +31709,7 @@ export function BookEditorView() {
 
   const reorderCoverElement = useCallback((pageId: string, elementId: string, dir: 'front' | 'back') => {
     setPages((prev) => prev.map((p) => {
-      if (p.id !== pageId || p.type !== 'cover') return p;
+      if (p.id !== pageId || !holdsObjects(p)) return p;
       const els = p.coverElements ?? [];
       const el = els.find((e) => e.id === elementId);
       if (!el) return p;
@@ -27313,7 +31726,7 @@ export function BookEditorView() {
      arrived. */
   const addCoverElement = useCallback((pageId: string, el: CoverElement) => {
     setPages((prev) => prev.map((p) => (
-      p.id === pageId && p.type === 'cover'
+      p.id === pageId && holdsObjects(p)
         // Stamped here rather than at the call site so every future add path is
         // author-owned by construction — this function IS "an element the cover
         // didn't have", which is the same sentence as "the user put it there".
@@ -27328,7 +31741,7 @@ export function BookEditorView() {
   const duplicateCoverElement = useCallback((pageId: string, elementId: string) => {
     const newId = `${elementId}-copy-${Date.now()}`;
     setPages((prev) => prev.map((p) => {
-      if (p.id !== pageId || p.type !== 'cover') return p;
+      if (p.id !== pageId || !holdsObjects(p)) return p;
       const els = p.coverElements ?? [];
       const el = els.find((e) => e.id === elementId);
       if (!el) return p;
@@ -27349,39 +31762,139 @@ export function BookEditorView() {
   // forth between themes — and an undo is the better way back than a dialog
   // asked every time. What made that unsafe here was the deleting, not the
   // missing prompt, so the fix is in mergeCoverElements rather than here.
-  const applyTemplate = useCallback((pageId: string, templateId: string) => {
-    const tpl = THEMES.find((t) => t.id === templateId as ThemeId);
-    if (!tpl) return;
+  /* Every designed page, seeded wherever it came from. A page gets its objects at
+     the one moment it is created or the template is applied — which leaves out
+     every OTHER way a page can arrive: restored from storage (including a book
+     saved before these pages were objects at all, which came back blank), pulled
+     out of version history, undone back into existence, promoted from a
+     continuation, split off another chapter, imported. One rule here instead of
+     a seed call at each of those, and it cannot be forgotten at a new one.
+
+     `coverElements === undefined` is the test, not "is it empty": undefined means
+     never seeded, and an empty array means someone deleted everything on this
+     page, which is a decision and not a gap to fill back in.
+
+     Returning `prev` unchanged when there is nothing to do is what keeps this
+     from looping against its own dependency on `pages`. */
+  useEffect(() => {
+    const design = pageDesignOf(theme);
+    if (!design) return;
+    setPages((prev) => {
+      let changed = false;
+      const next = prev.map((p): PageMeta => {
+        if (p.coverElements !== undefined) return p;
+        if (p.type === 'chapter') {
+          if (p.layout !== 'opener' || !isChapterStart(p, fieldContent)) return p;
+          changed = true;
+          const num = chapterNumberOf(prev, fieldContent, p.id);
+          return { ...p, coverElements: design.openerElements(num, p.openerIndex ?? undefined, p.openerImage) };
+        }
+        const kind = design.pageKindOf(p, true);
+        if (!kind) return p;
+        changed = true;
+        return design.seedPage(p, kind);
+      });
+      return changed ? next : prev;
+    });
+  }, [theme, pages, fieldContent]);
+
+  /* Restyle the page you are on. Back after being deleted from the Pages-panel
+     row menu — the control was never the problem, its home was. */
+  /* A patch, not a single field: which property a layout sets depends on the kind
+     of page — `sheetStyle` for a content page, `openerIndex` for a chapter opener,
+     `workbook` for a worksheet. The panel knows which; this just applies it. */
+  const setPageStyle = useCallback((
+    pageId: string,
+    patch: Partial<ChapterPage> | Partial<SimplePage>,
+    /* Most designs only change a page's FURNITURE, which is a patch and nothing
+       more. A two-column design cannot be: it has to put the page's body into
+       columns, which is an edit to the text. So a design that needs one hands
+       back a rewrite of whatever is there — see PageDesign.sheetStyles[].seed. */
+    seedBody?: (html: string) => string,
+    /* Said when a pick reaches further than the page you are on. The panel works
+       a sheet at a time, so the one case that doesn't is worth a sentence rather
+       than a silently wider change. */
+    note?: string,
+  ) => {
+    /* A layout change moves the text on the page — a bled photo and a foot band
+       both shorten it — so the book repaginates from here to the end. */
+    runBusy('Applying layout…', () => {
+      let nextHtml: string | undefined;
+      if (seedBody) {
+        /* The LIVE text, not `initialHtml`: a mounted chapter's words live in
+           its ProseMirror editor, and `initialHtml` is only what it was seeded
+           with. Writing the model alone left the editor holding the old
+           single-column body and the change did nothing visible. */
+        const entry = editorRegistry.current.get(pageId);
+        const page = pages.find((p) => p.id === pageId);
+        const live = entry?.editor.getHTML()
+          ?? chapterContent[pageId]
+          ?? (page && 'initialHtml' in page ? page.initialHtml : '')
+          ?? '';
+        nextHtml = seedBody(live);
+        entry?.editor.commands.setContent(nextHtml);
+        setChapterContent((prev) => ({ ...prev, [pageId]: nextHtml as string }));
+      }
+      setPages((prev) => prev.map((p) => (p.id === pageId
+        ? { ...p, ...patch, ...(nextHtml !== undefined ? { initialHtml: nextHtml } : {}) } as PageMeta
+        : p)));
+      if (note) showNotice(note);
+    });
+  }, [runBusy, pages, chapterContent, showNotice]);
+
+  const applyTemplateNow = useCallback((pageId: string, tpl: ThemeDef) => {
     // The template being replaced, needed to tell the author's own photo from
     // the stock one it shipped with — see mergeCoverElements.
     const outgoing = THEMES.find((t) => t.id === activeTheme) ?? THEMES[0];
+    /* The design being applied. Everything below asks it rather than testing
+       for one template by name — applying Lovable over a Career Pathways book
+       has to re-seed every designed page with LOVABLE's objects, not strip them
+       as if the incoming theme had no design at all. */
+    const design = pageDesignOf(tpl);
     const snapshot = takeSnapshot();
-    setPages((prev) => prev.map((p) => {
-      if (p.id !== pageId || p.type !== 'cover') return p;
-      // bg travels with the template for the same reason the elements do: it's
-      // part of the look being applied, not content the author typed.
-      return {
-        ...p,
-        // A hand-picked cover background outranks the template's, the same way a
-        // hand-set colour does — see CoverOverrides.
-        bg: coverOverrides.bg ?? tpl.coverBg,
-        /* Order matters. Auto-place fills the roles the template has no slot
-           for, THEN applyCoverOverrides runs — so a frozen colour still reaches
-           a derived slot, and a slot the author deliberately deleted is dropped
-           again rather than helpfully resurrected by the placer. */
-        coverElements: applyCoverOverrides(
-          autoPlaceCoverText(
-            mergeCoverElements(p.coverElements ?? [], tpl.coverElements, outgoing.coverElements),
-            tpl, p.id, fieldContent,
-          ),
-          coverOverrides,
-        ),
-      };
-    }));
+    /* The same mapping the preview ran, so what was on screen is what lands. It
+       also re-points every chapter at the layout the template ships: without
+       that, applying a page design to a book already written left each chapter
+       on whatever layout it happened to carry — one template's cover in front of
+       pages drawn by three others. A chapter's own page STYLE (sheetStyle) is
+       deliberately left alone: that is a choice about one page, not about which
+       template is on. */
+    setPages((prev) => pagesForTemplate(prev, tpl, outgoing, fieldContent, coverOverrides));
+    /* A template that is a whole page design brings its own sheet with it (see
+       ThemeDef.pageSize). Both go through the same setters Book settings uses, so
+       the panel shows what was applied and the user can change it back. A theme
+       without one leaves the book's own page alone. */
+    if (tpl.pageSize) setPageSizeId(tpl.pageSize);
+    if (tpl.margins) setMargins(tpl.margins);
+    if (tpl.pageNumbers) setPageNumbers((prev) => ({ ...prev, ...tpl.pageNumbers }));
+    /* A template that is a whole page design owns the INTERIOR too, so every
+       chapter is re-pointed at the layout it ships. Without this, applying it to
+       a book already written left each chapter on whatever layout it happened to
+       carry — a Career Pathways cover in front of pages drawn by three other
+       templates. A chapter's own page style (sheetStyle) is deliberately left
+       alone: it is a choice about one page, not about which template is on. */
     setActiveTheme(tpl.id);
     setSelection({ kind: 'page', pageId });
     offerUndo(`${tpl.name} applied`, snapshot);
   }, [takeSnapshot, offerUndo, activeTheme, coverOverrides, fieldContent]);
+
+  /* Declared AFTER applyTemplateNow and depending on it — not before it with the
+     dependency silenced, which is what this was. `applyTemplate` was built once
+     (deps `[runBusy, THEMES]`, both constants) and so closed over the FIRST
+     applyTemplateNow forever: the one that captured `activeTheme` at mount. So
+     every template swap computed "the template being replaced" as whatever the
+     book was wearing when the editor opened, not what it is wearing now.
+
+     That is the mixed-template bug. mergeCoverElements uses the outgoing
+     template to tell the author's own photo from the artwork the old template
+     shipped — given the wrong outgoing, Career Pathways' dash field stopped
+     looking like stock and was carried forward as "a picture someone chose",
+     into all six of Lovable's motif slots. */
+  const applyTemplate = useCallback((pageId: string, templateId: string) => {
+    const tpl = THEMES.find((t) => t.id === templateId as ThemeId);
+    if (!tpl) return;
+    runBusy('Changing template…', () => applyTemplateNow(pageId, tpl));
+  }, [runBusy, applyTemplateNow]);
 
   /* `sheetIndex` is which page WITHIN the section, because a chapter is a single
      element containing all of its sheets. Scrolling to that element lands on
@@ -27416,9 +31929,13 @@ export function BookEditorView() {
   const sendAiChatText = useCallback((text: string) => {
     if (!text.trim()) return;
     setAiMessages((prev) => [...prev, { role: 'user', text }]);
-    const chapterTitle = pages.find((p) => p.id === activeChapterId)?.title;
+    /* The whole context, not just a chapter title: the reply quotes the page
+       the caret is on and the size of the selection, so it has to be read at
+       SEND time and closed over. Reading it inside the timeout would answer
+       about wherever the author had wandered to 600ms later. */
+    const ctx = aiContext;
     setTimeout(() => {
-      const reply = mockAiReply(text, chapterTitle);
+      const reply = mockAiReply(text, ctx);
       /* Only a DRAFT costs a generation. Answering "how long is this chapter"
          is not generation, and charging for it would make the allowance feel
          arbitrary and make people afraid to ask anything. */
@@ -27440,7 +31957,7 @@ export function BookEditorView() {
       }
       setAiMessages((prev) => [...prev, { role: 'ai', ...reply }]);
     }, 600);
-  }, [pages, activeChapterId, outOfGenerations, currentPlan, incrementGenerations]);
+  }, [aiContext, outOfGenerations, currentPlan, incrementGenerations]);
 
 
   const sendAiMessage = useCallback(() => {
@@ -27523,14 +32040,22 @@ export function BookEditorView() {
     setWordCounts((prev) => { const next = { ...prev }; delete next[id]; return next; });
     setTitleWordCounts((prev) => { const next = { ...prev }; delete next[id]; return next; });
 
+    /* Where the selection lands when the page under it goes. This used to be
+       `coverPageId` unconditionally, which was safe only while the cover was
+       undeletable: `coverPageId` falls back to the literal id 'p-cover' when no
+       cover exists, so deleting the cover would have selected a page that isn't
+       there — and the cover-slot picker reads that lookup as a SimplePage
+       without checking. Fall back to the first page that survives instead. */
+    const survivor = pages.find((p) => p.id !== id)?.id;
     setSelection((prev) => {
       const stillThere = (pid: string) => pid.split('::')[0] !== id;
-      if (prev.kind === 'page' && !stillThere(prev.pageId)) return { kind: 'page', pageId: coverPageId };
-      if (prev.kind === 'chapter' && !stillThere(prev.chapterId)) return { kind: 'page', pageId: coverPageId };
+      const fallback: Selection = survivor ? { kind: 'page', pageId: survivor } : { kind: 'none' };
+      if (prev.kind === 'page' && !stillThere(prev.pageId)) return fallback;
+      if (prev.kind === 'chapter' && !stillThere(prev.chapterId)) return fallback;
       return prev;
     });
     offerUndo(target.type === 'toc' ? 'Table of contents removed' : `“${target.title}” deleted`, snapshot);
-  }, [pages, takeSnapshot, offerUndo, coverPageId]);
+  }, [pages, takeSnapshot, offerUndo]);
 
   /* Chapter-only, matching ChaptersPanel's own reorder/delete restriction — cover,
      TOC and back matter are singleton page types an EPUB expects exactly one of,
@@ -27610,19 +32135,30 @@ export function BookEditorView() {
      reader sees a new entry in the contents. `titled` is for the two entry
      points that mean "chapter" outright (Chapters panel, the Chapter insert
      tile); they seed a heading so the page counts from the moment it appears. */
-  const addPageAfter = useCallback((afterId: string, titled = false) => {
+  const addPageAfter = useCallback((afterId: string, titled = false, design?: { sheet?: CpSheetVariant; html?: string }) => {
+    /* Snapshot BEFORE the mutation, same as every other structural action.
+       Adding used to be the one direction that wasn't on the stack: delete,
+       reorder, split and template-switch all went through offerUndo, but
+       "+ Add page" and "+ Add chapter" only called setPages — so the toolbar's
+       undo button stayed disabled and ⌘Z did nothing at all, with no hint that
+       it had been ignored. Removing a page you didn't mean to add should not be
+       harder than removing one you did. */
+    const snapshot = takeSnapshot();
     const newId = `ch-${Date.now()}`;
     setPages((prev) => {
       const idx = prev.findIndex((p) => p.id === afterId);
       const next: ChapterPage = {
         id: newId, type: 'chapter', title: titled ? 'New chapter' : '',
         layout: titled ? chapterLayoutOf(theme) : 'standard', overrides: {},
-        titleHtml: titled ? '<h2>New chapter</h2>' : '', initialHtml: '<p></p>',
+        titleHtml: titled ? '<h2>New chapter</h2>' : '', initialHtml: design?.html ?? '<p></p>',
+        ...(design?.sheet ? { sheetStyle: design.sheet } : {}),
       };
       return [...prev.slice(0, idx + 1), next, ...prev.slice(idx + 1)];
     });
     setActiveChapterId(newId);
-  }, [theme]);
+    requestAnimationFrame(() => jumpTo(newId));
+    offerUndo(titled ? 'Chapter added' : 'Page added', snapshot);
+  }, [theme, takeSnapshot, offerUndo]);
 
   /* The last COMPLETE top-level block that is fully on screen, as a document
      position just after it. The fallback for "we have no caret": the end of the
@@ -27637,6 +32173,86 @@ export function BookEditorView() {
      Top-level nodes and the editor's own DOM children run 1:1 and in order, node
      views included, which is what lets the index found by measuring be used as
      the index into the document. */
+  /* One of the template's own designed pages, inserted after `afterId`. A plain
+     content page still goes through addPageAfter — it is a chapter container
+     like any other, and nothing about it is template-specific. */
+  /* Returns false when the insert was refused, so the gallery can stay open and
+     let you pick something else — the toast carries the reason. */
+  const addTemplatePage = useCallback((afterId: string, kind: AddPageKind, closeGallery?: () => void): boolean => {
+    const design = pageDesignOf(theme);
+    if (!design) return false;
+    const spec = design.addPageOptions.find((o) => o.id === kind);
+    /* A content page is a chapter page, so it goes through addPageAfter and keeps
+       everything that depends on being one: text flows onto it, it splits, it
+       carries a title when it starts a chapter. The design only picks its chrome
+       and whether the body opens as two columns. */
+    /* Both are chapter containers — the ONLY difference is a title, which is what
+       makes one an opener and the other a continuation (see isChapterStart). Which
+       design either wears is the Layout panel's business, not this gallery's. */
+    if (kind === 'page' || kind === 'chapter' || kind === 'blank') {
+      addPageAfter(afterId, kind === 'chapter', kind === 'blank' ? { sheet: 'bare' } : undefined);
+      return true;
+    }
+    /* Cover, contents and back page are one per book. They stay in the gallery
+       when they already exist — the template's page set shouldn't change shape
+       depending on what you've built — and the refusal happens here, on the
+       attempt, which is what every other blocked insert in this editor does. */
+    const existingType = kind === 'cover' ? 'cover' : kind === 'toc' ? 'toc' : kind === 'back' ? 'backmatter' : null;
+    if (spec?.once && existingType) {
+      const existing = pages.find((pg) => pg.type === existingType);
+      if (existing) {
+        /* The gallery stays open behind the toast so you can pick something
+           else, which means the offer has to dismiss it — jumping to a page
+           hidden under a modal is the same as doing nothing. */
+        showNotice(`This book already has a ${spec.label.toLowerCase()}.`, {
+          label: 'Go to it',
+          run: () => { closeGallery?.(); jumpTo(existing.id); },
+        });
+        return false;
+      }
+    }
+    const snapshot = takeSnapshot();
+    const id = `p-${kind}-${Date.now()}`;
+    /* A new page arrives wearing the active design's DEFAULT arrangement, and
+       becomes any of the others from the Layout panel. The gallery offers one
+       tile per kind for the same reason: four worksheet rulings are four
+       designs of one kind of page, not four kinds. */
+    const d = design.defaults;
+    const sheet = design.layouts.worksheet[0];
+    const next: SimplePage = kind === 'cover'
+      ? { id, type: 'cover', title: 'Cover', bg: theme.coverBg, coverElements: theme.coverElements }
+      : kind === 'toc'
+        ? design.seedPage({ id, type: 'toc', tocLayout: d.toc, title: 'Table of Contents' }, d.toc)
+        : kind === 'back'
+          ? design.seedPage({ id, type: 'backmatter', backLayout: d.back, title: 'About the Author' }, d.back)
+          : kind === 'cta'
+            ? design.seedPage({ id, type: 'cta', imageLayout: d.cta, title: 'Call to action' }, d.cta)
+            : kind === 'image'
+              ? design.seedPage({ id, type: 'image', imageLayout: d.image, title: 'Image' }, d.image)
+              : design.seedPage({ id, type: 'workbook', workbook: sheet.id as CpWorkbookKind, title: sheet.label }, `wb-${sheet.id}`);
+    setPages((prev) => {
+      const copy = [...prev];
+      /* A cover goes to the front and a back page to the end whatever page you
+         were looking at — "after this one" is not a sensible position for either,
+         and the contents page belongs behind the cover rather than wherever the
+         caret happens to be. Everything else follows the page you were on. */
+      const at = spec?.at === 'start' ? 0
+        : spec?.at === 'end' ? copy.length
+        : spec?.at === 'after-cover' ? (copy.findIndex((pg) => pg.type === 'cover') + 1)
+        : (() => { const i = copy.findIndex((pg) => pg.id === afterId); return i < 0 ? copy.length : i + 1; })();
+      copy.splice(at, 0, next);
+      return copy;
+    });
+    setSelection({ kind: 'page', pageId: id });
+    /* Go to it. Inserting used to leave the canvas wherever it was, which made the
+       Layout panel describe a different page than the one you had just created —
+       and on a long book the new page was simply somewhere off screen. After the
+       state lands, so the element exists to scroll to. */
+    requestAnimationFrame(() => jumpTo(id));
+    offerUndo(`${next.title} added`, snapshot);
+    return true;
+  }, [takeSnapshot, offerUndo, addPageAfter, pages, showNotice, jumpTo, theme]);
+
   const posAfterLastVisibleBlock = useCallback((ed: Editor): number | null => {
     const scroller = scrollerRef.current;
     if (!scroller) return null;
@@ -27740,11 +32356,10 @@ export function BookEditorView() {
   }, [aiMessages, activeEditor, blockedSurface, showNotice]);
 
   const regenerateAiDraft = useCallback((index: number) => {
-    const chapterTitle = pages.find((p) => p.id === activeChapterId)?.title;
     const prompt = [...aiMessages].slice(0, index).reverse().find((m) => m.role === 'user')?.text ?? 'write';
-    const reply = mockAiReply(prompt, chapterTitle);
+    const reply = mockAiReply(prompt, aiContext);
     setAiMessages((prev) => prev.map((m, i) => (i === index ? { ...m, ...reply, inserted: false, rating: undefined } : m)));
-  }, [aiMessages, pages, activeChapterId]);
+  }, [aiMessages, aiContext]);
 
   const rateAiDraft = useCallback((index: number, rating: 'up' | 'down') => {
     setAiMessages((prev) => prev.map((m, i) => (i === index ? { ...m, rating } : m)));
@@ -27931,22 +32546,11 @@ export function BookEditorView() {
   const [aiThreads, setAiThreads] = useState<{ id: string; title: string; messages: AiMessage[] }[]>([]);
   const [showAiHistory, setShowAiHistory] = useState(false);
 
-  /* Both of these read the current thread straight from `aiMessages` rather than
-     from inside a state updater. Archiving from inside one looks tidy and is
-     wrong: an updater must be pure, React invokes it twice in development to
-     prove it, and the second run archived the same conversation a second time —
-     the history listed every thread twice. */
-  const startNewAiThread = useCallback(() => {
-    const firstAsk = aiMessages.find((m) => m.role === 'user')?.text;
-    // A thread nobody said anything in is not history, it is the welcome
-    // message — archiving it would fill the list with identical empty rows.
-    if (firstAsk) {
-      setAiThreads((prev) => [{ id: `t-${Date.now()}`, title: firstAsk, messages: aiMessages }, ...prev]);
-    }
-    setAiMessages([AI_WELCOME]);
-    setShowAiHistory(false);
-  }, [aiMessages]);
-
+  /* This reads the current thread straight from `aiMessages` rather than from
+     inside a state updater. Archiving from inside one looks tidy and is wrong:
+     an updater must be pure, React invokes it twice in development to prove it,
+     and the second run archived the same conversation a second time — the
+     history listed every thread twice. */
   const openAiThread = useCallback((id: string) => {
     const thread = aiThreads.find((t) => t.id === id);
     if (!thread) return;
@@ -28253,10 +32857,15 @@ export function BookEditorView() {
     setPages((prev) => {
       if (prev.some((p) => p.type === 'toc')) return prev;
       const coverIdx = prev.findIndex((p) => p.type === 'cover');
-      const next: SimplePage = { id: `p-toc-${Date.now()}`, type: 'toc', title: 'Table of Contents' };
+      const base: SimplePage = { id: `p-toc-${Date.now()}`, type: 'toc', title: 'Table of Contents' };
+      /* A contents page added back under a template that designs one comes back
+         designed. Without this it returned as a blank page with the template's
+         black fill and nothing on it — the objects are the design. */
+      const design = pageDesignOf(theme);
+      const next = design ? design.seedPage({ ...base, tocLayout: design.defaults.toc }, design.defaults.toc) : base;
       return [...prev.slice(0, coverIdx + 1), next, ...prev.slice(coverIdx + 1)];
     });
-  }, []);
+  }, [theme]);
 
   /* The book's real page list. Each chapter reports how many sheets it measured
      out to (see the Pagination extension); everything else is one sheet until
@@ -28362,22 +32971,6 @@ export function BookEditorView() {
     return out;
   }, [pages, pageCounts]);
 
-  /* Index of a section's FIRST page in the numbering sequence; a sheet adds its
-     own offset within the section on top. -1 means "excluded from numbering",
-     which PageNumberChip already reads as "print nothing". */
-  const chapterCountForNumbering = (id: string) => {
-    const skipped = (p: PageMeta) => pageNumbers.skipCoverAndBackMatter && (p.type === 'cover' || p.type === 'backmatter');
-    const target = pages.find((p) => p.id === id);
-    if (!target || skipped(target)) return -1;
-    let n = 0;
-    for (const p of pages) {
-      if (p.id === id) return n;
-      if (skipped(p)) continue;
-      n += p.type === 'chapter' ? Math.max(1, pageCounts[p.id] ?? 1) : 1;
-    }
-    return n;
-  };
-
   return (
     <ImageLibraryContext.Provider value={imageLibrary}>
     <BookLinkTargetsContext.Provider value={linkTargetsValue}>
@@ -28397,104 +32990,91 @@ export function BookEditorView() {
            Transitions name their exact properties (never \`all\`) and stay at
            or under 150ms — this is a high-frequency interaction, so the
            feedback has to be instant rather than expressive. */
-        /* The panel collapse handles. A bump in the panel's own edge rather
-           than a tab laid across it: a shape straddling the seam merges with the
-           white panel on one half and floats on the grey gutter on the other,
-           which reads as a sticker. Here the panel's 1px border simply detours
-           around the handle and carries on, so the panel keeps one outline.
-           The button carries no chrome of its own — the SVG is the whole
-           appearance — so everything below paints the path, not the box. */
+        /* The panel collapse handles: a square chip centred on the panel's inner
+           border, half over the panel and half over the gutter. Unlike the lobe
+           it replaced, this one is an ordinary button and is styled as one — the
+           shadow is what separates it from the white panel behind its inner
+           half, since a plain border would vanish where the two whites meet. */
         .book-edge-toggle {
           position: absolute;
           top: 50%;
-          margin-top: -${EDGE_HANDLE_H / 2}px;
+          margin-top: -${EDGE_HANDLE_W / 2}px;
           z-index: 6;
           width: ${EDGE_HANDLE_W}px;
-          height: ${EDGE_HANDLE_H}px;
+          height: ${EDGE_HANDLE_W}px;
           padding: 0;
-          background: none;
+          /* Round, not the system's 8px. At 28px a rounded square still reads as
+             a small panel and tries to belong to the one behind it; a circle
+             reads as a handle laid on the seam, which is what it is. It is also
+             the only shape with no corner to disagree with the straight border
+             it is centred on. */
+          border-radius: 999px;
+          background: #fff;
+          /* A shadow ring rather than a 1px border, because this is the one
+             control in the editor that sits on two backgrounds at once: a solid
+             border reads correctly against the grey gutter and all but vanishes
+             against the white panel its inner half covers. A transparent ring
+             darkens whatever is actually under it. */
           border: none;
+          box-shadow:
+            0px 0px 0px 1px oklch(0 0 0 / 0.06),
+            0px 1px 2px -1px oklch(0 0 0 / 0.06),
+            0px 2px 4px 0px oklch(0 0 0 / 0.04);
           color: ${SLATE};
-          transition-property: color;
+          opacity: 0;
+          transition-property: color, box-shadow, background, opacity, scale;
           transition-duration: 150ms;
           transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
         }
-        /* The bump is 16px across; the hit target is brought up to the 24px
-           floor with a padded pseudo-element rather than by fattening the
-           silhouette, which is doing visual work at exactly this size. It grows
-           in one direction only, and for both handles that direction is to the
-           RIGHT — which is not symmetry, it is where the scrollbars aren't. A
-           vertical scrollbar is drawn at its scroller's right edge, so the
-           dangerous side differs per handle: the left handle has the tools
-           panel's bar immediately to its left, and the right handle has the
-           canvas's bar immediately to its left. Growing right puts the left
-           handle's target in the canvas's empty left gutter and the right
-           handle's in the pages panel's left padding, clear of both. A target
-           that covered a scrollbar would turn a drag meant for scrolling into a
-           collapsed panel. */
-        .book-edge-toggle::after {
-          content: '';
-          position: absolute;
-          top: 0;
-          bottom: 0;
-          left: 0;
-          right: -10px;
+        /* Revealed by the pointer being anywhere in the working area, not by the
+           seam itself. Three things bring it back: the hover, keyboard focus (or
+           Tab lands on something invisible), and a folded panel, which has no
+           other visible way back. */
+        .book-editor-body:hover .book-edge-toggle,
+        .book-edge-toggle:focus-visible,
+        .book-edge-toggle--pinned {
+          opacity: 1;
         }
-        .book-edge-toggle--left { right: -${EDGE_HANDLE_W}px; }
-        .book-edge-toggle--right { left: -${EDGE_HANDLE_W}px; }
-        /* Pinned to the button's own box, which is exactly the bump: the icon
-           then centres on the face of it with no offsets to keep in sync. */
-        .book-edge-toggle__shape {
-          position: absolute;
-          top: 0;
-          left: -2px;
-          overflow: visible;
+        /* Where there is no pointer to hover with, the reveal never fires and the
+           chip is a 28px invisible target you can only hit by accident — and
+           since the only other thing that shows it is being already folded, a
+           panel on a tablet could never be collapsed at all, only reopened.
+           Shown outright there instead. */
+        @media (hover: none) {
+          .book-edge-toggle { opacity: 1; }
         }
-        .book-edge-toggle--right .book-edge-toggle__shape { left: auto; right: -2px; }
-        .book-edge-toggle__fill {
-          fill: #fff;
-          transition-property: fill;
-          transition-duration: 150ms;
-          transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+        /* No padded hit area. The old 16px bump needed one to clear the 24px
+           target floor, and it grew rightward only, to dodge the scrollbar at
+           each scroller's right edge. At 28px across the chip clears the floor on
+           its own, and it now sits ON the tools panel's bar rather than beside
+           it, so there is no longer a safe direction to grow in. */
+        .book-edge-toggle--left { right: -${EDGE_HANDLE_OVERHANG}px; }
+        .book-edge-toggle--right { left: -${EDGE_HANDLE_OVERHANG}px; }
+        /* Hover darkens the mark and deepens the ring; the press takes the
+           system's one-step-off-white fill and the 0.96 press scale. The lobe
+           deliberately did not tint on hover, because tinting a shape that WAS
+           the panel made it read as a hole punched in the edge. A chip is not
+           the panel, so it can use the ordinary idiom.
+           The fill is the static cue and the scale is the motion one: the press
+           still reads with motion turned off. */
+        .book-edge-toggle:hover {
+          color: ${INK};
+          box-shadow:
+            0px 0px 0px 1px oklch(0 0 0 / 0.08),
+            0px 1px 2px -1px oklch(0 0 0 / 0.08),
+            0px 2px 4px 0px oklch(0 0 0 / 0.06);
         }
-        .book-edge-toggle__line {
-          stroke: ${BORDER};
-          transition-property: stroke, stroke-width;
-          transition-duration: 150ms;
-          transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+        .book-edge-toggle:active { background: ${SURFACE}; scale: 0.96; }
+        .book-edge-toggle:focus-visible {
+          outline: 2px solid ${BLUE};
+          outline-offset: 2px;
         }
-        /* Hover moves the chevron, not the fill. The system's hover idiom is a
-           one-step-off-white fill, but this shape is the panel itself: tinting it
-           to Surface makes the bump the same value as the canvas gutter behind
-           it, and the handle reads as a hole punched in the edge rather than a
-           part of it swelling out. The press keeps the fill change — momentarily
-           reading as pushed-in is exactly what a press should look like. */
-        .book-edge-toggle:hover { color: ${INK}; }
-        .book-edge-toggle:active .book-edge-toggle__fill { fill: ${SURFACE}; }
-        /* The focus ring follows the silhouette instead of boxing it — an
-           outline on the button would draw a rectangle around a shape that has
-           no rectangle in it. */
-        .book-edge-toggle:focus-visible { outline: none; }
-        .book-edge-toggle:focus-visible .book-edge-toggle__line { stroke: ${BLUE}; stroke-width: 2; }
-        /* Set 2px deeper into the panel than the bump's own centre. Dead
-           centre is where it measured before, and it looked shoved against the
-           outer curve — because that curve is the only edge of this shape that
-           is actually drawn. The mouth has no border by design (the fill closes
-           back over it so the panel's line doesn't run across the bump), and
-           panel white meets bump white with nothing between them, so the eye
-           never sees the inner half and reads the mark as hugging the rim.
-           Offsetting toward the panel puts the clearance where it can be seen.
-           Done as an offset rather than a transform: the icon's transform is
-           already carrying the chevron's flip, and a second one would have to be
-           kept in sync through the rotation. */
         .book-edge-toggle__icon {
-          position: relative;
+          display: flex;
           transition-property: transform;
           transition-duration: 220ms;
           transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
         }
-        .book-edge-toggle--left .book-edge-toggle__icon { left: -2px; }
-        .book-edge-toggle--right .book-edge-toggle__icon { left: 2px; }
         @media (prefers-reduced-motion: reduce) {
           .book-edge-toggle__icon { transition-duration: 0ms; }
         }
@@ -28673,7 +33253,20 @@ export function BookEditorView() {
               <SideMenuIcon active={sidebarOpen} />
             </button>
           </Tooltip>
-          <AIButton label="Wordgenie" active={aiPanelOpen} onClick={() => setAiPanelOpen((v) => !v)} />
+          {/* Opening it has to open the panel it now lives in — otherwise the
+              button clicks into a folded panel and nothing happens. */}
+          <AIButton
+            label="Wordgenie"
+            active={aiPanelOpen}
+            onClick={() => {
+              const next = !aiPanelOpen;
+              setAiPanelOpen(next);
+              if (next) {
+                setLeftOpen(true);
+                if (narrowViewport) setPanelForcedOpen(true);
+              }
+            }}
+          />
         </div>
         <div style={{ ...ns, fontSize: 13.5, fontWeight: 700, color: INK }}>{metadata.title || 'Untitled book'}</div>
         <div className="flex items-center" style={{ gap: 12 }}>
@@ -28856,7 +33449,10 @@ export function BookEditorView() {
       </div>
 
       {/* rail + panels + canvas + inspector, side by side below the full-width top bar */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* book-editor-body scopes the collapse chips' hover-reveal. The whole
+          working area, not the seam itself: a reveal zone only as wide as the
+          chip is a control you have to already know about to find. */}
+      <div className="flex-1 flex overflow-hidden book-editor-body">
         {/* Rail and panel travel together, and the edge toggle hangs off the pair's
             outer border — so it stays put whether the panel is 296px or zero. */}
         <div className="flex-shrink-0 h-full flex" style={{ position: 'relative' }}>
@@ -28873,16 +33469,30 @@ export function BookEditorView() {
             // while the font panel opened in 1.1% of them. Naming it Photos rather than
             // Media also stops the tab pretending to be a general media bucket when
             // video and audio barely apply to PDF/EPUB, which is most of what ships.
+            /* Layout sits straight after Templates, which is the order the real
+               product's own rail uses (Templates · Layout · Text styles · Artworks
+               · Media · Cover Settings) and the order the work happens in: pick the
+               book's look, then this page's. The old left-rail "Layouts" that held
+               columns and grids is gone to Elements ▸ Blocks, so the word is free
+               for what it means here and in the product. */
+            { id: 'layout', label: 'Layout', icon: ICONS.columns },
             { id: 'photos', label: 'Photos', icon: ICONS.image },
             { id: 'text', label: 'Text', icon: ICONS.textTab },
             { id: 'elements', label: 'Elements', icon: ICONS.shapesTab },
-            /* Layouts is a top-level category in the real, live Designrr editor —
-               with almost exactly these eight tiles (image grids, 2/3/4 columns,
-               the two uneven splits) — so folding it under Elements was our
-               departure from the product, not a simplification of it. Splitting it
-               back out also evens the rail: Elements was carrying three groups
-               while every other tab carried one. */
-            { id: 'layouts', label: 'Layouts', icon: ICONS.columns },
+            /* No Layouts tab. It was split out of Elements on the evidence that
+               the real, live OLD Designrr editor has one holding almost exactly
+               these tiles — which is true, and was the right call against that
+               product. The newer Designrr editors use the same word for the
+               opposite thing: "Layout" there is a page or cover ARRANGEMENT you
+               apply to what you are on (title-position variants in the ebook
+               cover editor; back/spine/front in the print one), which is also how
+               Canva, BookWright and Mixbook use it — Canva putting frames, grids
+               and columns under Elements explicitly.
+
+               The product contradicts itself, so this is a choice, not a
+               correction: these tiles go to Elements as "Blocks", and Layout is
+               held for the page-arrangement feature the new editors have and we
+               do not. Reversing it is one line here plus the group rename. */
             /* After Layouts, not second. Import is the main verb for a
                repurposing product, which argued for a permanent tab — but the
                tabs above it are what you reach for while WRITING, many times a
@@ -28902,11 +33512,22 @@ export function BookEditorView() {
             // While an overlay view owns the panel, no rail tab is showing — so
             // none should read as selected either, or the rail would claim to be
             // displaying something it isn't.
-            const active = panelOverlay === null && railTab === item.id && leftOpen;
+            const active = panelOverlay === null && !aiPanelOpen && railTab === item.id && leftOpen;
             return (
             <button
               key={item.id}
               onClick={() => {
+                /* Same rule as the overlay below: a rail tab clicked while
+                   Wordgenie covers the panel means "show me that tab", never
+                   "fold the panel I can't see". */
+                if (aiPanelOpen) {
+                  setAiPanelOpen(false);
+                  setPanelOverlay(null);
+                  setRailTab(item.id);
+                  setLeftOpen(true);
+                  if (narrowViewport) setPanelForcedOpen(true);
+                  return;
+                }
                 // First click out of an overlay goes back to the tabs rather than
                 // collapsing the panel — the narrowViewport toggle below assumes
                 // the tab it's toggling is the one on screen.
@@ -28976,6 +33597,8 @@ export function BookEditorView() {
           className="flex-shrink-0 h-full bg-white"
           style={{
             width: leftPanelHidden ? 0 : PANEL_W,
+            // The Wordgenie layer inside is absolutely positioned against this.
+            position: 'relative',
             overflow: 'hidden',
             borderRight: leftPanelHidden ? 'none' : `1px solid ${BORDER}`,
             transition: 'width 0.22s cubic-bezier(0.2,0,0.2,1)',
@@ -29099,7 +33722,6 @@ export function BookEditorView() {
                     theme={theme}
                     selectedElementId={selection.elementId}
                     coverOverrides={coverOverrides}
-                    fieldContent={fieldContent}
                     currentPlan={currentPlan}
                     onDragTile={setDraggedTile}
                     onDeleteElement={deleteCoverElement}
@@ -29108,7 +33730,6 @@ export function BookEditorView() {
                     onStartCrop={(elementId) => beginCrop({ kind: 'cover', pageId: selection.pageId, elementId })}
                     onSetPageBg={setPageBg}
                     onResetSlot={resetCoverSlot}
-                    onAddSlot={addCoverSlot}
                   />
                 ) : selection.kind === 'page' && pages.find((p) => p.id === selection.pageId)?.type === 'cover' ? (
                   <CoverInspector
@@ -29116,7 +33737,6 @@ export function BookEditorView() {
                     theme={theme}
                     selectedElementId={null}
                     coverOverrides={coverOverrides}
-                    fieldContent={fieldContent}
                     currentPlan={currentPlan}
                     onDragTile={setDraggedTile}
                     onDeleteElement={deleteCoverElement}
@@ -29125,14 +33745,18 @@ export function BookEditorView() {
                     onStartCrop={() => {}}
                     onSetPageBg={setPageBg}
                     onResetSlot={resetCoverSlot}
-                    onAddSlot={addCoverSlot}
                   />
                 ) : selection.kind === 'page' ? (
                   <PageInfoInspector
                     page={pages.find((p) => p.id === selection.pageId) as PageMeta}
                     theme={theme}
+                    pages={pages}
+                    chapterContent={chapterContent}
+                    fieldContent={resolvedFieldContent}
+                    metadata={metadata}
                     onSetPageBg={setPageBg}
                     onSetBackQr={setBackQr}
+                    onSetCtaHref={setCtaHref}
                   />
                 ) : selection.kind === 'pageNumber' ? (
                   <PageNumberInspector pageNumbers={pageNumbers} setPageNumbers={setPageNumbers} />
@@ -29175,7 +33799,17 @@ export function BookEditorView() {
                 // everything a plain insert does straight through, so it's a
                 // safe superset and one insert path serves every panel.
                 onInsertTile={handleMediaInsertTile}
-                textExtras={<TextToolsPanel editor={activeEditor} />}
+                textExtras={(
+                  <>
+                    {activePageId === coverPageId && (
+                      <CoverTextInsert
+                        page={pages.find((p) => p.id === coverPageId) as SimplePage}
+                        onPick={(role) => pickCoverSlot(coverPageId, role)}
+                      />
+                    )}
+                    <TextToolsPanel editor={activeEditor} />
+                  </>
+                )}
               />
             </div>
           )}
@@ -29298,7 +33932,7 @@ export function BookEditorView() {
                    the index scope but not in any category: Video and Audio are
                    index rows that open a picker rather than grids of tiles, so
                    the only way to reach them by name is from here. */
-                searchScope={elementsCat ? [elementsCat] : ['Shapes', 'Icons', 'Charts', 'Worksheets', 'Forms', 'Interactive', 'Media']}
+                searchScope={elementsCat ? [elementsCat] : ['Blocks', 'Shapes', 'Icons', 'Charts', 'Worksheets', 'Forms', 'Interactive', 'Media']}
                 searchLabel={elementsCat ? ELEMENTS_SEARCH_LABELS[elementsCat] : 'elements'}
                 index={elementsCat ? undefined : ELEMENTS_CATEGORIES.map((c) => ({
                   id: c.id,
@@ -29353,28 +33987,6 @@ export function BookEditorView() {
               )}
             </div>
           )}
-          {panelOverlay === null && railTab === 'layouts' && (
-            <div style={{ overflowY: 'auto', height: '100%' }}>
-              <InsertPanel
-                currentPlan={currentPlan}
-                groups={['Layout']}
-                searchScope={['Layout']}
-                searchLabel="layouts"
-                // No "Layouts" header over the grid: the rail tab you just
-                // clicked says Layouts, and the two sub-headings under it say
-                // what each half holds. The group header only repeated the tab.
-                titleNamesGroup
-                onDragTile={setDraggedTile}
-                onLockedClick={(tile) => setUpgradeCtx({ message: 'Unlock this block', feature: tile.label })}
-                onLockedTextStyle={(tile) => setUpgradeCtx({ message: 'Unlock this text style', feature: tile.label })}
-                // handleMediaInsertTile, not insertTileAtCursor, on every insert
-                // panel — not just the one holding Video/Audio. It passes
-                // everything a plain insert does straight through, so it's a
-                // safe superset and one insert path serves every panel.
-                onInsertTile={handleMediaInsertTile}
-              />
-            </div>
-          )}
           {panelOverlay === null && railTab === 'import' && (
             <div style={{ overflowY: 'auto', height: '100%' }}>
               <ImportPanel
@@ -29391,21 +34003,66 @@ export function BookEditorView() {
               />
             </div>
           )}
+          {panelOverlay === null && railTab === 'layout' && (
+            <div style={{ overflowY: 'auto', height: '100%' }}>
+              <LayoutPanel
+                page={pages.find((pg) => pg.id === layoutPageId)}
+                /* An OPENER, not merely a titled page. The template's own chapter
+                   opener is a page of its own (layout: 'opener') and wears one of
+                   the four opener designs. A chapter the author made by hand —
+                   typing a heading at the top of a content page — is still a
+                   content page, and gets the content layouts. Testing `titled`
+                   alone conflated the two and offered opener designs on a page
+                   that cannot draw one. */
+                /* The sheet a pick lands on. The panel is about the page in
+                   front of you, and a chapter's sheets can each wear their own
+                   style, so the index is as much a part of "which page" as the
+                   id is. */
+                sheetIndex={scrollSheetIndex ?? 0}
+                titled={(() => {
+                  const pg = pages.find((x) => x.id === layoutPageId);
+                  /* SHEET 0, not the container. A chapter is one element holding
+                     all of its sheets: sheet 0 of a titled chapter is the opener
+                     and draws CpChapterArt, every sheet after it is running text
+                     and draws CpContentSheet. Testing the container alone showed
+                     opener designs while you were four pages into the chapter's
+                     body — the panel described a page you had long since left. */
+                  return !!pg && pg.type === 'chapter' && pg.layout === 'opener'
+                    && isChapterStart(pg, resolvedFieldContent) && (scrollSheetIndex ?? 0) === 0;
+                })()}
+                theme={theme}
+                pages={pages}
+                chapterContent={chapterContent}
+                fieldContent={resolvedFieldContent}
+                metadata={metadata}
+                onPick={setPageStyle}
+              />
+            </div>
+          )}
           {panelOverlay === null && railTab === 'templates' && (
             <TemplatesPanel
               currentPlan={currentPlan}
               activeTheme={activeTheme}
-              pages={pages}
-              fieldContent={fieldContent}
-              coverOverrides={coverOverrides}
-              onApplyTemplate={(id) => {
+              previewTemplateId={previewTemplateId}
+              onPreviewTemplate={(id) => {
                 const tpl = THEMES.find((t) => t.id === id as ThemeId);
                 if (!tpl) return;
-                if (shouldShowTierBadge(currentPlan as never, tpl.requiredPlan)) {
-                  setUpgradeCtx({ message: `Unlock the ${tpl.name} template`, feature: `${tpl.name} template` });
-                  return;
-                }
-                applyTemplate(coverPageId, tpl.id);
+                /* A locked template previews like any other. The gate belongs on
+                   the commit, not on looking: refusing at the card asks someone to
+                   buy a design they have only seen at 253px against a stock cover,
+                   where previewing puts THEIR book in it full size first. The bar
+                   then names the tier and offers the upgrade in place of Apply. */
+                // Clicking the template you already have ends the preview rather
+                // than previewing what is already on the canvas.
+                const next = tpl.id === activeTheme ? null : tpl.id;
+                /* Previewing re-seeds every page's objects now, not just the
+                   cover's, which on a long book is a few hundred milliseconds of
+                   blocked main thread — long enough to read as a dead click. The
+                   same busy toast the apply already uses, for the same work.
+                   Leaving a preview is cheap (it only drops derived state), so
+                   that goes straight through. */
+                if (next) runBusy('Previewing template…', () => setPreviewTemplateId(next));
+                else setPreviewTemplateId(null);
               }}
             />
           )}
@@ -29451,22 +34108,39 @@ export function BookEditorView() {
               </div>
             </div>
           )}
-        </div>
-        {/* Hidden while Wordgenie or a narrow window owns the width — see
-            leftPanelYielded. Offering to reopen a panel that something else is
-            holding shut would be a control that lies. */}
-        {!leftPanelYielded && (
-          <PanelEdgeToggle side="left" open={leftOpen} label="tools panel" onToggle={() => setLeftOpen((v) => !v)} />
-        )}
-        </div>
+          {/* Wordgenie — a VIEW of this panel, not a column of its own.
 
-        {/* Wordgenie panel — same slot Presentation's AI chat opens into,
-            between the left rail's content panel and the canvas. */}
-        <div
-          className="flex-shrink-0 flex flex-col bg-white overflow-hidden"
-          style={{ width: aiPanelOpen ? 300 : 0, borderRight: aiPanelOpen ? `1px solid ${BORDER}` : 'none', transition: 'width 0.22s cubic-bezier(0.2,0,0.2,1)' }}
-        >
-          <div className="flex items-center justify-between flex-shrink-0" style={{ padding: '14px 16px', borderBottom: `1px solid ${BORDER}`, minWidth: 300 }}>
+              It used to be a second 300px column that opened while the tools
+              panel collapsed to nothing beside it. Two widths animating at once
+              is what made it read as a smear rather than as a panel arriving:
+              the chat's content travelled 282px left while the edge revealing it
+              crept 18px right, so the content and the edge that uncovered it
+              moved in opposite directions at different speeds.
+
+              Now it is the same 282px panel showing something else, which is
+              what Properties already is here and what History and Find & Replace
+              already are on the right panel. The canvas never moves, because
+              nothing resizes.
+
+              The motion is a WIPE: the layer sits in its final position and
+              clip-path uncovers it left to right, so not one pixel of text
+              travels. Closing runs the same property backwards, which sweeps it
+              away right to left without a second rule to write.
+
+              Always mounted rather than conditional — a layer that mounts at its
+              open state has nothing to animate from, and the conversation would
+              be thrown away every time the panel closed. */}
+          <div
+            className="flex flex-col bg-white"
+            style={{
+              position: 'absolute', inset: 0, zIndex: 3, background: '#fff',
+              clipPath: aiPanelOpen ? 'inset(0 0 0 0)' : 'inset(0 100% 0 0)',
+              transition: 'clip-path 0.22s cubic-bezier(0.2,0,0.2,1)',
+              // Or the invisible layer swallows every click on the tools panel.
+              pointerEvents: aiPanelOpen ? 'auto' : 'none',
+            }}
+          >
+          <div className="flex items-center justify-between flex-shrink-0" style={{ padding: '14px 16px', borderBottom: `1px solid ${BORDER}`, minWidth: PANEL_W }}>
             <div className="flex items-center" style={{ gap: 7 }}>
               <AISparkleIcon size={16} />
               <span style={{ ...ns, fontSize: 14, fontWeight: 700, color: INK }}>Wordgenie</span>
@@ -29496,15 +34170,6 @@ export function BookEditorView() {
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={showAiHistory ? BLUE : SLATE} strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
                 </button>
               </Tooltip>
-              <Tooltip label="New chat" position="bottom">
-                <button
-                  onClick={startNewAiThread}
-                  className="flex items-center justify-center cursor-pointer"
-                  style={{ width: 26, height: 26, borderRadius: RADIUS_SM, background: '#F5F7FA', border: 'none' }}
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={SLATE} strokeWidth="2.2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-                </button>
-              </Tooltip>
               <button onClick={() => setAiPanelOpen(false)} className="flex items-center justify-center cursor-pointer" style={{ width: 26, height: 26, borderRadius: RADIUS_SM, background: '#F5F7FA', border: 'none' }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={SLATE} strokeWidth="2.2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
               </button>
@@ -29516,11 +34181,11 @@ export function BookEditorView() {
                not a menu. Grouped under one "Today" header the way the Wordgenie
                history in the old editor does — and NOT the way its revisions
                panel does, which repeats the full date on all eleven rows. */
-            <div className="flex-1 overflow-y-auto" style={{ padding: '12px 10px', minWidth: 300 }}>
+            <div className="flex-1 overflow-y-auto" style={{ padding: '12px 10px', minWidth: PANEL_W }}>
               {aiThreads.length === 0 ? (
                 <div style={{ ...ns, fontSize: 12.5, color: SLATE, lineHeight: 1.55, padding: '8px 6px' }}>
-                  No past chats yet. Starting a new chat keeps this one here, so you can run a
-                  separate line of work for another chapter without losing this thread.
+                  No past chats yet. Conversations you leave are kept here, so you can pick one
+                  back up without losing where it got to.
                 </div>
               ) : (
                 <>
@@ -29543,7 +34208,7 @@ export function BookEditorView() {
               )}
             </div>
           ) : (
-          <div className="flex-1 overflow-y-auto flex flex-col" style={{ padding: 16, gap: 12, minWidth: 300 }}>
+          <div className="flex-1 overflow-y-auto flex flex-col" style={{ padding: 16, gap: 12, minWidth: PANEL_W }}>
             {aiMessages.map((msg, i) => (
               <div key={i} className="flex flex-col" style={{ alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start', gap: 8 }}>
                 <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`} style={{ width: '100%' }}>
@@ -29657,9 +34322,9 @@ export function BookEditorView() {
                     </div>
                   </div>
                 )}
-                {msg.pills && (
+                {(msg.contextual ? aiPills : msg.pills) && (
                   <div className="flex flex-wrap" style={{ gap: 6, paddingLeft: 29 }}>
-                    {msg.pills.map((pill) => (
+                    {(msg.contextual ? aiPills : msg.pills ?? []).map((pill) => (
                       <button
                         key={pill}
                         onClick={() => sendAiChatText(pill)}
@@ -29677,13 +34342,39 @@ export function BookEditorView() {
             ))}
           </div>
           )}
-          <div className="flex-shrink-0" style={{ padding: '12px 16px', minWidth: 300 }}>
-            <div className="flex items-center" style={{ gap: 8, background: '#F4F6F9', borderRadius: RADIUS_MD, padding: '8px 12px' }}>
+          {/* What the assistant is looking at, inside the composer's own well
+              rather than as a bar above it — the construction Fabric uses for
+              its "Current file" label, and the reason is that this is a
+              property of the message you are about to send, not a status line
+              about the panel. It reads broad to narrow, like the repo › branch
+              breadcrumb Cursor prints over its input: where you are first,
+              what you have hold of last.
+
+              It reports; it is not a control. Nothing here detaches the
+              context or swaps it for the whole book, because the way to point
+              the assistant somewhere else is to go there — the thing the
+              author was going to do anyway. */}
+          <div className="flex-shrink-0" style={{ padding: '12px 16px', minWidth: PANEL_W }}>
+            <div style={{ background: '#F4F6F9', borderRadius: RADIUS_MD, padding: '8px 12px' }}>
+              <div className="flex items-center" style={{ gap: 5, paddingBottom: 7 }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={SLATE} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                  <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="2.6" />
+                </svg>
+                {/* The full line in the tooltip: a long chapter heading truncates
+                    here, and the page number is the end of the string. */}
+                <span
+                  title={aiContext.label}
+                  style={{ ...ns, fontSize: 11.5, fontWeight: 500, color: SLATE, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                >
+                  {aiContext.label}
+                </span>
+              </div>
+              <div className="flex items-center" style={{ gap: 8 }}>
               <input
                 value={aiInput}
                 onChange={(e) => setAiInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') sendAiMessage(); }}
-                placeholder={activeChapterId ? 'Ask about this chapter…' : 'Ask about your book…'}
+                placeholder="Ask Wordgenie…"
                 className="flex-1 outline-none bg-transparent"
                 style={{ ...ns, fontSize: 13, color: INK, border: 'none' }}
               />
@@ -29695,8 +34386,17 @@ export function BookEditorView() {
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
               </button>
+              </div>
             </div>
           </div>
+          </div>
+        </div>
+        {/* Hidden while Wordgenie owns the panel or a narrow window is holding
+            it shut. Offering to reopen a panel that something else is holding
+            shut would be a control that lies. */}
+        {!aiPanelOpen && !narrowYield && (
+          <PanelEdgeToggle side="left" open={leftOpen} label="tools panel" onToggle={() => setLeftOpen((v) => !v)} />
+        )}
         </div>
 
         {/* canvas */}
@@ -29728,6 +34428,81 @@ export function BookEditorView() {
             </div>
           </div>
         )}
+        {/* Previewing a template. Same construction as the version bar above and
+            for the same reason — a read-only canvas needs one line saying what
+            you are looking at, one way to commit and one way to leave — and it
+            sits outside the zoomed region for the same sticky reason. Mutually
+            exclusive with that bar: entering version history drops the preview.
+            Blue rather than the version bar's amber, because nothing here is a
+            warning; you are trying something on. */}
+        {/* The wrapper is always here and the HEIGHT is what moves, 0 ↔ 52px over
+            150ms. Rendering the bar only while previewing shoved the canvas down
+            54px in a single frame — measured — which reads as the page breaking
+            rather than as a bar arriving. Fixed height rather than auto because a
+            transition needs two numbers, and this row's height is deterministic:
+            10px padding either side of a 32px button. */}
+        {!viewingVersionEntry && (
+        <div
+          className="flex-shrink-0"
+          style={{
+            height: previewTpl ? 52 : 0,
+            overflow: 'hidden',
+            transition: 'height 150ms cubic-bezier(0.2, 0, 0, 1)',
+          }}
+        >
+          {previewTpl && (
+          <div className="flex items-center justify-between" style={{ height: 52, boxSizing: 'border-box', gap: 16, padding: '10px 20px', background: BLUE_97, borderBottom: `1px solid ${BLUE_90}` }}>
+            {/* The template's NAME is the subject of this bar, so it is what the
+                line leads with — the sentence it replaced buried the one word you
+                are actually judging in the middle of a clause. "nothing is applied
+                yet" went with it: the two buttons beside it already say that. */}
+            <div className="flex items-center" style={{ gap: 9, minWidth: 0 }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={SLATE_HEX} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z" />
+                <circle cx="12" cy="12" r="2.75" />
+              </svg>
+              <span style={{ ...ns, fontSize: 13, color: SLATE }}>Previewing</span>
+              <span style={{ ...ns, fontSize: 14, fontWeight: 700, color: INK, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {previewTpl.name}
+              </span>
+              {/* The tier is named where the decision is made, so the upgrade
+                  button isn't the first time you learn this one costs money. */}
+              {previewLocked && <TierBadge tier={previewTpl.requiredPlan!} size="sm" />}
+            </div>
+            <div className="flex items-center" style={{ gap: 4 }}>
+              {/* Quiet, because only one of these two is a decision. A second
+                  bordered button beside the primary read as an equal choice, and
+                  leaving a preview is not one. Esc still leaves; it is not
+                  advertised, the way the rest of the editor's shortcuts aren't. */}
+              <button
+                onClick={() => setPreviewTemplateId(null)}
+                className="cursor-pointer transition-colors duration-150 hover:bg-white"
+                style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: SLATE, background: 'none', border: 'none', borderRadius: RADIUS_SM, padding: '7px 10px' }}
+              >
+                Keep current
+              </button>
+              <button
+                onClick={() => {
+                  if (previewLocked) {
+                    /* Carries the template's own name, so the offer that opens is
+                       about the cover they are looking at rather than a general
+                       pitch — the whole reason this preview is worth allowing. */
+                    setUpgradeCtx({ message: `Unlock the ${previewTpl.name} template`, feature: `${previewTpl.name} template` });
+                    return;
+                  }
+                  applyTemplate(coverPageId, previewTpl.id);
+                  setPreviewTemplateId(null);
+                }}
+                className="cursor-pointer transition-colors duration-150 bg-[#006EFE] hover:bg-[#0058CC]"
+                style={{ ...ns, fontSize: 12.5, fontWeight: 600, color: '#fff', border: 'none', borderRadius: RADIUS_SM, padding: '7px 14px' }}
+              >
+                {previewLocked ? `Upgrade to ${PLAN_LABELS[previewTpl.requiredPlan!]}` : 'Apply template'}
+              </button>
+            </div>
+          </div>
+          )}
+        </div>
+        )}
         {/* overflow-x here used to be the implicit default (visible): at any
             viewport where the fixed side rails leave less than PAGE_W available,
             the centered page div overflowed sideways with nothing clipping it —
@@ -29737,7 +34512,10 @@ export function BookEditorView() {
             collapse handle, which hangs over this element's right edge — exactly
             where a vertical scrollbar is drawn. A scrollbar is laid out inside
             the border box, so the border moves the canvas's own bar clear of the
-            handle instead of leaving the two fighting for the same 16px. On
+            handle instead of leaving the two fighting for the same strip. The
+            lane is the chip's OVERHANG, not its full width: half the chip sits
+            over the pages panel, and only the half past the border reaches this
+            element. On
             macOS the bar is an overlay that only appears mid-scroll, which is
             why this reads as fine until you scroll; anywhere scrollbars take
             layout width it is a permanent collision. `background-clip` defaults
@@ -29755,7 +34533,7 @@ export function BookEditorView() {
             selectPageBesideCanvasPoint(e.clientY);
           }}
           className="flex-1 overflow-auto"
-          style={{ background: '#EEF0F3', padding: '40px 24px 120px', borderRight: `${EDGE_HANDLE_W}px solid transparent` }}
+          style={{ background: '#EEF0F3', padding: '40px 24px 120px', borderRight: `${EDGE_HANDLE_OVERHANG}px solid transparent` }}
         >
           {/* `transform` doesn't affect layout, so the scroll container used to size
               itself to the unscaled document: above 100% the end of the book was
@@ -29767,11 +34545,45 @@ export function BookEditorView() {
               // Read-only: the same PreviewPage the Preview overlay and the
               // History panel's old preview pane both already use — no new
               // rendering path, just fed a checkpoint instead of live state.
-              viewingVersionEntry.pages.map((p) => (
+              <>
+              {/* The book's own CSS, which otherwise only exists while a chapter
+                  editor is mounted — see BookProseStyles. */}
+              <BookProseStyles
+                theme={viewingVersionTheme}
+                bodyFont={viewingVersionTheme.bodyFont}
+                bodyColor={viewingVersionTheme.bodyColor}
+                headingColor={viewingVersionTheme.headingColor}
+                bandTint={bandTintFor(viewingVersionTheme.bg)}
+              />
+              {viewingVersionEntry.pages.map((p) => (
                 <div key={p.id} style={{ marginBottom: 40 }}>
                   <PreviewPage page={p} pages={viewingVersionEntry.pages} theme={viewingVersionTheme} chapterContent={viewingVersionEntry.chapterContent} fieldContent={viewingVersionEntry.fieldContent} metadata={metadata} />
                 </div>
-              ))
+              ))}
+              </>
+            ) : previewPages && previewTpl ? (
+              /* Same read-only path, fed live content under a template that has
+                 not been applied. Read-only on purpose: editing something that
+                 isn't yours yet raises a question — where does the edit go if you
+                 press Keep current? — with no good answer. */
+              <>
+              <BookProseStyles
+                theme={previewTpl}
+                bodyFont={previewTpl.bodyFont}
+                bodyColor={previewTpl.bodyColor}
+                headingColor={previewTpl.headingColor}
+                bandTint={bandTintFor(previewTpl.bg)}
+              />
+              {previewPages.map((p) => (
+                /* Addressable like the live pages: getPageEl reads pageRefs, so
+                   without these the Pages navigator could not scroll the canvas
+                   while a preview was up, and a click on the grey could not work
+                   out which page it landed beside. */
+                <div key={p.id} data-page-id={p.id} ref={(el) => { pageRefs.current[p.id] = el; }} style={{ marginBottom: 40 }}>
+                  <PreviewPage page={p} pages={previewPages} theme={previewTpl} chapterContent={chapterContent} fieldContent={fieldContent} metadata={metadata} />
+                </div>
+              ))}
+              </>
             ) : !hydrated ? (
               /* Chapter editors read their HTML once, at creation — TipTap's
                  `content` option is not reactive. Rendering them before loadBook()
@@ -29796,6 +34608,16 @@ export function BookEditorView() {
                     isSelected={selection.kind === 'chapter' && selection.chapterId.split('::')[0] === p.id}
                     onMediaDropped={() => setMediaPicker(null)}
                     onSetOpenerImage={setOpenerImage}
+                    fieldContent={fieldContent}
+                    onAddElement={addCoverElement}
+                    onUpdateElement={updateCoverElement}
+                    onStartCrop={(elementId) => beginCrop({ kind: 'cover', pageId: p.id, elementId })}
+                    onReorderElement={reorderCoverElement}
+                    onDuplicateElement={duplicateCoverElement}
+                    onDeleteElement={deleteCoverElement}
+                    onSelectPage={(id) => handleSelection({ kind: 'page', pageId: id, viaCanvas: true })}
+                    onRefuse={showNotice}
+                    overlayOpen={anyOverlayOpen}
                     getFieldEditor={(key) => editorRegistry.current.get(key)?.editor}
                     moveDragRef={moveDragRef}
                     onMoveDragActiveChange={setMovingBlock}
@@ -29936,12 +34758,15 @@ export function BookEditorView() {
           ) : rightTab === 'pages' ? (
             <div style={{ overflowY: 'auto', height: '100%' }}>
               <PagesPanel
-                pages={pages}
-                theme={theme}
+                /* The navigator shows what the canvas shows: previewing a
+                   template with the thumbnails still painted in the old one
+                   makes the rail disagree with the page beside it. */
+                pages={previewPages ?? pages}
+                theme={previewTpl ?? theme}
                 chapterContent={chapterContent}
                 fieldContent={fieldContent}
                 activePageId={pagesPanelActiveId}
-                activeSheetIndex={pagesActiveId ? pagesActiveSheet : null}
+                activeSheetIndex={scrollPageId ? scrollSheetIndex : pagesActiveId ? pagesActiveSheet : null}
                 onJump={(id, sheetIndex) => { jumpTo(id, sheetIndex); setPagesActiveId(id); setPagesActiveSheet(sheetIndex); }}
                 bookPages={bookPages}
                 metadata={metadata}
@@ -29949,6 +34774,7 @@ export function BookEditorView() {
                 onAddPageAt={addPageAfter}
                 onDuplicatePage={duplicatePage}
                 onDeletePage={deletePage}
+                onAddTemplatePage={addTemplatePage}
                 onReorder={reorderChapter}
               />
             </div>
@@ -30025,7 +34851,7 @@ export function BookEditorView() {
         <UpgradePlanModal
           onClose={() => setUpgradeCtx(null)}
           contextMessage={upgradeCtx.message}
-          highlightPlanId="pro"
+          highlightPlanId={upgradeCtx.planId ?? 'pro'}
           highlightFeature={upgradeCtx.feature}
         />
       )}
@@ -30078,7 +34904,15 @@ export function BookEditorView() {
             /* Reached only by an untitled page sitting before the book's first
                chapter, which has nothing above it to merge into. It becomes a
                headless section of its own rather than being silently dropped. */
-            out.push({ id: c.id, title: stripTags(titleField) || c.title || 'Untitled', layout: c.layout, html: titleHeadingHtml + body });
+            out.push({
+              id: c.id, title: stripTags(titleField) || c.title || 'Untitled',
+              /* A designed template says "two columns" through its running-sheet
+                 style rather than through `layout`, and the exporter only knows
+                 about `layout` — so a Lovable two-column chapter exported as one
+                 column. Asked the same way the canvas asks it. */
+              layout: sheetColumns(theme, c) > 1 ? 'two-column' : c.layout,
+              html: titleHeadingHtml + body,
+            });
             return out;
           }, [])}
           theme={theme}
@@ -30106,7 +34940,41 @@ export function BookEditorView() {
           })()}
           onClose={() => setShowPublishModal(false)}
           currentPlan={currentPlan}
-          onLockedExport={() => setUpgradeCtx({ message: 'Unlock EPUB export', feature: 'EPUB export' })}
+          onUpgrade={setUpgradeCtx}
+          /* The metadata on the publish screen is read-only; this is where it is
+             actually edited, so the link goes there rather than duplicating the
+             fields on two screens. */
+          onEditDetails={() => {
+            setShowPublishModal(false);
+            setRailTab('booksettings');
+            setSettingsLeaf('details');
+            setLeftOpen(true);
+          }}
+          onTurnIntoPresentation={() => {
+            if (shouldShowTierBadge(currentPlan as PlanId, 'pro')) {
+              setUpgradeCtx({ message: 'Unlock Presentations and Courses', planId: 'pro', feature: 'Create Presentations and Courses' });
+              return;
+            }
+            router.push('/presentation/sections');
+          }}
+          pageCount={pages.length}
+          wordCount={Object.values(wordCounts).reduce((sum, n) => sum + n, 0) + Object.values(titleWordCounts).reduce((sum, n) => sum + n, 0)}
+          /* The ground the success screen stands the cover on. Deliberately not
+             the cover's own background — the wizard can use its template's dark
+             bg, but an author's cover here is usually white, and a white book on
+             a white field has nothing holding it. */
+          coverBg={INK_HEX}
+          /* The author's real cover, scaled — the same static renderer the page
+             thumbnails use, so what Publish shows is what the book opens with. */
+          cover={(() => {
+            const coverPage = pages.find((p) => p.type === 'cover');
+            if (!coverPage) return null;
+            return (
+              <PublishCoverThumb width={148}>
+                <CoverCanvasStatic page={coverPage} theme={theme} fieldContent={resolvedFieldContent} />
+              </PublishCoverThumb>
+            );
+          })()}
         />
       )}
       {showPreview && (
@@ -30117,8 +34985,10 @@ export function BookEditorView() {
           fieldContent={resolvedFieldContent}
           metadata={metadata}
           pageNumbers={pageNumbers}
-          title={metadata.title || 'Untitled book'}
           onClose={() => setShowPreview(false)}
+          /* Publishing takes over from here: the preview closes and the publish
+             flow opens over the editor, which is where closing it lands you. */
+          onPublish={() => { setShowPreview(false); setShowPublishModal(true); }}
         />
       )}
 
@@ -30132,7 +35002,8 @@ export function BookEditorView() {
 
       {/* Keyed on the notice so a second refusal remounts the pill and restarts
           its timer, instead of inheriting the countdown already running. */}
-      {notice && <NoticeToast key={notice.id} label={notice.label} action={notice.action} onDismiss={dismissNotice} />}
+      {busy && <BusyToast label={busy} />}
+      {!busy && notice && <NoticeToast key={notice.id} label={notice.label} action={notice.action} onDismiss={dismissNotice} />}
     </div>
     </EditorRegistryContext.Provider>
     </PageGeometryContext.Provider>

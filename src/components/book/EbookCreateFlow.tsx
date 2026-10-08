@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactElement } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { useFlowStore, PLAN_LABELS, ownsPlan, type PlanId } from '@/stores/flowStore';
@@ -8,9 +8,19 @@ import { usePresentationFlowStore } from '@/stores/presentationFlowStore';
 import { SideMenuIcon } from '../sidebar/AppSidebar';
 import { Tooltip } from '../ui/Tooltip';
 import { UpgradePlanModal } from '../account/MyAccountView';
-import { TierBadge, shouldShowTierBadge } from '../ui/TierBadge';
+import { TierBadge, shouldShowTierBadge, type GateTier } from '../ui/TierBadge';
 import { track } from '@/lib/analytics';
 import { SortDropdown } from '../ui/SortDropdown';
+import { getMockBook, getMockOutline, getMockDirections } from '@/lib/mockResponses';
+import type { GeneratedBook } from '@/lib/types';
+import {
+  PUBLISH_FORMATS, PublishFormatList, PublishStatsRow, PublishedPanel,
+} from './publishFormats';
+import {
+  BOOK_TEMPLATES, BOOK_STORAGE_KEY, buildBookSeed, composeBookSeed,
+  BookTemplateCover, BookPagePreview, templateGeometry,
+  type BookTemplate, type SeedChapter,
+} from './BookEditorView';
 
 /* ── constants ──────────────────────────────────────────────────────────────── */
 
@@ -48,47 +58,69 @@ const POPULAR_THEMES = ALL_THEMES.slice(0, 15);
 
 const THEME_EMOJI: Record<string, string> = Object.fromEntries(ALL_THEMES.map(t => [t.label, t.emoji]));
 
-interface Template {
-  id: number;
-  name: string;
-  bg: string;
-  textColor: string;
-  accentColor: string;
-  themes: string[];
-  isPro?: boolean;
-  /* Admin-set rank for the Recommended order: lower sorts earlier, and a template without one
-     sorts after every template that has one. Named for the column it maps to rather than in the
-     file's camelCase, so the field survives the trip to the backend unrenamed. */
-  sort_order?: number;
-  /* Publication date — what the Newest sort reads. */
-  createdAt: string;
+/* The templates are the EDITOR's templates — BOOK_TEMPLATES, the same array its
+   Templates panel renders and its apply path consumes. This file used to carry
+   twelve of its own: flat colour rectangles with the template's NAME set across
+   the middle, which existed nowhere else in the product. So "Social Media
+   Marketing 2-05" could be chosen here and then not be in the editor at all,
+   which opened on Statement Lettering with Statement Lettering lit in the
+   gallery — not a stale highlight, the actual template, because the wizard had
+   no way to ask for one of the real ones.
+
+   `Template` stays as a local alias so the gallery below reads the same; the
+   fields it needs — subjects, createdAt, sortOrder, requiredPlan — now live on
+   the template itself (see ThemeDef). */
+type Template = BookTemplate;
+const TEMPLATES: readonly Template[] = BOOK_TEMPLATES;
+const isPro = (t: Template) => !!t.requiredPlan;
+const subjectsOf = (t: Template) => t.subjects ?? [];
+
+
+/* ── the manuscript this wizard is turning into a book ───────────────────────
+   The generator wrote it into the flow store two steps back (see getMockBook),
+   and this file used to ignore it: a hardcoded title and a single chapter of
+   placeholder prose, repeated in three places. That is why an eighteen-page,
+   eight-chapter manuscript arrived in the editor as a four-page book whose only
+   chapter was called "Introduction" — the wizard never read the manuscript at
+   all, so there was nothing for the editor to be missing.
+
+   The fallback covers the one entry with no generation behind it: /book/create
+   opened cold, where the store is empty because nothing has run. It builds the
+   same demo book the manuscript screen shows rather than a second invented one,
+   so the two screens can't disagree about what the author wrote. */
+interface Manuscript {
+  title: string;
+  subtitle: string;
+  chapters: SeedChapter[];
 }
 
-const TEMPLATES: Template[] = [
-  { id: 1,  name: 'SEO 2-05',                    bg: 'linear-gradient(160deg,#22c55e,#15803d)', textColor: '#fff',     accentColor: '#86efac', themes: ['Digital Marketing', 'Business', 'E-Commerce'],                        sort_order: 20,  createdAt: '2024-03-12' },
-  { id: 2,  name: 'Social Media Marketing 2-05', bg: '#111827',                                 textColor: '#f59e0b', accentColor: '#fbbf24', themes: ['Digital Marketing', 'Advertising', 'Blogging', 'Marketing coaching'], sort_order: 10,  createdAt: '2024-05-02' },
-  { id: 3,  name: 'Pro Print Book',              bg: '#f8f8f6',                                 textColor: '#111827', accentColor: '#6b7280', themes: ['Business', 'Writing Non-Fiction', 'Author'], isPro: true,            sort_order: 30,  createdAt: '2024-01-18' },
-  { id: 4,  name: 'Echoes',                      bg: 'linear-gradient(160deg,#a78bfa,#7c3aed)', textColor: '#fff',     accentColor: '#c4b5fd', themes: ['Writing Fiction', 'Author'],                                         sort_order: 70,  createdAt: '2025-02-20' },
-  { id: 5,  name: 'Sunset',                      bg: 'linear-gradient(160deg,#fb923c,#dc2626)', textColor: '#fff',     accentColor: '#fcd34d', themes: ['Self Development', 'Life coaching'],                                 sort_order: 50,  createdAt: '2024-09-04' },
-  { id: 6,  name: 'Kamy',                        bg: '#1a1a1a',                                 textColor: '#e5e7eb', accentColor: '#9ca3af', themes: ['Writing Fiction', 'Blogging'], isPro: true,                          sort_order: 90,  createdAt: '2025-06-11' },
-  { id: 7,  name: 'Regalia',                     bg: 'linear-gradient(160deg,#d4a574,#b8860b)', textColor: '#1a1a1a', accentColor: '#78350f', themes: ['Business Development / Sales', 'Copywriting'], isPro: true,          sort_order: 60,  createdAt: '2025-01-09' },
-  { id: 8,  name: 'Bestseller',                  bg: '#111',                                    textColor: '#fff',     accentColor: '#d1d5db', themes: ['Author', 'Writing Non-Fiction', 'Business'],                         sort_order: 40,  createdAt: '2024-07-23' },
-  { id: 9,  name: 'Minimal Pro',                 bg: '#fff',                                    textColor: '#111827', accentColor: '#4b5563', themes: ['Business', 'Training and Development', 'Education'], isPro: true,    sort_order: 80,  createdAt: '2025-04-30' },
-  { id: 10, name: 'Business Blue',               bg: 'linear-gradient(160deg,#3b82f6,#1d4ed8)', textColor: '#fff',     accentColor: '#93c5fd', themes: ['Business', 'Business Development / Sales', 'Network Marketing'],                      createdAt: '2025-08-14' },
-  { id: 11, name: 'Creative Orange',             bg: 'linear-gradient(160deg,#f97316,#ea580c)', textColor: '#fff',     accentColor: '#fed7aa', themes: ['Self Development', 'Spiritual Self Development'],                    sort_order: 100, createdAt: '2025-11-27' },
-  { id: 12, name: 'Nature Green',                bg: 'linear-gradient(160deg,#4ade80,#15803d)', textColor: '#fff',     accentColor: '#bbf7d0', themes: ['Health & wellness', 'Life coaching'],                                                 createdAt: '2026-02-06' },
-];
+function paragraphsToHtml(content: string): string {
+  return content
+    .split(/\n{2,}/)
+    .map((para) => para.trim())
+    .filter(Boolean)
+    .map((para) => `<p>${escapeHtml(para)}</p>`)
+    .join('');
+}
 
+function toManuscript(book: GeneratedBook): Manuscript {
+  return {
+    title: book.title,
+    subtitle: book.subtitle,
+    chapters: book.chapters.map((ch) => ({
+      id: ch.id,
+      title: ch.title,
+      html: paragraphsToHtml(ch.content),
+    })),
+  };
+}
 
-const PUBLISH_FORMATS: { id: string; label: string; sub: string; badgeBg: string; badgeText: string; icon: string; requiredPlan?: 'pro' | 'premium' }[] = [
-  { id: 'pdf',      label: 'PDF',      sub: 'For adobe reader',        badgeBg: '#FEE2E2', badgeText: '#B91C1C',  icon: 'pdf' },
-  { id: 'flipbook', label: 'Flipbook', sub: 'Set your book in motion', badgeBg: '#EDE9FE', badgeText: '#7C3AED',  icon: 'flipbook' },
-  { id: 'kindle',   label: 'Kindle',   sub: 'E-pub export',            badgeBg: '#FEF3C7', badgeText: '#92400E',  icon: 'kindle', requiredPlan: 'pro' },
-  { id: 'html',     label: 'HTML',     sub: 'Export html',             badgeBg: '#DBEAFE', badgeText: '#1D4ED8',  icon: 'html', requiredPlan: 'premium' },
-  { id: 'epub',     label: 'EPUB',     sub: 'For e-readers',           badgeBg: '#D1FAE5', badgeText: '#065F46',  icon: 'epub', requiredPlan: 'pro' },
-];
+const FALLBACK_BOOK = getMockBook(getMockOutline(getMockDirections()[1]));
 
-const DOC_TITLE = 'The Power of Unknowing: How Embracing Ignorance Can Lead to Wisdom';
+function useManuscript(): Manuscript {
+  const generated = useFlowStore((st) => st.generatedBook);
+  return useMemo(() => toManuscript(generated ?? FALLBACK_BOOK), [generated]);
+}
 
 /* ── tiny helpers ───────────────────────────────────────────────────────────── */
 
@@ -180,7 +212,7 @@ function ThemesModal({ docTitle, initial, onSave, onClose }: {
   // guess or dismiss.
   const matchCount = selected.length === 0
     ? TEMPLATES.length
-    : TEMPLATES.filter(t => t.themes.some(th => selected.includes(th))).length;
+    : TEMPLATES.filter(t => subjectsOf(t).some(th => selected.includes(th))).length;
 
   return (
     <motion.div
@@ -298,132 +330,56 @@ function ThemesModal({ docTitle, initial, onSave, onClose }: {
 
 /* ── cover legibility ───────────────────────────────────────────────────────── */
 
-type RGB = [number, number, number];
+/* A template's real cover, at whatever width the box it lands in gives it.
+   Five surfaces draw one — a gallery card, the lightbox page, the lightbox
+   thumbnails, the review stage and the review strip — all fluid, so the width is
+   MEASURED here rather than passed five times. BookTemplateCover renders a real
+   page and scales it, which is why it needs a number and not a percentage.
 
-function hexToRgb(hex: string): RGB | null {
-  const h = hex.replace('#', '');
-  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
-  if (full.length !== 6) return null;
-  const n = parseInt(full, 16);
-  return Number.isNaN(n) ? null : [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-}
-
-/* Every colour a cover actually paints behind its text. A solid background is one stop; a
-   gradient is all of them, because text has to clear the darkest *and* the lightest run it
-   crosses — checking only the first stop passes a cover that fails at the other end. */
-function coverStops(bg: string): RGB[] {
-  const stops = (bg.match(/#[0-9a-fA-F]{3,6}/g) ?? []).map(hexToRgb).filter((c): c is RGB => !!c);
-  return stops.length ? stops : [[255, 255, 255]];
-}
-
-function relLuminance([r, g, b]: RGB): number {
-  const lin = [r, g, b].map(v => {
-    const c = v / 255;
-    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-  });
-  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
-}
-
-function contrast(a: RGB, b: RGB): number {
-  const [hi, lo] = [relLuminance(a), relLuminance(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-function mix(a: RGB, b: RGB, t: number): RGB {
-  return [0, 1, 2].map(i => Math.round(a[i] * t + b[i] * (1 - t))) as RGB;
-}
-
-/* The quietest version of `fg` that still clears `min` against every stop of the cover.
- *
- * The covers used to fade their secondary text with a fixed alpha suffix — `${textColor}77` for
- * the author line, `55` for the rule — which is a look, not a measurement. On Bestseller, 47%
- * white over #111 lands at 4.85:1, which scrapes past WCAG AA and still reads as a smudge at
- * 9px; on Regalia the same alpha put near-black over gold at well under 3:1.
- *
- * So the alpha is computed rather than fixed. The walk goes muted → full strength, and only if
- * full strength still misses does it continue toward white or black — whichever direction `fg`
- * already leans, so a cover never flips its text from light to dark and ends up with a white
- * title above a black byline. Where even that cannot reach the target (white on mid-green tops
- * out near 2.3:1 whatever you do) the text lands at full strength, which is the most legible
- * thing available without redrawing the cover. */
-function legibleOn(fg: string, bg: string, min: number): string {
-  const stops = coverStops(bg);
-  const f = hexToRgb(fg) ?? [255, 255, 255];
-  const base = stops[0];
-  const extreme: RGB = relLuminance(f) >= relLuminance(base) ? [255, 255, 255] : [0, 0, 0];
-
-  const ramp: RGB[] = [];
-  for (let a = 0.45; a <= 1.001; a += 0.05) ramp.push(mix(f, base, a));
-  for (let a = 0.1; a <= 1.001; a += 0.1) ramp.push(mix(extreme, f, a));
-
-  const worst = (c: RGB) => Math.min(...stops.map(stop => contrast(c, stop)));
-  const found = ramp.find(c => worst(c) >= min);
-  const [r, g, b] = found ?? ramp[ramp.length - 1];
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-/* Shrinks a cover title until its longest word fits on one line.
- *
- * The covers used to set `wordBreak: 'break-word'`, which splits a word at whatever character
- * happens to sit at the edge — "MARKETIN G", "BESTSELLE R". Breaking is now off entirely, so a
- * word that cannot fit overflows instead, and this measures that overflow and steps the size
- * down until it is gone. Half-pixel steps because whole ones overshoot badly at 13px.
- *
- * Measurement rather than a character count because the same component renders at four very
- * different widths — a gallery card, a 480px lightbox page, a 96px review thumbnail — and a
- * count cannot tell those apart. The observer watches the parent, not the element: resizing the
- * element is what this hook does, and observing it would feed itself. */
-function useFitText(base: number, min: number, title: string) {
+   What this replaces was a mock: a flex column painting the template's NAME in
+   13px Georgia caps between two rules, over a flat fill, with a contrast-walker
+   to keep the fake byline legible against the fake background and a fitter to
+   stop the fake title overflowing. None of it described any template that
+   exists. */
+function TemplateCover({ t }: { t: Template }) {
   const ref = useRef<HTMLDivElement>(null);
-
+  const [w, setW] = useState(0);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const fit = () => {
-      let size = base;
-      el.style.fontSize = `${size}px`;
-      while (size > min && el.scrollWidth > el.clientWidth) {
-        size -= 0.5;
-        el.style.fontSize = `${size}px`;
-      }
-    };
-    fit();
-    const parent = el.parentElement;
-    if (!parent || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(fit);
-    ro.observe(parent);
+    const measure = () => setW(el.clientWidth);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
     return () => ro.disconnect();
-  }, [base, min, title]);
-
-  return ref;
-}
-
-/* ── template cover mock ────────────────────────────────────────────────────── */
-
-function TemplateCover({ t, height = 300, ratio, fill, title }: { t: Template; height?: number; ratio?: string; fill?: boolean; title?: string }) {
-  const isLight = t.bg === '#f8f8f6' || t.bg === '#fff';
-  const label = title ?? t.name;
-  const titleRef = useFitText(13, 7, label);
-  /* 7:1 for the byline. It is 9px — the size at which AA's 4.5 stops being enough to read, and
-     the reason Bestseller's author line was reported as invisible while technically passing.
-     The rule above it is decoration carrying no information, so 3:1 is the right bar there. */
-  const authorColor = useMemo(() => legibleOn(t.textColor, t.bg, 7), [t.textColor, t.bg]);
-  const ruleColor = useMemo(() => legibleOn(t.textColor, t.bg, 3), [t.textColor, t.bg]);
-  // `position: relative` so the light-cover accent bar below anchors to the cover. Without it the
-  // bar resolved against whatever ancestor happened to be positioned — now the grey stage — and
-  // painted across the tile's foot instead of the cover's.
+  }, []);
+  /* No author text: a card answers "which design do I want", and twelve cards
+     carrying the same title answer it worse than twelve designs do — the
+     reasoning TemplatesPanel already wrote down for the editor's own gallery.
+     Every surface that shows the author's book — the lightbox page, the review
+     stage, the published cover — draws the composed book instead, so it is the
+     real cover rather than a template wearing a title. */
   return (
-    <div style={{ position: 'relative', width: '100%', ...(fill ? { height: '100%' } : ratio ? { aspectRatio: ratio } : { height }), background: t.bg, borderRadius: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px 16px', gap: 8, overflow: 'hidden', flexShrink: 0 }}>
-      <div style={{ width: 40, height: 3, borderRadius: 2, background: t.accentColor, marginBottom: 4 }} />
-      <div ref={titleRef} style={{ textAlign: 'center', fontSize: 13, fontWeight: 800, fontFamily: 'Georgia, serif', color: t.textColor, lineHeight: 1.25, textTransform: 'uppercase', letterSpacing: 1, maxWidth: '82%', wordBreak: 'normal', overflowWrap: 'normal', hyphens: 'none' }}>
-        {label}
-      </div>
-      <div style={{ width: 50, height: 1.5, borderRadius: 1, background: ruleColor }} />
-      <div style={{ fontSize: 9, color: authorColor, fontFamily: "'Nunito Sans', sans-serif" }}>Author Name</div>
-      {isLight && <div style={{ position: 'absolute' as const, bottom: 0, left: 0, right: 0, height: 3, background: t.accentColor, opacity: 0.5 }} />}
+    <div ref={ref} style={{ width: '100%', lineHeight: 0 }}>
+      {w > 0 && <BookTemplateCover template={t} width={w} />}
     </div>
   );
 }
+
+/* The card's stage, as a height rather than a ratio. The sheet inside it is a
+   real page now, so its height follows from its width and the page's proportion
+   — a stage sized by ratio would set its own height from the column width and
+   then crop whatever the sheet turned out to be. So the stage is measured off
+   the TALLEST sheet in the gallery plus its margin, asked of the templates
+   themselves rather than written down: each one draws on the trim it was made
+   for (A4 for the page designs, the default sheet for the rest), and a hardcoded
+   proportion here goes stale the day a template ships a new one. */
+const CARD_SHEET_W = 172;
+const CARD_STAGE_H = Math.max(...BOOK_TEMPLATES.map((t) => {
+  const geo = templateGeometry(t);
+  return Math.round((geo.h * (CARD_SHEET_W + 1)) / geo.w);
+})) + 24;
 
 /* ── template gallery ───────────────────────────────────────────────────────── */
 
@@ -432,7 +388,7 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
   const currentPlan = useFlowStore((s) => s.currentPlan);
   // GitLab's rule, already encoded in TierBadge: don't mark a tier the viewer owns. A PRO
   // customer was seeing "Pro" on templates they can already use.
-  const showBadge = t.isPro && shouldShowTierBadge(currentPlan, 'pro');
+  const showBadge = isPro(t) && shouldShowTierBadge(currentPlan, 'pro');
   // This badge, plus the lightbox's "Unlock with Pro" on a locked template, is the whole upgrade
   // affordance on this screen. The header's "Upgrade to use all Pro templates" link was removed
   // because it was the general-upgrade variant of the same offer, competing with the intent-driven
@@ -451,9 +407,9 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
           Ours sizes the sheet to fit the stage instead: same treatment, without losing the words
           a cover exists to show. */}
       <div className="relative overflow-hidden flex items-center justify-center"
-        style={{ aspectRatio: '5 / 3', background: '#F4F6F9', borderRadius: 10, padding: '10px 0' }}>
-        <div style={{ height: '100%', aspectRatio: '17 / 22', borderRadius: 4, overflow: 'hidden', boxShadow: '0 2px 10px rgba(15,23,51,0.16)' }}>
-          <TemplateCover t={t} fill />
+        style={{ height: CARD_STAGE_H, background: '#F4F6F9', borderRadius: 10 }}>
+        <div style={{ width: CARD_SHEET_W, borderRadius: 4, overflow: 'hidden', boxShadow: '0 2px 10px rgba(15,23,51,0.16)' }}>
+          <TemplateCover t={t} />
         </div>
         {/* Positioned exactly as BookTypeSelector places its badge — the platform's existing
             badge-on-a-card treatment, and the closest analogue to this gallery. 8/8 rather than
@@ -481,12 +437,12 @@ function TemplateCard({ t, onClick }: { t: Template; onClick: () => void }) {
 const PREVIEW_H = 480;
 const PREVIEW_W = Math.round((PREVIEW_H * 17) / 22);   // 371
 const THUMB_W = 76;
-const THUMB_H = Math.round((THUMB_W * 22) / 17);       // 98
 
-function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
+function TemplateLightbox({ t, allTemplates, selectedThemes, manuscript, onUse, onClose }: {
   t: Template;
   allTemplates: Template[];
   selectedThemes: string[];
+  manuscript: Manuscript;
   /* The position is the grid's, not the lightbox's: `allTemplates` is the rendered order, and
      the arrows walk it, so the index here is the slot the author saw the template in. */
   onUse: (template: Template, position: number) => void;
@@ -495,6 +451,10 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
   const currentPlan = useFlowStore((st) => st.currentPlan);
   const [idx, setIdx] = useState(allTemplates.findIndex(x => x.id === t.id));
   const current = allTemplates[idx];
+  /* Memoised: composing mints a fresh element id for every object on the cover
+     (see mergeCoverElements), so doing it per render would burn a batch each
+     time the arrows move. */
+  const book = useMemo(() => composeBookSeed({ ...manuscript, templateId: current.id }), [manuscript, current.id]);
   const prev = () => setIdx(i => (i - 1 + allTemplates.length) % allTemplates.length);
   const next = () => setIdx(i => (i + 1) % allTemplates.length);
 
@@ -528,26 +488,21 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
             height turned every cover into a landscape slab: a slide, not a book. 17/22 is Letter
             portrait, matching the Page Size the gallery defaults to. */}
         <div className="flex flex-col flex-1 min-w-0 items-center justify-center" style={{ background: '#F4F6F9', padding: '40px 32px', gap: 18 }}>
-          <div style={{ width: PREVIEW_W, height: PREVIEW_H, borderRadius: 6, overflow: 'hidden', boxShadow: '0 8px 28px rgba(15,23,51,0.20)', flexShrink: 0 }}>
-            <TemplateCover t={current} fill title={DOC_TITLE} />
+          <div style={{ width: PREVIEW_W, borderRadius: 6, overflow: 'hidden', boxShadow: '0 8px 28px rgba(15,23,51,0.20)', flexShrink: 0, lineHeight: 0 }}>
+            {/* The composed book's own cover, not the template's sample one —
+                the same page the three thumbnails under it show, carrying the
+                author's title, subtitle and byline. */}
+            <BookPagePreview book={book} page={book.pages[0]} width={PREVIEW_W} />
           </div>
 
-          {/* Page thumbnails: a centred row of pages at the same ratio, not full-width bars. Cover
-              first, then the interior spreads. */}
+          {/* The book's own first pages in this template — cover, contents, first
+              chapter — not three bar-and-line drawings of a page. They were
+              drawings because this screen had no book to draw: the manuscript
+              never reached it. */}
           <div className="flex flex-shrink-0" style={{ gap: 10 }}>
-            {[0, 1, 2].map(i => (
-              <div key={i} style={{ width: THUMB_W, height: THUMB_H, borderRadius: 4, overflow: 'hidden', border: i === 0 ? '2px solid #006EFE' : '1px solid #E0E5EB', background: '#fff' }}>
-                {i === 0
-                  // The cover rendered at full size and scaled down, so the thumbnail is a true
-                  // miniature. TemplateCover's internals are fixed px — a 13px title and a 40px
-                  // accent rule — which at a fifth of the width would have swamped the page.
-                  ? <div style={{ width: PREVIEW_W, height: PREVIEW_H, transform: `scale(${THUMB_W / PREVIEW_W})`, transformOrigin: 'top left' }}>
-                      <TemplateCover t={current} fill title={DOC_TITLE} />
-                    </div>
-                  : <div style={{ height: '100%', background: '#fff', padding: '9px 8px', display: 'flex', flexDirection: 'column', gap: 3.5 }}>
-                      <div style={{ width: '65%', height: 4, background: '#E0E5EB', borderRadius: 2, marginBottom: 2 }}/>
-                      {[90, 75, 85, 60, 80, 70, 88].map((w, j) => <div key={j} style={{ width: `${w}%`, height: 2.5, background: '#F0F2F5', borderRadius: 2 }}/>)}
-                    </div>}
+            {book.pages.slice(0, 3).map((pg, i) => (
+              <div key={pg.id} style={{ width: THUMB_W, borderRadius: 4, overflow: 'hidden', border: i === 0 ? '2px solid #006EFE' : '1px solid #E0E5EB', background: '#fff', lineHeight: 0 }}>
+                <BookPagePreview book={book} page={pg} width={THUMB_W - (i === 0 ? 4 : 2)} />
               </div>
             ))}
           </div>
@@ -571,7 +526,7 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
               reason: it named no plan. */}
           <div className="flex items-center" style={{ gap: 10, marginBottom: 12 }}>
             <h3 style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#15191F' }}>{current.name}</h3>
-            {current.isPro && shouldShowTierBadge(currentPlan, 'pro') && (
+            {isPro(current) && shouldShowTierBadge(currentPlan, 'pro') && (
               <span style={{ lineHeight: 0, flexShrink: 0 }}>
                 <TierBadge tier="pro" />
               </span>
@@ -586,7 +541,7 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
               from, so a card's presence in the results is explainable rather than arbitrary.
               Read-only: this states why the template surfaced, it isn't a second filter control. */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 28 }}>
-            {current.themes.map(th => {
+            {subjectsOf(current).map(th => {
               const matched = selectedThemes.includes(th);
               return (
                 <span key={th} className="flex items-center"
@@ -601,7 +556,7 @@ function TemplateLightbox({ t, allTemplates, selectedThemes, onUse, onClose }: {
             style={{ ...ns, fontSize: 14, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '11px 0', cursor: 'pointer', width: '100%', marginBottom: 10 }}
             onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
             onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
-            {current.isPro ? 'Unlock with Pro' : 'Use this template'}
+            {isPro(current) ? 'Unlock with Pro' : 'Use this template'}
           </button>
 
           <div style={{ display: 'flex', gap: 8 }}>
@@ -647,7 +602,7 @@ const SORT_KEY = 'dsgn_template_sort';
    option at all. Flip this to true once the counts are queryable and give POPULARITY a real
    source. */
 const POPULARITY_DATA_AVAILABLE = false;
-const POPULARITY: Record<number, number> = {};
+const POPULARITY: Record<string, number> = {};
 
 /* Sentence case, like the two beside it and like the rest of the product's copy. */
 const SORT_OPTIONS: { id: SortId; label: string }[] = [
@@ -656,8 +611,8 @@ const SORT_OPTIONS: { id: SortId; label: string }[] = [
   { id: 'popular', label: 'Most popular' },
 ].filter(o => o.id !== 'popular' || POPULARITY_DATA_AVAILABLE) as { id: SortId; label: string }[];
 
-/* A template with no sort_order ranks after every template that has one, rather than at 0. */
-const rank = (t: Template) => t.sort_order ?? Number.MAX_SAFE_INTEGER;
+/* A template with no sortOrder ranks after every template that has one, rather than at 0. */
+const rank = (t: Template) => t.sortOrder ?? Number.MAX_SAFE_INTEGER;
 const byRank = (a: Template, b: Template) => rank(a) - rank(b);
 
 /* Recommended, on an account that cannot use Pro templates.
@@ -669,9 +624,9 @@ const byRank = (a: Template, b: Template) => rank(a) - rank(b);
  * continues, so the tail is whatever is left rather than a run of blanks. */
 const FREE_WEAVE: ('free' | 'pro')[] = ['free', 'pro', 'free', 'free', 'pro'];
 
-function weaveForFreePlan(list: Template[]): Template[] {
-  const free = list.filter(t => !t.isPro).sort(byRank);
-  const pro = list.filter(t => t.isPro).sort(byRank);
+function weaveForFreePlan(list: readonly Template[]): Template[] {
+  const free = list.filter(t => !isPro(t)).sort(byRank);
+  const pro = list.filter(t => isPro(t)).sort(byRank);
   const out: Template[] = [];
   for (let i = 0; free.length || pro.length; i++) {
     const wantFree = FREE_WEAVE[i % FREE_WEAVE.length] === 'free';
@@ -681,8 +636,8 @@ function weaveForFreePlan(list: Template[]): Template[] {
   return out;
 }
 
-function sortTemplates(list: Template[], sort: SortId, hasPro: boolean): Template[] {
-  if (sort === 'newest') return [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+function sortTemplates(list: readonly Template[], sort: SortId, hasPro: boolean): Template[] {
+  if (sort === 'newest') return [...list].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
   if (sort === 'popular') return [...list].sort((a, b) => (POPULARITY[b.id] ?? 0) - (POPULARITY[a.id] ?? 0));
   // A Pro account can use everything, so there is nothing to weave around — rank alone.
   return hasPro ? [...list].sort(byRank) : weaveForFreePlan(list);
@@ -756,8 +711,9 @@ function templateEventProps(selection: TemplateSelection, plan: PlanId) {
   };
 }
 
-function TemplateGallery({ selectedThemes, onUse, onBack }: {
+function TemplateGallery({ selectedThemes, manuscript, onUse, onBack }: {
   selectedThemes: string[];
+  manuscript: Manuscript;
   onUse: (t: Template, position: number) => void;
   onBack: () => void;
 }) {
@@ -790,14 +746,14 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
 
   const [openFilter, setOpenFilter] = useState<OpenFilter>(null);
   const [preview, setPreview] = useState<Template | null>(null);
-  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro'; feature: string } | null>(null);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: GateTier; feature: string } | null>(null);
   const themesLabel = themesFilter.length ? `Themes: ${themesFilter.join(', ')}` : 'Themes';
   const sortLabel = SORT_OPTIONS.find(o => o.id === sort)?.label ?? 'Recommended';
 
   const matches = (t: Template) => {
     const matchSearch = !search || t.name.toLowerCase().includes(search.toLowerCase());
-    const matchTheme = themesFilter.length === 0 || t.themes.some(th => themesFilter.includes(th));
-    const matchType = typeFilter === 'All' || (typeFilter === 'Pro' ? !!t.isPro : !t.isPro);
+    const matchTheme = themesFilter.length === 0 || subjectsOf(t).some(th => themesFilter.includes(th));
+    const matchType = typeFilter === 'All' || (typeFilter === 'Pro' ? isPro(t) : !isPro(t));
     return matchSearch && matchTheme && matchType;
   };
 
@@ -947,10 +903,15 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
             t={preview}
             allTemplates={gridTemplates}
             selectedThemes={themesFilter}
+            manuscript={manuscript}
             onUse={(template, position) => {
               setPreview(null);
-              if (template.isPro) {
-                setUpgradeCtx({ message: 'Unlock this template', planId: 'pro', feature: 'Pro Templates' });
+              /* The template's OWN tier, not a blanket 'pro' — the editor's
+                 templates are gated individually, and sending a Premium one to
+                 the Pro offer would sell the wrong plan. */
+              const gate = template.requiredPlan;
+              if (gate && shouldShowTierBadge(currentPlan, gate)) {
+                setUpgradeCtx({ message: 'Unlock this template', planId: gate, feature: `${PLAN_LABELS[gate]} Templates` });
               } else {
                 onUse(template, position);
               }
@@ -965,11 +926,32 @@ function TemplateGallery({ selectedThemes, onUse, onBack }: {
 
 /* ── step 4: review ─────────────────────────────────────────────────────────── */
 
-function ReviewView({ template, onPublish }: { template: Template; onPublish: () => void }) {
+/* The stage's page, and the strip's. Both are real pages of the real book now;
+   the strip used to be `Array.from({ length: 7 })` of grey rectangles with the
+   cover pasted into slot one, and the stage only ever showed the cover, so the
+   step called "Review" let you review exactly one page of your book and
+   nothing else. Clicking a thumbnail moves the stage, which is what a page
+   strip beside a page has meant everywhere since PowerPoint. */
+const REVIEW_THUMB_W = 80;
+
+function ReviewView({ template, manuscript, onPublish }: {
+  template: Template;
+  manuscript: Manuscript;
+  onPublish: () => void;
+}) {
   const router = useRouter();
   const [loaded, setLoaded] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [activePageId, setActivePageId] = useState<string | null>(null);
   const rafRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [stageW, setStageW] = useState(0);
+
+  const book = useMemo(
+    () => composeBookSeed({ ...manuscript, templateId: template.id }),
+    [manuscript, template.id],
+  );
+  const activePage = book.pages.find((pg) => pg.id === activePageId) ?? book.pages[0];
 
   useEffect(() => {
     rafRef.current = setInterval(() => {
@@ -981,8 +963,22 @@ function ReviewView({ template, onPublish }: { template: Template; onPublish: ()
     return () => { if (rafRef.current) clearInterval(rafRef.current); };
   }, []);
 
-  // Page thumbnails (right strip)
-  const thumbs = Array.from({ length: 7 });
+  /* The stage is fluid and BookPagePreview needs a number, so it is measured —
+     same reason TemplateCover measures. Height-led: a page is taller than it is
+     wide, and the stage is a landscape box, so what is scarce is the height. */
+  useLayoutEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const measure = () => {
+      const byHeight = ((el.clientHeight - 48) * 720) / 990;
+      setStageW(Math.max(0, Math.min(el.clientWidth - 48, byHeight)));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [loaded]);
 
   if (!loaded) {
     return (
@@ -1000,10 +996,11 @@ function ReviewView({ template, onPublish }: { template: Template; onPublish: ()
         <div className="flex-1 flex overflow-hidden" style={{ padding: '20px 16px 20px 32px', gap: 16 }}>
           {/* Center placeholder */}
           <div className="flex-1 flex items-center justify-center" style={{ background: '#F2F4F7', borderRadius: 8 }} />
-          {/* Right thumbnails */}
-          <div className="flex flex-col flex-shrink-0" style={{ width: 80, gap: 8 }}>
-            {thumbs.map((_, i) => (
-              <div key={i} style={{ width: 80, height: 96, background: '#E8EBF2', borderRadius: 4 }}/>
+          {/* Right thumbnails — as many skeletons as the book has pages, so the
+              strip doesn't resettle from seven to eighteen the moment it loads. */}
+          <div className="flex flex-col flex-shrink-0" style={{ width: REVIEW_THUMB_W, gap: 8 }}>
+            {book.pages.slice(0, 7).map((pg) => (
+              <div key={pg.id} style={{ width: REVIEW_THUMB_W, height: 110, background: '#E8EBF2', borderRadius: 4, flexShrink: 0 }}/>
             ))}
           </div>
         </div>
@@ -1033,26 +1030,34 @@ function ReviewView({ template, onPublish }: { template: Template; onPublish: ()
       {/* Center preview */}
       <div className="flex-1 flex flex-col overflow-hidden" style={{ padding: '20px 16px' }}>
         {/* Action bar */}
-        <div className="flex items-center justify-end flex-shrink-0" style={{ gap: 10, marginBottom: 16 }}>
-          <button onClick={() => openInEditor(router, DOC_TITLE, template)} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            Edit design
-          </button>
-          <button onClick={onPublish}
-            style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '8px 20px', cursor: 'pointer' }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
-            Publish
-          </button>
+        <div className="flex items-center justify-between flex-shrink-0" style={{ gap: 10, marginBottom: 16 }}>
+          {/* What you are looking at, since there is now more than one thing to
+              look at. */}
+          <span style={{ ...ns, fontSize: 13, color: '#52637A' }}>
+            Page {book.pages.indexOf(activePage) + 1} of {book.pages.length} · {activePage.title}
+          </span>
+          <div className="flex items-center" style={{ gap: 10 }}>
+            <button onClick={() => openInEditor(router, manuscript, template)} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              Edit design
+            </button>
+            <button onClick={onPublish}
+              style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: '#006EFE', border: 'none', borderRadius: 8, padding: '8px 20px', cursor: 'pointer' }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#0058CC'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#006EFE'; }}>
+              Publish
+            </button>
+          </div>
         </div>
 
-        {/* Book preview */}
-        <div className="flex-1 overflow-hidden rounded-lg" style={{ background: '#F0F2F5' }}>
-          <div className="h-full flex items-center justify-center p-8">
-            <div style={{ width: '60%', maxWidth: 440, aspectRatio: '3/4', borderRadius: 6, overflow: 'hidden', boxShadow: '0 12px 48px rgba(0,0,0,0.22)' }}>
-              <TemplateCover t={template} height={600} title={DOC_TITLE} />
+        {/* Book preview. Scrolls, because a chapter under a page-designed
+            template is taller than one sheet — its opener and then its prose. */}
+        <div ref={stageRef} className="flex-1 overflow-y-auto rounded-lg flex justify-center" style={{ background: '#F0F2F5', padding: 24 }}>
+          {stageW > 0 && (
+            <div style={{ width: stageW, height: 'fit-content', borderRadius: 6, overflow: 'hidden', boxShadow: '0 12px 48px rgba(0,0,0,0.22)', lineHeight: 0 }}>
+              <BookPagePreview book={book} page={activePage} width={stageW} clip={false} />
             </div>
-          </div>
+          )}
         </div>
 
         {/* Full screen link */}
@@ -1066,16 +1071,15 @@ function ReviewView({ template, onPublish }: { template: Template; onPublish: ()
 
       {/* Right thumbnails */}
       <div className="flex-shrink-0 flex flex-col overflow-y-auto" style={{ width: 96, padding: '20px 16px 20px 0', gap: 8 }}>
-        {thumbs.map((_, i) => (
-          <div key={i} style={{ width: 80, height: 96, borderRadius: 4, overflow: 'hidden', border: i === 0 ? '2px solid #006EFE' : '1.5px solid #E0E5EB', flexShrink: 0, cursor: 'pointer' }}>
-            {i === 0
-              ? <TemplateCover t={template} height={96} title={DOC_TITLE} />
-              : <div style={{ height: '100%', background: '#fff', padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  <div style={{ width: '70%', height: 3, background: '#E0E5EB', borderRadius: 2 }}/>
-                  {[90, 75, 85, 60, 80, 70].map((w, j) => <div key={j} style={{ width: `${w}%`, height: 2, background: '#F0F2F5', borderRadius: 2 }}/>)}
-                </div>}
-          </div>
-        ))}
+        {book.pages.map((pg) => {
+          const active = pg.id === activePage.id;
+          return (
+            <button key={pg.id} onClick={() => setActivePageId(pg.id)} title={pg.title}
+              style={{ width: REVIEW_THUMB_W, borderRadius: 4, overflow: 'hidden', border: `${active ? 2 : 1.5}px solid ${active ? '#006EFE' : '#E0E5EB'}`, flexShrink: 0, cursor: 'pointer', padding: 0, background: '#fff', lineHeight: 0 }}>
+              <BookPagePreview book={book} page={pg} width={REVIEW_THUMB_W - (active ? 4 : 3)} />
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -1083,42 +1087,33 @@ function ReviewView({ template, onPublish }: { template: Template; onPublish: ()
 
 /* ── step 5: publish ────────────────────────────────────────────────────────── */
 
-function FormatIcon({ id }: { id: string }) {
-  const map: Record<string, ReactElement> = {
-    pdf: (
-      <div style={{ width: 36, height: 36, borderRadius: 8, background: '#FEE2E2', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" fill="#FCA5A5" stroke="#B91C1C" strokeWidth="1"/><path d="M14 2v6h6" stroke="#B91C1C" strokeWidth="1" strokeLinecap="round"/><text x="6" y="18" style={{ fontSize: '5.5px', fontFamily: 'sans-serif', fontWeight: 700 }} fill="#B91C1C">PDF</text></svg>
-      </div>
-    ),
-    flipbook: (
-      <div style={{ width: 36, height: 36, borderRadius: 8, background: '#EDE9FE', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M2 6a2 2 0 0 1 2-2h7v16H4a2 2 0 0 1-2-2V6z" fill="#C4B5FD" stroke="#7C3AED" strokeWidth="1"/><path d="M22 6a2 2 0 0 0-2-2h-7v16h7a2 2 0 0 0 2-2V6z" fill="#DDD6FE" stroke="#7C3AED" strokeWidth="1"/></svg>
-      </div>
-    ),
-    kindle: (
-      <div style={{ width: 36, height: 36, borderRadius: 8, background: '#FEF3C7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="4" y="2" width="16" height="20" rx="2" fill="#FDE68A" stroke="#92400E" strokeWidth="1"/><text x="6" y="15" style={{ fontSize: '5px', fontFamily: 'serif', fontWeight: 700 }} fill="#92400E">Kindle</text></svg>
-      </div>
-    ),
-    html: (
-      <div style={{ width: 36, height: 36, borderRadius: 8, background: '#DBEAFE', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke="#1D4ED8" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-      </div>
-    ),
-    epub: (
-      <div style={{ width: 36, height: 36, borderRadius: 8, background: '#D1FAE5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" fill="#A7F3D0" stroke="#065F46" strokeWidth="1"/><path d="M9 12l2 2 4-4" stroke="#065F46" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-      </div>
-    ),
-  };
-  return map[id] ?? null;
-}
-
-function PublishView({ selection, onBack }: { selection: TemplateSelection; onBack: () => void }) {
+function PublishView({ selection, manuscript, onBack }: { selection: TemplateSelection; manuscript: Manuscript; onBack: () => void }) {
   const template = selection.template;
+  /* Counted off the manuscript, not typed into the markup. They were four
+     literals — 90 pages, 8 chapters, 20420 words, 103 minutes — which described
+     no book and contradicted the "18 Pages" the manuscript screen had shown
+     the author one step earlier. Pages at the editor's own ~250 words a page
+     (see BookView), reading at 200wpm. */
+  const book = useMemo(
+    () => composeBookSeed({ ...manuscript, templateId: template.id }),
+    [manuscript, template.id],
+  );
+  const stats = useMemo(() => {
+    const words = manuscript.chapters.reduce(
+      (n, ch) => n + (stripHtml(ch.html).match(/\S+/g)?.length ?? 0), 0,
+    );
+    return {
+      pages: manuscript.chapters.reduce(
+        (n, ch) => n + Math.max(1, Math.ceil((stripHtml(ch.html).match(/\S+/g)?.length ?? 0) / 250)), 2,
+      ),
+      chapters: manuscript.chapters.length,
+      words,
+      readTime: Math.max(1, Math.round(words / 200)),
+    };
+  }, [manuscript]);
   const router = useRouter();
   const setSelectedManuscriptId = usePresentationFlowStore((s) => s.setSelectedManuscriptId);
-  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: 'pro' | 'premium'; feature: string } | null>(null);
+  const [upgradeCtx, setUpgradeCtx] = useState<{ message: string; planId: GateTier; feature: string } | null>(null);
   const currentPlan = useFlowStore((s) => s.currentPlan);
 
   const [format, setFormat] = useState('pdf');
@@ -1127,7 +1122,6 @@ function PublishView({ selection, onBack }: { selection: TemplateSelection; onBa
   const [desc, setDesc] = useState('');
   const [compress, setCompress] = useState(true);
   const [published, setPublished] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const mockUrl = 'https://designrr.s3.amazonaws.com/klimiashvilinn_568/the-power-of-unknowing';
   const selectedFormatMeta = PUBLISH_FORMATS.find(f => f.id === format);
@@ -1163,7 +1157,7 @@ function PublishView({ selection, onBack }: { selection: TemplateSelection; onBa
           Back
         </button>
         <div className="flex items-center" style={{ gap: 10 }}>
-          <button onClick={() => openInEditor(router, DOC_TITLE, template)} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => openInEditor(router, manuscript, template)} style={{ ...ns, fontSize: 13, fontWeight: 500, color: '#52637A', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             Edit design
           </button>
@@ -1192,57 +1186,17 @@ function PublishView({ selection, onBack }: { selection: TemplateSelection; onBa
         <div className="flex items-start justify-between" style={{ marginBottom: 32 }}>
           <div>
             <p style={{ ...ns, fontSize: 12, color: '#8596AD', marginBottom: 5 }}>E-book name</p>
-            <h1 style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#15191F', lineHeight: 1.35, marginBottom: 6, maxWidth: 420 }}>{DOC_TITLE}</h1>
+            <h1 style={{ ...ns, fontSize: 20, fontWeight: 700, color: '#15191F', lineHeight: 1.35, marginBottom: 6, maxWidth: 420 }}>{manuscript.title}</h1>
             <p style={{ ...ns, fontSize: 13, color: '#8596AD' }}>Author name</p>
           </div>
-          <div className="flex items-center" style={{ gap: 0, border: '1px solid #E0E5EB', borderRadius: 10, overflow: 'hidden' }}>
-            {[
-              { icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/></svg>, val: '90', label: 'Pages' },
-              { icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="1.6"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="10" x2="20" y2="10"/><line x1="4" y1="14" x2="14" y2="14"/></svg>, val: '8', label: 'Chapters' },
-              { icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="1.6" strokeLinecap="round"><path d="M4 7h16M4 12h16M4 17h8"/></svg>, val: '20420', label: 'Words' },
-              { icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52637A" strokeWidth="1.6" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>, val: '103', label: 'Read time' },
-            ].map((s, i, arr) => (
-              <div key={s.label} className="flex items-center" style={{ padding: '14px 20px', borderRight: i < arr.length - 1 ? '1px solid #E0E5EB' : 'none', gap: 8 }}>
-                {s.icon}
-                <div>
-                  <div style={{ ...ns, fontSize: 16, fontWeight: 700, color: '#15191F' }}>{s.val}</div>
-                  <div style={{ ...ns, fontSize: 11, color: '#8596AD' }}>{s.label}</div>
-                </div>
-              </div>
-            ))}
-          </div>
+          <PublishStatsRow stats={stats} />
         </div>
 
         <div className="flex" style={{ gap: 40 }}>
           {/* Format list */}
           <div className="flex-1 min-w-0">
             <h2 style={{ ...ns, fontSize: 18, fontWeight: 700, color: '#15191F', marginBottom: 20 }}>How would you like to publish?</h2>
-            <div className="flex flex-col" style={{ gap: 10 }}>
-              {PUBLISH_FORMATS.map(f => {
-                const isLocked = shouldShowTierBadge(currentPlan, f.requiredPlan);
-                return (
-                <button key={f.id}
-                  onClick={() => setFormat(f.id)}
-                  className="flex items-center text-left cursor-pointer relative"
-                  style={{ gap: 14, padding: '16px 18px', borderRadius: 10, border: `2px solid ${format === f.id ? '#006EFE' : '#E0E5EB'}`, background: '#fff', transition: 'border-color 0.12s' }}>
-                  {/* radio — locked formats are selectable too; the gate only kicks in at Publish */}
-                  <div style={{ width: 18, height: 18, borderRadius: '50%', border: `2px solid ${format === f.id ? '#006EFE' : '#C5CDD9'}`, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    {format === f.id && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#006EFE' }}/>}
-                  </div>
-                  <FormatIcon id={f.id} />
-                  <div className="flex-1">
-                    <div style={{ ...ns, fontSize: 15, fontWeight: 600, color: '#15191F' }}>{f.label}</div>
-                    <div style={{ ...ns, fontSize: 13, color: '#8596AD' }}>{f.sub}</div>
-                  </div>
-                  {isLocked && (
-                    <div style={{ flexShrink: 0 }}>
-                      <TierBadge tier={f.requiredPlan!} />
-                    </div>
-                  )}
-                </button>
-                );
-              })}
-            </div>
+            <PublishFormatList value={format} onChange={setFormat} currentPlan={currentPlan} />
           </div>
 
           {/* Right settings */}
@@ -1277,127 +1231,21 @@ function PublishView({ selection, onBack }: { selection: TemplateSelection; onBa
       </div>
     </div>
 
-    {/* Success modal overlay */}
+    {/* Success — the shared post-publish screen, same as the editor's Publish page. */}
     {published && (
-      <div className="absolute inset-0 bg-black/20 backdrop-blur-sm overflow-y-auto flex items-start justify-center" style={{ padding: '48px 24px' }}>
-        <div className="w-full" style={{ maxWidth: 720, borderRadius: 16, overflow: 'hidden', boxShadow: '0 24px 80px rgba(0,0,0,0.4)' }}>
-          {/* Dark header with book cover */}
-          <div className="relative flex items-center justify-center" style={{ background: template.bg, minHeight: 230 }}>
-            <button
-              onClick={onBack}
-              style={{ position: 'absolute', top: 14, right: 14, width: 32, height: 32, borderRadius: 8, background: 'rgba(255,255,255,0.15)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.25)'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.15)'; }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.85)" strokeWidth="2.2" strokeLinecap="round">
-                <path d="M18 6L6 18M6 6l12 12"/>
-              </svg>
-            </button>
-            <div style={{ width: 148, borderRadius: 8, overflow: 'hidden', boxShadow: '0 16px 48px rgba(0,0,0,0.5)', margin: '28px 0 32px' }}>
-              <TemplateCover t={template} height={197} title={DOC_TITLE} />
-            </div>
-          </div>
-
-          {/* White content */}
-          <div style={{ background: '#fff', padding: '28px 48px 40px' }}>
-            <h2 style={{ ...ns, fontSize: 22, fontWeight: 700, color: '#15191F', marginBottom: 16 }}>Your eBook is now live!</h2>
-
-            {/* URL row */}
-            <div className="flex items-center" style={{ gap: 8, marginBottom: 24 }}>
-              <div className="flex-1 flex items-center" style={{ background: '#F6F7F9', borderRadius: 8, padding: '10px 14px', minWidth: 0 }}>
-                <span className="truncate" style={{ ...ns, fontSize: 13, color: '#52637A' }}>{mockUrl}</span>
-              </div>
-              <button onClick={() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-                style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#006EFE', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '10px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M5 16H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v1"/></svg>
-                {copied ? 'Copied!' : 'Copy link'}
-              </button>
-              <button style={{ ...ns, fontSize: 13, fontWeight: 600, color: '#15191F', background: '#fff', border: '1px solid #E0E5EB', borderRadius: 8, padding: '10px 16px', cursor: 'pointer', flexShrink: 0 }}>Download</button>
-            </div>
-
-            {/* Turn into Presentation nudge */}
-            <div style={{ borderRadius: 12, background: 'linear-gradient(135deg,#0A1628 0%,#1A1060 60%,#2D1B8A 100%)', padding: '18px 20px', marginBottom: 24, display: 'flex', alignItems: 'center', gap: 16 }}>
-              <div style={{ flexShrink: 0, width: 72, height: 50, borderRadius: 6, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.14)', padding: '7px 9px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <div style={{ width: '70%', height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.55)' }}/>
-                <div style={{ width: '100%', height: 2.5, borderRadius: 2, background: 'rgba(255,255,255,0.22)' }}/>
-                <div style={{ width: '85%', height: 2.5, borderRadius: 2, background: 'rgba(255,255,255,0.22)' }}/>
-                <div style={{ width: '60%', height: 2.5, borderRadius: 2, background: 'rgba(255,255,255,0.22)' }}/>
-              </div>
-              <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
-                <div className="flex items-center" style={{ gap: 8 }}>
-                  <p style={{ ...ns, fontSize: 14, fontWeight: 700, color: '#fff', margin: 0 }}>Turn into Presentation</p>
-                  {isPresentationLocked && (
-                    <span style={{ ...ns, fontSize: 10, fontWeight: 700, letterSpacing: 0.3, color: '#fff', background: 'rgba(255,255,255,0.18)', border: '1px solid rgba(255,255,255,0.3)', borderRadius: 999, padding: '2px 8px' }}>
-                      PRO
-                    </span>
-                  )}
-                </div>
-                <p style={{ ...ns, fontSize: 12, color: 'rgba(255,255,255,0.6)', margin: 0, lineHeight: 1.45 }}>
-                  Repurpose your content as a polished slide deck in minutes
-                </p>
-              </div>
-              <button
-                onClick={handleTurnIntoPresentation}
-                style={{ flexShrink: 0, ...ns, fontSize: 13, fontWeight: 600, color: '#fff', background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', whiteSpace: 'nowrap', backdropFilter: 'blur(4px)' }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.24)'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.15)'; }}
-              >
-                Create slides →
-              </button>
-            </div>
-
-            {/* Socials */}
-            <div style={{ marginBottom: 24 }}>
-              <p style={{ ...ns, fontSize: 15, fontWeight: 700, color: '#15191F', marginBottom: 10 }}>Socials</p>
-              <div className="flex" style={{ gap: 8 }}>
-                {[
-                  { label: 'Facebook', bg: '#1877F2', icon: <path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" fill="none"/> },
-                  { label: 'X', bg: '#000', icon: <path d="M4 4l16 16M20 4L4 20" stroke="#fff" strokeWidth="1.8" strokeLinecap="round"/> },
-                  { label: 'LinkedIn', bg: '#0A66C2', icon: <><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" fill="none"/><rect x="2" y="9" width="4" height="12" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" fill="none"/><circle cx="4" cy="4" r="2" stroke="#fff" strokeWidth="1.5" fill="none"/></> },
-                ].map(s => (
-                  <button key={s.label}
-                    style={{ width: 40, height: 40, borderRadius: 10, background: s.bg, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">{s.icon}</svg>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Promote */}
-            <div>
-              <p style={{ ...ns, fontSize: 15, fontWeight: 700, color: '#15191F', marginBottom: 10 }}>Promote your eBook</p>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                {([
-                  { icon: '🌐', label: 'Create landing page' },
-                  { icon: '📦', label: 'Create 3d covers & Mockups', requiredPlan: 'pro' as const },
-                  { icon: '📱', label: 'Generate QR code' },
-                  { icon: '✉️', label: 'Share with e-mail' },
-                ]).map(a => {
-                  const isLocked = shouldShowTierBadge(currentPlan, a.requiredPlan);
-                  return (
-                  <button key={a.label}
-                    onClick={() => {
-                      if (isLocked && a.requiredPlan) setUpgradeCtx({ message: `Unlock ${a.label}`, planId: a.requiredPlan, feature: a.label });
-                    }}
-                    className="relative"
-                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', borderRadius: 10, border: '1px solid #E0E5EB', background: '#fff', cursor: 'pointer', ...ns, fontSize: 14, fontWeight: 500, color: '#15191F' }}
-                    onMouseEnter={e => { e.currentTarget.style.background = '#F6F7F9'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
-                    <span style={{ fontSize: 18 }}>{a.icon}</span>
-                    {a.label}
-                    {isLocked && (
-                      <div className="flex-shrink-0" style={{ marginLeft: 'auto' }}>
-                        <TierBadge tier={a.requiredPlan!} size="sm" />
-                      </div>
-                    )}
-                  </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <PublishedPanel
+        cover={<BookPagePreview book={book} page={book.pages[0]} width={148} />}
+        /* Not template.bg: most of the covers are white or off-white, and on a
+           white ground the cover has nothing holding it and the close button
+           disappears entirely. One dark ground for every book, same as the
+           editor's Publish screen. */
+        coverBg="#15191F"
+        url={mockUrl}
+        onClose={onBack}
+        currentPlan={currentPlan}
+        onUpgrade={setUpgradeCtx}
+        onTurnIntoPresentation={handleTurnIntoPresentation}
+      />
     )}
 
     {upgradeCtx && (
@@ -1414,92 +1262,33 @@ function PublishView({ selection, onBack }: { selection: TemplateSelection; onBa
 
 /* ── step 2: writing a content ──────────────────────────────────────────────── */
 
-const MOCK_PARAGRAPHS = [
-  "I used to believe I wasn't doing enough. I needed to read one more book, listen to one more podcast, take one more course. Instead, I felt exhausted. My brain was in a constant state of seeking. I'd lie in bed at night, replaying conversations, second-guessing my decisions, berating myself for not having the answers—even in domains I was only just learning, coming from—only that I couldn't.",
-  "That pressure came with me everywhere. Into meetings. Into quiet weekend mornings. Into relationships. I was living under the assumption that if I just consumed more, thought more, prepared more, I'd finally feel ready. Whenever I hit a gap in my knowledge, I didn't lean in with curiosity. I panicked. I'd spend hours researching trying to feel on top of something before engaging with it. The irony was that the more I learned, the wider my sense of what I didn't know became—fueling the cycle. I was chasing a finish line that kept moving.",
-  "The breaking point came during a week that, on paper, should have been unremarkable. I was facing a handful of small decisions—nothing life-altering—and I froze. I couldn't choose a direction for a project because I hadn't analyzed every precedent. I couldn't respond to a simple email because I wasn't sure of the perfect phrasing. My brain had become so trained to demand certainty that it had forgotten how to move without it. In that stillness, something shifted.",
-];
-
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// BookEditorView.tsx owns this exact key/shape (see its own STORAGE_KEY/PersistedBook) —
-// duplicated here rather than imported since these are two independent prototype flows
-// with no shared module boundary today. Keep the field names/shape below in sync with
-// PersistedBook if that ever changes.
-const BOOK_EDITOR_STORAGE_KEY = 'designrr.book.editor.v1';
-
-// A cover page's background AND every chapter/TOC/backmatter page's background both
-// read from the same theme.bg — there's no separate "cover-only" background slot in
-// BookEditorView's theme model. So the wizard's vivid gradient can't safely become
-// theme.bg (it would paint every body page too, wrecking text legibility) — instead
-// it becomes a full-bleed background SHAPE on just the cover page's own coverElements,
-// which is already a per-page override independent of the shared theme. Body pages
-// stay on the safe, neutral 'statement-lettering' theme regardless of which template
-// was picked in the wizard.
-function flattenBg(bg: string): string {
-  const hexes = bg.match(/#[0-9a-fA-F]{3,8}/g);
-  if (!hexes || hexes.length === 0) return bg; // already a plain CSS color
-  return hexes[hexes.length - 1]; // gradients here run light→dark at 160deg; the darker stop is the safer flat fallback for light cover text
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]*>/g, ' ');
 }
 
-/* Converts what the wizard actually generated (a title + one heading/subheading/
-   paragraphs document — see WritingContentView above) into the exact JSON shape
-   BookEditorView's own loadBook()/PersistedBook expects, so "Edit design" opens a
-   real reflection of the reviewed book instead of the editor's unrelated demo
-   content. Structural conversion, not decoration: H2 sections become chapters
-   (matching BookEditorView's own convention that a chapter's H3s are sub-headings
-   inside its body, not separate chapters — see deriveSubheadings there), so this
-   still does the right thing if MOCK_PARAGRAPHS/sections ever grow beyond one. */
-function buildEditorSeedFromWizard(docTitle: string, template: Template) {
-  const chapterId = 'ch-1';
-  const bodyHtml = `<h3>My Story</h3>${MOCK_PARAGRAPHS.map((p) => `<p>${escapeHtml(p)}</p>`).join('')}`;
+/* Opening the book in the editor is now one call to buildBookSeed, which is
+   BookEditorView's own composer. What was here instead: a hand-written copy of
+   the PersistedBook shape, a hardcoded `activeTheme: 'statement-lettering'`
+   whatever the author had picked, a four-element cover built out of the wizard
+   template's two colours, a single chapter of placeholder prose, and a
+   `flattenBg` that reduced a gradient to one of its stops because the wizard's
+   templates were gradients and the editor's are designs.
 
-  const pages = [
-    {
-      id: 'p-cover',
-      type: 'cover',
-      title: 'Cover',
-      coverElements: [
-        { id: 'bg', type: 'shape', shape: 'rectangle', x: 0, y: 0, w: 100, h: 100, color: flattenBg(template.bg) },
-        { id: 'title', type: 'text', role: 'title', x: 8, y: 34, w: 84, h: 32, fontFamily: "'Nunito Sans', sans-serif", fontSize: 40, fontWeight: 800, color: template.textColor, textAlign: 'center' },
-        { id: 'rule', type: 'shape', shape: 'rectangle', x: 35, y: 68, w: 30, h: 1.1, color: template.accentColor },
-        { id: 'auth', type: 'text', role: 'author', x: 10, y: 91, w: 80, h: 5, fontFamily: "'Nunito Sans', sans-serif", fontSize: 12, fontWeight: 700, color: template.textColor, textAlign: 'center' },
-      ],
-    },
-    { id: 'p-toc', type: 'toc', title: 'Table of Contents' },
-    {
-      id: chapterId, type: 'chapter', title: 'Introduction', layout: 'opener', overrides: {},
-      titleHtml: '<h2>Introduction</h2>',
-      initialHtml: bodyHtml,
-    },
-    { id: 'p-back', type: 'backmatter', title: 'About the Author' },
-  ];
-
-  return {
-    version: 1,
-    pages,
-    metadata: {
-      title: docTitle, subtitle: '', author: '', identifier: '', language: 'en',
-      publisher: '', description: '', subjects: '', seriesName: '', seriesPosition: '', readingDirection: 'ltr',
-    },
-    pageNumbers: { enabled: true, position: 'footer-center', style: 'numeric', startAt: 1, skipCoverAndBackMatter: true },
-    activeTheme: 'statement-lettering',
-    chapterContent: { [chapterId]: bodyHtml },
-    fieldContent: { 'p-cover::title': `<p>${escapeHtml(docTitle)}</p>` },
-    savedAt: Date.now(),
-  };
-}
-
-function openInEditor(router: ReturnType<typeof useRouter>, docTitle: string, template: Template) {
+   All of it existed because the wizard's templates were not the editor's
+   templates and its manuscript was not the manuscript. Both are now, so the
+   conversion has nothing left to convert. */
+function openInEditor(router: ReturnType<typeof useRouter>, manuscript: Manuscript, template: Template) {
   try {
-    window.localStorage.setItem(BOOK_EDITOR_STORAGE_KEY, JSON.stringify(buildEditorSeedFromWizard(docTitle, template)));
+    window.localStorage.setItem(BOOK_STORAGE_KEY, buildBookSeed({ ...manuscript, templateId: template.id }));
   } catch { /* storage unavailable/full — editor still opens, just with its own demo content */ }
   router.push('/book/editor');
 }
 
-function WritingContentView({ onChooseFormat }: { onChooseFormat: () => void }) {
+function WritingContentView({ manuscript, onChooseFormat }: { manuscript: Manuscript; onChooseFormat: () => void }) {
   return (
     <div className="h-full flex flex-col overflow-hidden bg-white">
       {/* Editing toolbar */}
@@ -1542,14 +1331,22 @@ function WritingContentView({ onChooseFormat }: { onChooseFormat: () => void }) 
         </div>
       </div>
 
-      {/* Manuscript content */}
+      {/* Manuscript content — all of it. This showed one hardcoded chapter called
+          "Introduction" with three paragraphs of placeholder prose, which is
+          where the lost chapters first go missing: the author arrives from a
+          manuscript of eight and the very next screen shows them one. */}
       <div className="flex-1 overflow-y-auto bg-white" style={{ padding: '40px 0' }}>
         <div style={{ maxWidth: 680, margin: '0 auto', padding: '0 48px' }}>
-          <h1 style={{ fontFamily: 'Georgia, serif', fontSize: 28, fontWeight: 700, color: '#15191F', lineHeight: 1.3, marginBottom: 32 }}>{DOC_TITLE}</h1>
-          <h2 style={{ fontFamily: 'Georgia, serif', fontSize: 20, fontWeight: 700, color: '#15191F', marginBottom: 16 }}>Introduction</h2>
-          <h3 style={{ fontFamily: 'Georgia, serif', fontSize: 17, fontWeight: 600, color: '#15191F', marginBottom: 14 }}>My Story</h3>
-          {MOCK_PARAGRAPHS.map((p, i) => (
-            <p key={i} style={{ ...ns, fontSize: 15, color: '#29323D', lineHeight: 1.8, marginBottom: 20 }}>{p}</p>
+          <h1 style={{ fontFamily: 'Georgia, serif', fontSize: 28, fontWeight: 700, color: '#15191F', lineHeight: 1.3, marginBottom: 6 }}>{manuscript.title}</h1>
+          {manuscript.subtitle && (
+            <p style={{ ...ns, fontSize: 15, color: '#52637A', marginBottom: 32 }}>{manuscript.subtitle}</p>
+          )}
+          {manuscript.chapters.map((ch, i) => (
+            <div key={ch.id} style={{ marginTop: i === 0 ? 26 : 40 }}>
+              <h2 style={{ fontFamily: 'Georgia, serif', fontSize: 20, fontWeight: 700, color: '#15191F', marginBottom: 16 }}>{ch.title}</h2>
+              <div style={{ ...ns, fontSize: 15, color: '#29323D', lineHeight: 1.8 }}
+                className="[&_p]:mb-5" dangerouslySetInnerHTML={{ __html: ch.html }} />
+            </div>
           ))}
         </div>
       </div>
@@ -1570,7 +1367,8 @@ export function EbookCreateFlow({ startStep = 2 }: { startStep?: 2 | 3 }) {
   const [showThemesModal, setShowThemesModal] = useState(startStep === 3);
   const [selectedThemes, setSelectedThemes] = useState<string[]>([]);
   const currentPlan = useFlowStore(s => s.currentPlan);
-  const [selection, setSelection] = useState<TemplateSelection>({ template: TEMPLATES[1], position: 2 });
+  const manuscript = useManuscript();
+  const [selection, setSelection] = useState<TemplateSelection>({ template: TEMPLATES[0], position: 1 });
 
   const handleSaveThemes = (themes: string[]) => {
     setSelectedThemes(themes);
@@ -1597,28 +1395,28 @@ export function EbookCreateFlow({ startStep = 2 }: { startStep?: 2 | 3 }) {
             <motion.div key="step2" className="absolute inset-0"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}>
-              <WritingContentView onChooseFormat={() => setShowThemesModal(true)} />
+              <WritingContentView manuscript={manuscript} onChooseFormat={() => setShowThemesModal(true)} />
             </motion.div>
           )}
           {step === 3 && (
             <motion.div key="step3" className="absolute inset-0"
               initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
               transition={{ duration: 0.22 }}>
-              <TemplateGallery selectedThemes={selectedThemes} onUse={handleUseTemplate} onBack={() => setStep(2)} />
+              <TemplateGallery selectedThemes={selectedThemes} manuscript={manuscript} onUse={handleUseTemplate} onBack={() => setStep(2)} />
             </motion.div>
           )}
           {step === 4 && (
             <motion.div key="step4" className="absolute inset-0"
               initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
               transition={{ duration: 0.22 }}>
-              <ReviewView template={selection.template} onPublish={() => setStep(5)} />
+              <ReviewView template={selection.template} manuscript={manuscript} onPublish={() => setStep(5)} />
             </motion.div>
           )}
           {step === 5 && (
             <motion.div key="step5" className="absolute inset-0"
               initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
               transition={{ duration: 0.22 }}>
-              <PublishView selection={selection} onBack={() => setStep(4)} />
+              <PublishView selection={selection} manuscript={manuscript} onBack={() => setStep(4)} />
             </motion.div>
           )}
         </AnimatePresence>
@@ -1628,7 +1426,7 @@ export function EbookCreateFlow({ startStep = 2 }: { startStep?: 2 | 3 }) {
       <AnimatePresence>
         {showThemesModal && (
           <ThemesModal
-            docTitle={DOC_TITLE}
+            docTitle={manuscript.title}
             initial={selectedThemes}
             onSave={handleSaveThemes}
             onClose={() => setShowThemesModal(false)}
